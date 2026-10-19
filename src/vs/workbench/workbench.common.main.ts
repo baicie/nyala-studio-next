@@ -208,6 +208,9 @@ import './services/policies/browser/policyTelemetry.contribution.js';
 // Telemetry
 import './contrib/telemetry/browser/telemetry.contribution.js';
 
+// Nyala
+import './contrib/nyala/bootstrap/browser/nyala.contribution.js';
+
 // Preferences
 import './contrib/preferences/browser/preferences.contribution.js';
 import './contrib/preferences/browser/keybindingsEditorContribution.js';

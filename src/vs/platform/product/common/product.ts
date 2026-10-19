@@ -46,6 +46,7 @@ else if (globalThis._VSCODE_PRODUCT_JSON && globalThis._VSCODE_PACKAGE_JSON) {
 			nameShort: `${product.nameShort} Dev`,
 			nameLong: `${product.nameLong} Dev`,
 			dataFolderName: `${product.dataFolderName}-dev`,
+			sharedDataFolderName: product.sharedDataFolderName ? `${product.sharedDataFolderName}-dev` : undefined,
 			serverDataFolderName: product.serverDataFolderName ? `${product.serverDataFolderName}-dev` : undefined
 		});
 	}
@@ -77,33 +78,67 @@ else {
 	// Running out of sources
 	if (Object.keys(product).length === 0) {
 		Object.assign(product, {
-			version: '1.104.0-dev',
-			nameShort: 'Code - OSS Dev',
-			nameLong: 'Code - OSS Dev',
-			applicationName: 'code-oss',
-			dataFolderName: '.vscode-oss',
-			urlProtocol: 'code-oss',
-			reportIssueUrl: 'https://github.com/microsoft/vscode/issues/new',
+			version: '0.0.1-dev.0',
+			nameShort: 'Nyala Studio Dev',
+			nameLong: 'Nyala Studio Dev',
+			applicationName: 'nyala-studio',
+			dataFolderName: '.nyala-studio-dev',
+			sharedDataFolderName: '.nyala-studio-shared-dev',
+			urlProtocol: 'nyala',
+			reportIssueUrl: 'https://github.com/baicie/nyala-studio-next/issues/new',
 			licenseName: 'MIT',
 			licenseUrl: 'https://github.com/microsoft/vscode/blob/main/LICENSE.txt',
 			serverLicenseUrl: 'https://github.com/microsoft/vscode/blob/main/LICENSE.txt',
-			defaultChatAgent: {
-				extensionId: 'GitHub.copilot',
-				chatExtensionId: 'GitHub.copilot-chat',
-				provider: {
-					default: {
-						id: 'github',
-						name: 'GitHub',
-					},
-					enterprise: {
-						id: 'github-enterprise',
-						name: 'GitHub Enterprise',
-					}
-				},
-				providerScopes: []
-			}
+			serverApplicationName: 'nyala-studio-server',
+			serverDataFolderName: '.nyala-studio-server-dev',
+			tunnelApplicationName: 'nyala-studio-tunnel',
+			defaultChatAgent: createDisabledChatAgent()
 		});
 	}
+}
+
+function createDisabledChatAgent(): NonNullable<IProductConfiguration['defaultChatAgent']> {
+	return {
+		extensionId: 'nyala.disabled',
+		chatExtensionId: 'nyala.disabled-chat',
+		chatExtensionOutputId: 'nyala.disabled-chat.log',
+		chatExtensionOutputExtensionStateCommand: '',
+		documentationUrl: '',
+		termsStatementUrl: '',
+		privacyStatementUrl: '',
+		skusDocumentationUrl: '',
+		optimizeUsageDocumentationUrl: '',
+		publicCodeMatchesUrl: '',
+		managePlanUrl: '',
+		upgradePlanUrl: '',
+		signUpUrl: '',
+		provider: {
+			default: { id: 'nyala-disabled', name: 'Nyala Studio' },
+			enterprise: { id: 'nyala-disabled-enterprise', name: 'Nyala Studio' },
+			google: { id: 'nyala-disabled-google', name: 'Nyala Studio' },
+			apple: { id: 'nyala-disabled-apple', name: 'Nyala Studio' },
+			microsoft: { id: 'nyala-disabled-microsoft', name: 'Nyala Studio' }
+		},
+		providerExtensionId: '',
+		providerUriSetting: '',
+		providerScopes: [],
+		entitlementUrl: '',
+		entitlementSignupLimitedUrl: '',
+		chatQuotaExceededContext: 'nyala.disabled.chatQuotaExceeded',
+		completionsQuotaExceededContext: 'nyala.disabled.completionsQuotaExceeded',
+		walkthroughCommand: '',
+		completionsMenuCommand: '',
+		chatRefreshTokenCommand: '',
+		generateCommitMessageCommand: '',
+		resolveMergeConflictsCommand: '',
+		completionsAdvancedSetting: '',
+		completionsEnablementSetting: '',
+		nextEditSuggestionsSetting: '',
+		tokenEntitlementUrl: '',
+		mcpRegistryDataUrl: '',
+		mcpConnectorsUrl: '',
+		managedSettingsUrl: ''
+	};
 }
 
 export default product;

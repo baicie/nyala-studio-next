@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/nyala/rpc-envelope.schema.json",
+  "title": "Nyala conceptual JSON-RPC envelope",
+  "description": "Illustrative draft. Replace the $id and generate strict method-specific schemas before runtime use.",
+  "oneOf": [
+    {"$ref":"#/$defs/request"},
+    {"$ref":"#/$defs/notification"},
+    {"$ref":"#/$defs/success"},
+    {"$ref":"#/$defs/failure"}
+  ],
+  "$defs": {
+    "request": {"type":"object","required":["jsonrpc","id","method"],"properties":{"jsonrpc":{"const":"2.0"},"id":{"type":"string","minLength":1},"method":{"type":"string","minLength":1},"params":{"type":"object"}},"additionalProperties":false},
+    "notification": {"type":"object","required":["jsonrpc","method","params"],"properties":{"jsonrpc":{"const":"2.0"},"method":{"type":"string","minLength":1},"params":{"type":"object"}},"additionalProperties":false},
+    "success": {"type":"object","required":["jsonrpc","id","result"],"properties":{"jsonrpc":{"const":"2.0"},"id":{"type":"string","minLength":1},"result":{}},"additionalProperties":false},
+    "failure": {"type":"object","required":["jsonrpc","id","error"],"properties":{"jsonrpc":{"const":"2.0"},"id":{"type":"string","minLength":1},"error":{"type":"object","required":["code","message"],"properties":{"code":{"type":"integer"},"message":{"type":"string"},"data":{}},"additionalProperties":false}},"additionalProperties":false}
+  }
+}

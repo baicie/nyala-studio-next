@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-title VSCode Dev
+title Nyala Studio Dev
 
 pushd %~dp0\..
 
@@ -44,7 +44,7 @@ for %%A in (%*) do (
 	)
 )
 
-:: Launch Code
+:: Launch Nyala Studio
 %CODE% . %DISABLE_TEST_EXTENSION% %*
 goto end
 

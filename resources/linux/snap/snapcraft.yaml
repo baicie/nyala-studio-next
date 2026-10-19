@@ -1,10 +1,9 @@
 name: @@NAME@@
 version: '@@VERSION@@'
-summary: Code editing. Redefined.
+summary: Nyala Studio SQL-first desktop IDE
 description: |
-  Visual Studio Code is a new choice of tool that combines the
-  simplicity of a code editor with what developers need for the core
-  edit-build-debug cycle.
+  Nyala Studio is an open-source SQL-first desktop IDE built on the
+  Code OSS Workbench.
 
 architectures:
   - build-on: amd64

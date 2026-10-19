@@ -1,6 +1,7 @@
 Template: @@NAME@@/add-microsoft-repo
 Type: boolean
 Default: true
-Description: Add Microsoft apt repository for Visual Studio Code?
- The installer would like to add the Microsoft repository and signing
- key to update VS Code through apt.
+Description: Add an update repository for Nyala Studio?
+ The installer may add a repository and signing key for future Nyala Studio
+ updates. This option is disabled until a Nyala-hosted update repository is
+ configured.

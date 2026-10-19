@@ -46,7 +46,7 @@ class ExtensionsScannerService extends AbstractExtensionsScannerService implemen
 		super(
 			URI.file(nativeEnvironmentService.builtinExtensionsPath),
 			URI.file(nativeEnvironmentService.extensionsPath),
-			joinPath(nativeEnvironmentService.userHome, '.vscode-oss-dev', 'extensions', 'control.json'),
+			joinPath(nativeEnvironmentService.userHome, productService.dataFolderName, 'extensions', 'control.json'),
 			userDataProfilesService.defaultProfile,
 			userDataProfilesService, extensionsProfileScannerService, fileService, logService, nativeEnvironmentService, productService, uriIdentityService, instantiationService);
 	}
@@ -80,7 +80,7 @@ suite('NativeExtensionsScanerService Test', () => {
 			extensionsPath: userExtensionsLocation.fsPath,
 			cacheHome: joinPath(ROOT, 'cache'),
 		});
-		instantiationService.stub(IProductService, { version: '1.66.0', builtInExtensionsEnabledWithAutoUpdates: [] });
+		instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', builtInExtensionsEnabledWithAutoUpdates: [] });
 		const uriIdentityService = disposables.add(new UriIdentityService(fileService));
 		instantiationService.stub(IUriIdentityService, uriIdentityService);
 		const userDataProfilesService = disposables.add(new UserDataProfilesService(environmentService, fileService, uriIdentityService, logService));
@@ -243,6 +243,7 @@ suite('NativeExtensionsScanerService Test', () => {
 	test('scan system extensions include additional builtin extensions', async () => {
 		instantiationService.stub(IProductService, {
 			version: '1.66.0',
+			dataFolderName: '.nyala-studio',
 			builtInExtensionsEnabledWithAutoUpdates: [],
 			builtInExtensions: [
 				{ name: 'pub.name2', version: '', repo: '', metadata: undefined },
@@ -252,7 +253,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		await anExtension(anExtensionManifest({ 'name': 'name2', 'publisher': 'pub' }), joinPath(ROOT, 'additional'));
 		const extensionLocation = await anExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub' }), joinPath(ROOT, 'additional'));
 		await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.0.1' }));
-		await instantiationService.get(IFileService).writeFile(joinPath(instantiationService.get(INativeEnvironmentService).userHome, '.vscode-oss-dev', 'extensions', 'control.json'), VSBuffer.fromString(JSON.stringify({ 'pub.name2': 'disabled', 'pub.name': extensionLocation.fsPath })));
+		await instantiationService.get(IFileService).writeFile(joinPath(instantiationService.get(INativeEnvironmentService).userHome, '.nyala-studio', 'extensions', 'control.json'), VSBuffer.fromString(JSON.stringify({ 'pub.name2': 'disabled', 'pub.name': extensionLocation.fsPath })));
 		const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
 		const actual = await testObject.scanSystemExtensions({ checkControlFile: true });
@@ -350,7 +351,7 @@ suite('NativeExtensionsScanerService Test', () => {
 	suite('auto update builtin extensions', () => {
 
 		test('scan user extension with matching product version is included', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.1' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
@@ -361,7 +362,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('scan user extension with different version is included when forceAutoUpdate is enabled', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.67.0' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
@@ -372,7 +373,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('scan user extension not in autoUpdateBuiltinExtensions is not filtered', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.other'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.other'] });
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.67.0' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
@@ -382,7 +383,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('scan picks latest version when multiple versions exist', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.1' }));
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.67.0' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
@@ -394,7 +395,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('scan all extensions prefers matching user extension over system extension', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.0' }));
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.1' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
@@ -408,7 +409,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('scan all extensions picks user extension with newer version over system extension', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.0' }));
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.67.0' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
@@ -422,7 +423,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('system extension has autoUpdate set to true when in autoUpdateBuiltinExtensions and quality is stable', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
@@ -433,7 +434,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('system extension has autoUpdate set to false when not in autoUpdateBuiltinExtensions', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.other'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'stable', builtInExtensionsEnabledWithAutoUpdates: ['pub.other'] });
 			await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
@@ -444,7 +445,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('system extension has autoUpdate set to false when quality is not stable', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'insider', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'insider', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
@@ -455,7 +456,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('scan user extension is excluded when autoUpdate is disabled (non-stable quality)', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'insider', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'insider', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.1' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
 
@@ -465,7 +466,7 @@ suite('NativeExtensionsScanerService Test', () => {
 		});
 
 		test('scan all extensions uses system version when autoUpdate is disabled (non-stable quality)', async () => {
-			instantiationService.stub(IProductService, { version: '1.66.0', quality: 'insider', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
+			instantiationService.stub(IProductService, { version: '1.66.0', dataFolderName: '.nyala-studio', quality: 'insider', builtInExtensionsEnabledWithAutoUpdates: ['pub.name'] });
 			await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.0' }));
 			await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', version: '1.66.1' }));
 			const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));

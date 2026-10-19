@@ -1,9 +1,9 @@
 {
-  "name": "code-oss-dev",
-  "version": "1.142.0",
+  "name": "nyala-studio-dev",
+  "version": "0.0.1-dev.0",
   "distro": "a0e7521b2a1e3289e4118fad155277b200aebd35",
   "author": {
-    "name": "Microsoft Corporation"
+    "name": "Nyala Studio Contributors"
   },
   "license": "MIT",
   "main": "./out/main.js",

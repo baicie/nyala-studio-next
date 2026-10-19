@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/microsoft/vscode.git",
+  "tag": "1.142.0",
+  "sha": "d956e8a6ac5d904486557eea07e1d6bd62a4d36f",
+  "node": "24.18.0",
+  "packageManager": "npm",
+  "initializedAt": "2026-10-18",
+  "patchCount": 34,
+  "patchCountBasis": "32 modified upstream-tracked files plus 2 new Nyala Workbench source files; documentation and nyala metadata are listed separately in patch-ledger.md"
+}

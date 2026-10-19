@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":"rq_001","method":"runtime.hello","params":{"protocolMajor":1,"protocolMinor":0,"clientBuild":"0.1.0-dev"}}
+{"jsonrpc":"2.0","id":"rq_001","result":{"protocolMajor":1,"protocolMinor":0,"runtimeBuild":"0.1.0-dev","features":["sqlite","query.execute","result.fetchPage"]}}
+{"jsonrpc":"2.0","id":"rq_002","method":"query.execute","params":{"sessionId":"s_001","sessionGeneration":1,"sql":"SELECT 1 AS answer","mode":"statement","timeoutMs":30000,"maxInitialRows":200}}
+{"jsonrpc":"2.0","id":"rq_002","result":{"executionId":"ex_001","state":"running","sequence":1}}
+{"jsonrpc":"2.0","method":"query.stateChanged","params":{"executionId":"ex_001","sequence":2,"state":"completed","resultIds":["rs_001"],"elapsedMs":11}}
+{"jsonrpc":"2.0","id":"rq_003","method":"result.fetchPage","params":{"resultId":"rs_001","cursor":null,"limit":200}}
+{"jsonrpc":"2.0","id":"rq_003","result":{"columns":[{"ordinal":0,"name":"answer","nativeType":"INTEGER"}],"rows":[[{"type":"int64","text":"1"}]],"hasMore":false,"nextCursor":null}}

@@ -139,6 +139,10 @@
 			"project": "vscode-workbench"
 		},
 		{
+			"name": "vs/workbench/contrib/nyala",
+			"project": "vscode-workbench"
+		},
+		{
 			"name": "vs/workbench/contrib/keybindings",
 			"project": "vscode-workbench"
 		},

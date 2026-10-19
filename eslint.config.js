@@ -1892,11 +1892,16 @@ export default defineConfig(
 						'vs/editor/contrib/*/~',
 						'vs/workbench/~',
 						'vs/workbench/services/*/~',
+						'vs/workbench/contrib/nyala/**',
 						'assert',
 						{
 							'when': 'test',
 							'pattern': 'vs/workbench/contrib/*/~'
-						} // TODO@layers
+						}, // TODO@layers
+						{
+							'when': 'hasBrowser',
+							'pattern': 'vs/workbench/contrib/nyala/**'
+						}
 					]
 				},
 				{
@@ -1950,6 +1955,7 @@ export default defineConfig(
 						'vs/workbench/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
+						'vs/workbench/contrib/nyala/**',
 						'vs/sessions/~',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
@@ -1967,6 +1973,32 @@ export default defineConfig(
 							'when': 'hasBrowser',
 							'pattern': 'vscode-textmate'
 						} // node module allowed even in /browser/
+					]
+				},
+				{
+					'target': 'src/vs/workbench/contrib/nyala/*/~',
+					'layer': 'browser',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/editor/~',
+						'vs/editor/contrib/*/~',
+						'vs/workbench/~',
+						'vs/workbench/services/*/~',
+						'vs/workbench/contrib/*/~',
+						'vs/workbench/contrib/nyala/**',
+						'vs/sessions/~',
+						'vscode-notebook-renderer',
+						'@vscode/tree-sitter-wasm',
+						{
+							'when': 'hasBrowser',
+							'pattern': '@xterm/*'
+						},
+						{
+							'when': 'hasBrowser',
+							'pattern': 'vscode-textmate'
+						}
 					]
 				},
 				{
@@ -2087,6 +2119,7 @@ export default defineConfig(
 						'vs/workbench/api/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
+						'vs/workbench/contrib/nyala/**',
 						'vs/workbench/contrib/terminal/terminal.all.js',
 					]
 				},
