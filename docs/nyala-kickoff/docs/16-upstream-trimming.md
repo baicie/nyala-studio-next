@@ -24,7 +24,7 @@ branches:
 
 ## 版本基线
 
-在 `nyala/upstream-base.json`（规划路径）维护 `{tag, sha, checkedAt, patchCount, buildTool}`。使用 git merge-base/commits 真实确认，不能仅靠 README 宣称基线。每次升级保留 changelog、冲突文件、工作量、回归记录。
+在 `nyala/upstream-base.json` 维护 `{tag, sha, checkedAt, patchCount, buildTool}`。使用 git merge-base/commits 真实确认，不能仅靠 README 宣称基线。每次升级保留 changelog、冲突文件、工作量、回归记录。
 
 ## 修改预算（目标而非硬性成功 KPI）
 

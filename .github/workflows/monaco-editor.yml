@@ -3,11 +3,11 @@ name: Monaco Editor checks
 on:
   push:
     branches:
-      - main
+      - nyala/main
       - release/*
   pull_request:
     branches:
-      - main
+      - nyala/main
       - release/*
 permissions: {}
 

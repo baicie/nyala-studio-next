@@ -9,7 +9,7 @@ on:
       - .github/workflows/copilot-setup-steps.yml
   pull_request:
     branches:
-      - main
+      - nyala/main
       - 'release/*'
     paths:
       - .github/workflows/copilot-setup-steps.yml

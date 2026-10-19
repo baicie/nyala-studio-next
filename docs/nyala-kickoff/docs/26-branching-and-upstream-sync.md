@@ -15,8 +15,10 @@ upstream  https://github.com/microsoft/vscode.git          Code OSS 上游，只
 
 ```bash
 git remote add upstream https://github.com/microsoft/vscode.git
+git remote set-url --push upstream no_push
 git fetch upstream --tags --prune
 git remote -v
+git remote get-url --push upstream  # 必须输出 no_push
 ```
 
 ## 分支命名
@@ -27,7 +29,7 @@ git remote -v
 | `feat/<topic>` | `nyala/main` | 新功能、SQL 垂直切片、Workbench Contribution | 合并后删除 |
 | `fix/<topic>` | `nyala/main` | 普通缺陷修复 | 合并后删除 |
 | `security/backport-<id>` | `nyala/main` 或对应发布点 | 上游安全修复、Electron/Node 紧急修复 | 合并后删除 |
-| `sync/code-oss-<tag>` | `nyala/main` | 将指定 Code OSS Release Tag 合入并验证 | 合并后保留记录、删除分支 |
+| `sync/code-oss-<tag>` | `nyala/main` | 将指定 Code OSS Release Tag 合入并验证 | 合并后保留 PR/报告记录，删除分支 |
 | `release/<version>` | `nyala/main` | 发布候选、打包、签名和安装验证 | 发布完成后归档 |
 | `experiment/<topic>` | 固定基线 | Tauri、瘦身或其他不进入主线的实验 | 时间盒结束后归档 |
 
@@ -43,6 +45,8 @@ git remote -v
 6. 合并后删除短期分支，但保留 PR、提交和同步报告，保证后续可追溯。
 
 建议在 GitHub 为 `nyala/main` 开启保护：禁止 force push 和删除，要求 PR、至少一名审核者，以及 compile/typecheck/hygiene 等必需检查。保护规则在仓库设置中维护，不能只依赖本文件。
+
+仓库工作流的 `push`/`pull_request` 过滤必须包含 `nyala/main`；新增工作流或迁移主线时，同步更新分支过滤和必需检查清单，避免 PR 合入后没有 CI 反馈。
 
 ## Code OSS 稳定版本同步
 
@@ -106,9 +110,10 @@ PR 合入后：
 ```bash
 git switch nyala/main
 git pull --ff-only origin nyala/main
-git merge --no-ff sync/code-oss-<new-tag>
-git push origin nyala/main
+git branch -d sync/code-oss-<new-tag>
 ```
+
+同步 PR 由 GitHub 完成合入；不要在本地再次 merge 或 push `nyala/main`，以免绕过分支保护和必需检查。
 
 ## 安全修复和紧急回补
 

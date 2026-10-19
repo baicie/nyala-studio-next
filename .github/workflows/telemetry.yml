@@ -3,7 +3,7 @@ name: 'Telemetry'
 on:
   pull_request:
     branches:
-      - main
+      - nyala/main
       - 'release/*'
 
 permissions: {}

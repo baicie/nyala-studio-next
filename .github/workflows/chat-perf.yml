@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       test_build:
-        description: "Branch, PR ref, commit SHA, or version to test (e.g. \"my-feature\", \"refs/pull/12345/head\", \"1.115.0\"). Default: current pipeline branch (probably main)."
+        description: "Branch, PR ref, commit SHA, or version to test (e.g. \"my-feature\", \"refs/pull/12345/head\", \"1.115.0\"). Default: current pipeline branch (probably nyala/main)."
         required: false
         type: string
       runs:

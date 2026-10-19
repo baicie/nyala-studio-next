@@ -3,7 +3,7 @@ name: chat-lib tests
 on:
   pull_request:
     branches:
-      - main
+      - nyala/main
       - 'release/*'
   workflow_dispatch:
 
