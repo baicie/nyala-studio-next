@@ -3,7 +3,7 @@
 ## 开发日常
 
 1. `git status` 检查工作树，使用锁定 Node/npm/Rust Toolchain；别把 package manager 从 npm 偷换到 pnpm。
-2. 从 `nyala/main` 开 feat 分支，任务关联 Backlog/ADR。
+2. 从 `nyala/main` 开 `feat/<topic>` 或 `fix/<topic>` 分支，任务关联 Backlog/ADR；分支规则见 [26](26-branching-and-upstream-sync.md)。
 3. 先本地测试最小范围，写一段“学习了什么 IDE 机制”。
 4. 提交/PR 必含对应运行日志；没有执行的检查明确说明 `not run`。
 5. 重大故障写一份 RCA（症状、Root Cause、回归用例、修复）。
@@ -23,7 +23,14 @@
 
 ## 上游版本升级
 
-按 [16](16-upstream-trimming.md) 通过临时 Integration branch 执行，一次升级建议分为：Core Build -> Product Identity -> Contribution -> Rust Bridge -> Extension Host -> Desktop E2E -> Packaging。
+按 [26](26-branching-and-upstream-sync.md) 使用 `sync/code-oss-<tag>` 执行，一次升级建议分为：Core Build -> Product Identity -> Contribution -> Rust Bridge -> Extension Host -> Desktop E2E -> Packaging。
+
+## 分支例行检查
+
+- 每周确认 `nyala/main` 与 `origin/nyala/main` 一致，没有未合并的短期分支。
+- 每月检查 `upstream` 最新稳定 Tag、安全公告、Node/Electron/native dependency 变化。
+- 同步或安全回补完成后，更新 `upstream-base.json`、Patch Ledger 和兼容性报告。
+- 发现主线需要 force push、无审查的大型 merge 或未记录的上游补丁时，暂停合入并开维护 Issue。
 
 ## Bug 严重度
 

@@ -6,14 +6,18 @@
 
 ## Git remote/branches
 
+完整的分支命名、PR 保护和同步命令以[分支模型与上游同步规则](26-branching-and-upstream-sync.md)为准；本节保留补丁预算和上游升级的设计约束。
+
 ```text
 upstream: microsoft/vscode
 origin:   OWNER/nyala-studio (Fork preserving history)
 branches:
   nyala/main                # 唯一可发布主线
-  integration/vscode-1.xxx  # 上游升级测试
-  feat/sql-*                # 产品功能
+  sync/code-oss-<tag>       # 上游稳定 Tag 同步
+  feat/<topic>              # 产品功能
+  fix/<topic>               # 缺陷修复
   security/backport-*       # 安全修复
+  release/<version>         # 发布候选
   experiment/tauri-*        # 有固定基线的实验，不追主线
   experiment/minimal-*      # 打包瘦身研究
 ```
@@ -33,7 +37,7 @@ branches:
 ## 上游升级操作手册
 
 1. `git fetch upstream --tags`，确定新的 Stable Tag，审查 release note/Node/runtime/API/内置扩展与许可变化。
-2. 从 `nyala/main` 拉 `integration/vscode-newtag`，合并指定 Tag。不要在正式主线直接执行大型 merge。
+2. 从 `nyala/main` 拉 `sync/code-oss-<tag>`，合并指定稳定 Tag。不要在正式主线直接执行大型 merge。
 3. 输出冲突类别：产品 branding、入口、service API、build scripts、E2E、发行服务、Extension Host。
 4. 先保证 Code OSS core 构建，再启用 Nyala Contributions，再 Rust 桥接，再 UI/E2E。
 5. 重新审计新版 `product.json` 可能新增的外部服务 URL、Telemetry、默认 Agent 配置。
@@ -42,7 +46,7 @@ branches:
 ```bash
 # 样例：实际 tag 按发布时确定
 git fetch upstream --tags
-git switch -c integration/vscode-next nyala/main
+git switch -c sync/code-oss-<new-tag> nyala/main
 git merge <new-stable-tag>
 # 修冲突、构建、测 E2E；不能自动把失败忽略后 merge
 ```

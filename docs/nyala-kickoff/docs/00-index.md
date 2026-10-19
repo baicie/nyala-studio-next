@@ -27,6 +27,7 @@
 | 23 | [风险清单](23-risks.md) | 风险矩阵与触发条件 |
 | 24 | [维护与文档治理](24-maintainer-playbook.md) | 升级、Bug、发布例行操作 |
 | 25 | [架构边界与编码规约](25-engineering-rules.md) | 跨层依赖、命名、测试 |
+| 26 | [分支模型与上游同步](26-branching-and-upstream-sync.md) | 分支命名、PR、Code OSS Tag 同步、安全回补 |
 | ADR | [ADR 目录](adr/README.md) | 关键决策与变更历史 |
 
 ## 推荐维护流程

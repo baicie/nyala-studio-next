@@ -37,3 +37,10 @@
 ## 文档规则
 
 新领域能力先更新相关 Design/ADR/测试矩阵。Roadmap 只记正式目标，研究型实验写独立 EXPERIMENT 记录。代码实现不同于文档时以测试/实际代码为准并立即修订，不允许文档长时间虚构功能已完成。
+
+## 分支和上游规则
+
+- 产品稳定主线为 `nyala/main`；功能、修复、同步、安全回补和实验使用带类型的短期分支。
+- 分支不使用 `codex/*` 前缀；命名规则和生命周期以 [26 · 分支模型与上游同步](26-branching-and-upstream-sync.md) 为准。
+- Code OSS 只从明确的稳定 Release Tag 同步，不直接追踪 `upstream/main`。
+- `nyala/main` 禁止 force push、历史重写和未审查的大型同步；所有同步必须更新基线、Patch Ledger 和兼容性报告。

@@ -4,6 +4,8 @@ Nyala Studio is a Code OSS based, SQL first desktop IDE. This repository starts 
 
 The project design, architecture boundaries, ADRs, and P0 acceptance criteria are in [`docs/nyala-kickoff/`](docs/nyala-kickoff/). The upstream baseline, Node.js version, and package manager are recorded in [`nyala/upstream-base.json`](nyala/upstream-base.json).
 
+Branching and Code OSS synchronization follow [`docs/nyala-kickoff/docs/26-branching-and-upstream-sync.md`](docs/nyala-kickoff/docs/26-branching-and-upstream-sync.md). The stable product branch is `nyala/main`; use `feat/*`, `fix/*`, `sync/code-oss-*`, `security/backport-*`, and `release/*` for short-lived work. The repository does not use `codex/*` branches.
+
 Development uses Node.js `24.18.0` and npm:
 
 ```bash

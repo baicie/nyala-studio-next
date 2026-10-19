@@ -23,7 +23,7 @@ Nyala 是一个开源学习型 SQL IDE 项目：沿用 VS Code Workbench 原生�
 
 ## 快速入门
 
-先看 `START-HERE.md`，再看 `docs/04-code-oss-bootstrap.md`。Fork 应保留 Code OSS 原始许可与版权通知，品牌身份独立；不要把“更小安装包”作为第一个里程碑。
+先看 `START-HERE.md`，再看 `docs/04-code-oss-bootstrap.md` 和 [分支模型与上游同步](docs/26-branching-and-upstream-sync.md)。Fork 应保留 Code OSS 原始许可与版权通知，品牌身份独立；不要把“更小安装包”作为第一个里程碑。
 
 ## 主要模块（规划）
 

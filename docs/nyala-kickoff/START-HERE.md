@@ -15,6 +15,7 @@
 4. [SQL Runtime 与协议](docs/07-sql-runtime.md)、[RPC](docs/08-ipc-contract.md)：业务底座。
 5. [路线图](docs/19-roadmap.md)及[任务拆分](docs/20-backlog.md)：每阶段可验收。
 6. [IDE 源码学习地图](docs/21-learning-path.md)：每做一块，理解一块。
+7. [分支模型与上游同步](docs/26-branching-and-upstream-sync.md)：日常开发、PR 和 Code OSS Release Tag 同步规则。
 
 ## 第一周不要干什么
 
