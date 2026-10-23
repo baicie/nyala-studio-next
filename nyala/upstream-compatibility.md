@@ -37,6 +37,7 @@ git diff --check                        passed
 - SQL Runtime、Rust Sidecar、连接驱动、查询执行或结果网格；
 - Reload Window 后的自动化生命周期测试、完整桌面 E2E 和发布包回归；
 - 上游 Microsoft 服务、Marketplace 或 Copilot 的可再分发授权。
+- 产品配置中的 disabled Chat 不会注册默认扩展/供应商入口，也不会触发 Microsoft 账户探测；该约束由产品基线校验覆盖。
 
 ## 下一步验收
 
