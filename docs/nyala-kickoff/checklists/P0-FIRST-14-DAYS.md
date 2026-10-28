@@ -26,5 +26,5 @@
 
 - [x] 运行 P0 compile/typecheck/build-fast/hygiene、定向 lint、JSON 检查和脚本语法检查。
 - [x] 记录 [patch ledger](../../../nyala/patch-ledger.md) 与第一份 [upstream compatibility report](../../../nyala/upstream-compatibility.md)。
-- [ ] 更新 P1 RPC 合同及任务 Issue：设计文档与示例已在包内，Rust Runtime 尚未开始实现。
+- [x] 更新 P1 RPC 合同：已固化为可执行合同 [`nyala/rpc/README.md`](../../../nyala/rpc/README.md)（v1 envelope schema、错误码表、一致性样例），`npm run nyala:validate-rpc` 通过；Rust Runtime 本身尚未开始实现，实现任务按 [backlog](../docs/20-backlog.md) N-101..N-110 推进。
 - [x] 记录限制和恢复计划；P0 Bootstrap 已完成，SQL 功能与跨平台发行不在本次完成范围。

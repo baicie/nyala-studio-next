@@ -1,0 +1,1499 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nyala.studio/rpc/v1/nyala-rpc.v1.schema.json",
+  "title": "Nyala RPC envelope v1.0",
+  "description": "Nyala Studio stdio RPC v1.0 的可执行合同。成功响应的 result 由校验脚本按配对请求的方法做方法级校验。",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/notification"
+    },
+    {
+      "$ref": "#/$defs/success"
+    },
+    {
+      "$ref": "#/$defs/failure"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z]{1,4}_[A-Za-z0-9]{1,64}$"
+    },
+    "cell": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "null"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "bool"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "int64"
+            },
+            "text": {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "float64"
+            },
+            "value": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "decimal"
+            },
+            "text": {
+              "type": "string",
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "iso"
+          ],
+          "properties": {
+            "type": {
+              "const": "timestampTz"
+            },
+            "iso": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "iso"
+          ],
+          "properties": {
+            "type": {
+              "const": "date"
+            },
+            "iso": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "encoding",
+            "data"
+          ],
+          "properties": {
+            "type": {
+              "const": "bytes"
+            },
+            "encoding": {
+              "const": "base64"
+            },
+            "data": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "data"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "kind",
+            "retryable"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]*$"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "safeDetail": {
+              "type": "string"
+            },
+            "executionId": {
+              "$ref": "#/$defs/id"
+            },
+            "sessionId": {
+              "$ref": "#/$defs/id"
+            },
+            "sqlState": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "runtime.hello"
+            },
+            "params": {
+              "$ref": "#/$defs/method.runtime.hello.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "runtime.health"
+            },
+            "params": {
+              "$ref": "#/$defs/method.runtime.health.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "connection.test"
+            },
+            "params": {
+              "$ref": "#/$defs/method.connection.test.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "connection.open"
+            },
+            "params": {
+              "$ref": "#/$defs/method.connection.open.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "connection.close"
+            },
+            "params": {
+              "$ref": "#/$defs/method.connection.close.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "connection.listSessions"
+            },
+            "params": {
+              "$ref": "#/$defs/method.connection.listSessions.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "metadata.listObjects"
+            },
+            "params": {
+              "$ref": "#/$defs/method.metadata.listObjects.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "metadata.describe"
+            },
+            "params": {
+              "$ref": "#/$defs/method.metadata.describe.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "query.execute"
+            },
+            "params": {
+              "$ref": "#/$defs/method.query.execute.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "query.cancel"
+            },
+            "params": {
+              "$ref": "#/$defs/method.query.cancel.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "query.getState"
+            },
+            "params": {
+              "$ref": "#/$defs/method.query.getState.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "result.fetchPage"
+            },
+            "params": {
+              "$ref": "#/$defs/method.result.fetchPage.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "method": {
+              "const": "result.release"
+            },
+            "params": {
+              "$ref": "#/$defs/method.result.release.params"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "notification": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "method": {
+              "const": "query.stateChanged"
+            },
+            "params": {
+              "$ref": "#/$defs/method.query.stateChanged.params"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "jsonrpc",
+            "method",
+            "params"
+          ],
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "method": {
+              "const": "runtime.restarted"
+            },
+            "params": {
+              "$ref": "#/$defs/method.runtime.restarted.params"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "result": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "failure": {
+      "type": "object",
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.runtime.hello.params": {
+      "type": "object",
+      "required": [
+        "protocolMajor",
+        "protocolMinor",
+        "clientBuild",
+        "supportedFeatures"
+      ],
+      "properties": {
+        "protocolMajor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "protocolMinor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clientBuild": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supportedFeatures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.runtime.hello.result": {
+      "type": "object",
+      "required": [
+        "protocolMajor",
+        "protocolMinor",
+        "runtimeBuild",
+        "features",
+        "limits"
+      ],
+      "properties": {
+        "protocolMajor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "protocolMinor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtimeBuild": {
+          "type": "string",
+          "minLength": 1
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "limits": {
+          "type": "object",
+          "required": [
+            "frameMaxBytes",
+            "maxInitialRows",
+            "maxPageRows",
+            "maxResultTtlSecs",
+            "maxConcurrentExecutions"
+          ],
+          "properties": {
+            "frameMaxBytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 8388608
+            },
+            "maxInitialRows": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxPageRows": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxResultTtlSecs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxConcurrentExecutions": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.runtime.health.params": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "method.runtime.health.result": {
+      "type": "object",
+      "required": [
+        "status",
+        "uptimeMs",
+        "activeSessions",
+        "activeExecutions",
+        "pendingResults"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "degraded"
+          ]
+        },
+        "uptimeMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeSessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeExecutions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pendingResults": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.connection.test.params": {
+      "type": "object",
+      "required": [
+        "driver",
+        "path",
+        "readOnly"
+      ],
+      "properties": {
+        "driver": {
+          "const": "sqlite"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "readOnly": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.connection.test.result": {
+      "type": "object",
+      "required": [
+        "ok",
+        "elapsedMs"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "serverVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "elapsedMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.connection.open.params": {
+      "type": "object",
+      "required": [
+        "driver",
+        "path",
+        "readOnly"
+      ],
+      "properties": {
+        "driver": {
+          "const": "sqlite"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "readOnly": {
+          "type": "boolean"
+        },
+        "profileId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.connection.open.result": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "sessionGeneration",
+        "capabilities"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "driver",
+            "readOnly",
+            "cancel",
+            "supportsTransactions",
+            "supportsMetadata"
+          ],
+          "properties": {
+            "driver": {
+              "const": "sqlite"
+            },
+            "readOnly": {
+              "type": "boolean"
+            },
+            "cancel": {
+              "type": "string",
+              "enum": [
+                "none",
+                "cooperative"
+              ]
+            },
+            "supportsTransactions": {
+              "type": "boolean"
+            },
+            "supportsMetadata": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.connection.close.params": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "sessionGeneration"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionGeneration": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.connection.close.result": {
+      "type": "object",
+      "required": [
+        "closed"
+      ],
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.connection.listSessions.params": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "method.connection.listSessions.result": {
+      "type": "object",
+      "required": [
+        "sessions"
+      ],
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "sessionId",
+              "sessionGeneration",
+              "driver",
+              "state"
+            ],
+            "properties": {
+              "sessionId": {
+                "$ref": "#/$defs/id"
+              },
+              "sessionGeneration": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "driver": {
+                "const": "sqlite"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed",
+                  "lost"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.metadata.listObjects.params": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "sessionGeneration",
+        "limit"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "table",
+              "view",
+              "index"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.metadata.listObjects.result": {
+      "type": "object",
+      "required": [
+        "objects",
+        "hasMore",
+        "nextCursor"
+      ],
+      "properties": {
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "table",
+                  "view",
+                  "index"
+                ]
+              },
+              "schema": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.metadata.describe.params": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "sessionGeneration",
+        "object"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "object": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.metadata.describe.result": {
+      "type": "object",
+      "required": [
+        "columns"
+      ],
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "ordinal",
+              "name",
+              "nativeType",
+              "nullable"
+            ],
+            "properties": {
+              "ordinal": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nativeType": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nullable": {
+                "type": "boolean"
+              },
+              "primaryKey": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.query.execute.params": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "sessionGeneration",
+        "sql",
+        "mode",
+        "timeoutMs",
+        "maxInitialRows"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sql": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "statement",
+            "selection",
+            "script"
+          ]
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "maxInitialRows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "cancelTokenId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.query.execute.result": {
+      "type": "object",
+      "required": [
+        "executionId",
+        "state",
+        "sequence"
+      ],
+      "properties": {
+        "executionId": {
+          "$ref": "#/$defs/id"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "streaming",
+            "completed",
+            "failed",
+            "cancel_requested",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.query.cancel.params": {
+      "type": "object",
+      "required": [
+        "executionId"
+      ],
+      "properties": {
+        "executionId": {
+          "$ref": "#/$defs/id"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "user",
+            "timeout",
+            "shutdown"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.query.cancel.result": {
+      "type": "object",
+      "required": [
+        "accepted",
+        "state"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "streaming",
+            "completed",
+            "failed",
+            "cancel_requested",
+            "cancelled",
+            "unknown"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.query.getState.params": {
+      "type": "object",
+      "required": [
+        "executionId"
+      ],
+      "properties": {
+        "executionId": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.query.getState.result": {
+      "type": "object",
+      "required": [
+        "executionId",
+        "state",
+        "sequence"
+      ],
+      "properties": {
+        "executionId": {
+          "$ref": "#/$defs/id"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "streaming",
+            "completed",
+            "failed",
+            "cancel_requested",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resultIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "error": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elapsedMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.result.fetchPage.params": {
+      "type": "object",
+      "required": [
+        "resultId",
+        "limit"
+      ],
+      "properties": {
+        "resultId": {
+          "$ref": "#/$defs/id"
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.result.fetchPage.result": {
+      "type": "object",
+      "required": [
+        "columns",
+        "rows",
+        "hasMore",
+        "nextCursor"
+      ],
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "ordinal",
+              "name",
+              "nativeType"
+            ],
+            "properties": {
+              "ordinal": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nativeType": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/cell"
+            }
+          }
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rowCountEstimate": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.result.release.params": {
+      "type": "object",
+      "required": [
+        "resultId"
+      ],
+      "properties": {
+        "resultId": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.result.release.result": {
+      "type": "object",
+      "required": [
+        "released"
+      ],
+      "properties": {
+        "released": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.query.stateChanged.params": {
+      "type": "object",
+      "required": [
+        "executionId",
+        "sequence",
+        "state"
+      ],
+      "properties": {
+        "executionId": {
+          "$ref": "#/$defs/id"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "streaming",
+            "completed",
+            "failed",
+            "cancel_requested",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "resultIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "elapsedMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "additionalProperties": false
+    },
+    "method.runtime.restarted.params": {
+      "type": "object",
+      "required": [
+        "reason",
+        "pendingExecutions"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pendingExecutions": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "none"
+          ]
+        },
+        "previousBuild": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
