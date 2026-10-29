@@ -146,7 +146,7 @@ Created → Queued → Running → Streaming → Completed
 npm run nyala:validate-rpc
 ```
 
-脚本 [`scripts/nyala/validate-rpc-contract.mjs`](../../scripts/nyala/validate-rpc-contract.mjs) 做四件事：
+脚本 [`scripts/nyala/validate-rpc-contract.ts`](../../scripts/nyala/validate-rpc-contract.ts) 做四件事：
 
 1. **分帧**：把每条样例按 4 字节 LE 前缀编码，再用逐字节喂入的解码器还原，校验半包/粘包、零长度拒绝、超限拒绝。
 2. **Schema**：用内置的 JSON Schema 子集求值器校验 envelope 是否符合 [`v1/nyala-rpc.v1.schema.json`](v1/nyala-rpc.v1.schema.json)。

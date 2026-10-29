@@ -17,7 +17,7 @@ kickoff 设计包给出了 `1.0` 协议的**意图**（Length-prefixed JSON、JS
 2. `nyala/rpc/v1/nyala-rpc.v1.schema.json` 是 envelope + 每个方法 params/result 的 JSON Schema（2020-12）。
 3. `nyala/rpc/v1/error-codes.json` 是 `kind ↔ code ↔ retryable` 的唯一映射表，领域错误固定占用 `-32001..-32099`。
 4. `nyala/rpc/v1/conformance.ndjson` 是唯一回归输入：一个完整会话（hello → health → connection → metadata → query → fetchPage → release → 错误 → cancel → restart）。
-5. `scripts/nyala/validate-rpc-contract.mjs`（`npm run nyala:validate-rpc`）离线校验：逐字节分帧还原、半包/粘包、零长度与超限拒绝、schema 校验、请求/响应配对与方法级 result 校验、通知 sequence 单调、错误码表一致、README 与 schema 的方法清单不漂移。
+5. `scripts/nyala/validate-rpc-contract.ts`（`npm run nyala:validate-rpc`）离线校验：逐字节分帧还原、半包/粘包、零长度与超限拒绝、schema 校验、请求/响应配对与方法级 result 校验、通知 sequence 单调、错误码表一致、README 与 schema 的方法清单不漂移。
 
 ## 理由
 

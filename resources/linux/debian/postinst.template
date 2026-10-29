@@ -3,21 +3,41 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License. See License.txt in the project root for license information.
 
-# Symlink the Nyala Studio command to /usr/bin.
+@@COPILOT_LINK_HELPER@@
+
+# Symlink bin command to /usr/bin
 rm -f /usr/bin/@@NAME@@
 ln -s /usr/share/@@NAME@@/bin/@@NAME@@ /usr/bin/@@NAME@@
 
-# Register Nyala Studio as an optional editor.
+if [ "$1" = "configure" ]; then
+	# Ask at medium priority so the default applies unless the question is preseeded or asked by dpkg-reconfigure.
+	# Only the editions that manage /usr/bin/copilot ask it.
+	case "@@NAME@@" in
+		code|code-insiders)
+			if [ -e '/usr/share/debconf/confmodule' ]; then
+				. /usr/share/debconf/confmodule
+				db_input medium @@NAME@@/add-copilot-command || true
+				db_go || true
+			fi
+			;;
+	esac
+	vscode_copilot_link install "@@NAME@@" || :
+fi
+
+# Register code in the alternatives system
+# Priority of 0 should never make code the default editor in auto mode as most
+# developers would prefer a terminal editor as the default.
 update-alternatives --install /usr/bin/editor editor /usr/bin/@@NAME@@ 0
 
+# Install the desktop entry
 if hash update-desktop-database 2>/dev/null; then
 	update-desktop-database
 fi
 
+# Update mimetype database to pickup workspace mimetype
 if hash update-mime-database 2>/dev/null; then
 	update-mime-database /usr/share/mime
 fi
 
-# Nyala Studio does not configure a package repository during the development
-# bootstrap. A Nyala-hosted update channel requires a separate signing and
-# release review before this script is enabled.
+# Nyala Studio does not register a Microsoft apt repository or ship a Microsoft signing key.
+# A Nyala-hosted update channel requires separate signing and release review before it is enabled.
