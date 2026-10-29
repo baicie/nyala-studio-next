@@ -5,7 +5,7 @@
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 尚未开始写代码**，P0 清单只剩「Reload Window / 生命周期自动化回归」一项未关闭。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health/结构化错误）已在 `feat/p1-rust-runtime` 实现、待审核**，N-103 起未开始；P0 清单只剩「Reload Window / 生命周期自动化回归」一项未关闭。
 
 ## 分支与 PR
 
@@ -16,6 +16,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
 | `feat/progress-snapshot` | 本文档 | → `nyala/main`（PR #13） | 随本快照合并 |
+| `feat/p1-rust-runtime` | N-101/N-102 提交 | → `nyala/main` | `rust/` Runtime crate，待开 Draft PR 审核，未合并 |
 
 > Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.ts`、`.github/workflows/nyala-ci.yml`、`product.json` 的 Chat/认证置空改动已随 **PR #8** 进入 `nyala/main`；`nyala/rpc/` 合同随 **PR #11** 进入。
 
@@ -44,13 +45,19 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - `npm run nyala:validate-rpc`：分帧半包/粘包/零长度/超限、schema、请求响应配对、sequence 单调、错误码一致、README 与 schema 防漂移、负向对照。
 - ADR：`docs/adr/0001-rpc-contract-v1.md`（随 PR #11 引入，合并后才有该文件）。
 
+### P1.1 · Rust Runtime N-101/N-102（`feat/p1-rust-runtime`，待审核）
+
+- `rust/` 是独立的 Cargo workspace（不进上游 `cli/`），单 crate `rust/crates/nyala-runtime`：4 字节 LE 分帧（半包、粘包、零长度、超限）、envelope 解析、结构化错误（与 `error-codes.json` 逐项比对）、`runtime.hello`（major 不匹配回 `PROTOCOL_MISMATCH` 并以退出码 2 结束）、`runtime.health`。
+- 一致性测试直接读取 `nyala/rpc/v1/`；真实进程测试验证 stdout 只有协议帧、日志只在 stderr。
+- 本地证据（Windows 11，cargo 1.96.0）：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`（47 个）PASS；GitHub Actions 没有 Rust job，NOT RUN。目录选择、合同未写死之处和合同缺口见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)。
+
 ## 未完成 / 已知缺口
 
 1. **CI 仍然跑不出结果**：三个 PR 的检查全红都是 GitHub 账单问题（`The job was not started because recent account payments have failed or your spending limit needs to be increased`），任务根本没启动，与代码无关；合并后仍需解决，否则后续 PR 都拿不到真实检查。
 2. **P0 唯一未勾项**：Reload Window / 生命周期自动化回归（[P0 清单](checklists/P0-FIRST-14-DAYS.md) 第 22 行）。已手工验证首次启动与重复执行，缺自动化。
 3. Windows / Linux 原生启动、安装包、签名、更新链路均未验证。
 4. Chat / Copilot / 认证入口置空后只做过代码审计，没有系统 UI 回归。
-5. Rust Runtime（P1.1–P1.4）未开始；`nyala/rpc` 合同是它的前置条件。
+5. Rust Runtime：N-101/N-102 在 `feat/p1-rust-runtime`（待审核，未合并）；N-103 Supervisor 与 P1.2–P1.4 未开始；CI 尚无 Rust job（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md) 后续项）。
 6. 本机 `node_modules` / `out` / `.build` 已清理，恢复需要重新安装与编译（见下）。
 
 ## 治理与 CI 现状（2026-10-29）
@@ -102,7 +109,7 @@ npm run nyala:validate-rpc   # 纯 Node，无依赖，可先跑
 ```
 
 - `npm run compile` 生成 `out/`；`./scripts/code.sh` 负责 Electron 下载与启动。
-- Rust 侧当前只需 `cargo`（本机验证 `cargo 1.96.0` 可用）；`cli/` 是上游 CLI 资源，不含 Nyala Runtime。
+- Rust 侧只需 `cargo`（本机验证 `cargo 1.96.0` 可用）；Nyala Runtime 在 `rust/`（`cd rust && cargo test`），`cli/` 是上游 CLI 资源，不含 Nyala Runtime。
 - 校验基线：`npm run compile`、`npm run typecheck-client`、`npm run build-fast -- --client-only`、`npm run gulp hygiene`、定向 ESLint、`git diff --check`。
 
 ## 目录地图
@@ -114,6 +121,7 @@ npm run nyala:validate-rpc   # 纯 Node，无依赖，可先跑
 | `nyala/` | 产品元数据：upstream-base、patch-ledger、upstream-compatibility、rpc 合同 |
 | `scripts/nyala/` | 校验脚本（RPC 合同；产品基线脚本在 PR #8） |
 | `src/vs/workbench/contrib/nyala/` | Hello Workbench 贡献与 Connections 占位视图 |
+| `rust/` | Nyala Rust Runtime workspace（`crates/nyala-runtime`：N-101/N-102） |
 
 ## 移交清理记录（2026-10-28）
 

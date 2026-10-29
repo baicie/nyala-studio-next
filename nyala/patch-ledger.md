@@ -2,15 +2,17 @@
 
 更新时间：2026-10-29。基线是 Code OSS `1.143.0`，SHA
 `2d0b7506a36c1d6db9a466440131a8e01eab2289`（2026-10-29 由 `1.142.0` /
-`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime、
-连接驱动和结果网格尚未进入主线。
+`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime
+目前只有 `rust/` 下的 stdio 分帧与 hello/health（N-101/N-102，不改上游文件），连接驱动和结果网格
+尚未开始。
 
 ## 计数口径
 
 `nyala/upstream-base.json` 的 `patchCount` 为 `46`：44 个已跟踪的上游文件发生修改，另有 2
 个 Nyala Workbench 源文件新增。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
-`.github/workflows/nyala-ci.yml`、`scripts/nyala/` 和 `nyala/` 元数据不计入该数字，但仍属于
-当前工作树，提交前应随变更审阅。
+`.github/workflows/nyala-ci.yml`、`scripts/nyala/`、`nyala/` 元数据和 Nyala 自有的 `rust/`
+Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runtime-workspace.md)）不计入
+该数字，但仍属于当前工作树，提交前应随变更审阅。
 
 `46` 是治理 PR #15/#16/#17 合并到 `nyala/main` 后的实测值。相对 1.143.0 同步时的 `45`
 只增加 1 个：`.github/dependabot.yml`（新增的上游跟踪文件修改）；`AGENTS.md` 与
