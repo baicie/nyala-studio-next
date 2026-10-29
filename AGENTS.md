@@ -32,3 +32,9 @@ These instructions apply to the entire Nyala Studio repository. The repository i
 - Keep changes scoped. Do not combine upstream synchronization, SQL features, and unrelated refactors in one PR.
 - Choose validation proportional to risk. For Workbench or product-entry changes, run the smallest relevant compile/typecheck/tests plus an Electron smoke check when available. For upstream sync, run the full documented sync checks.
 - Record skipped checks and their reason. Before committing, run `git diff --check` and verify no generated or temporary files are included.
+
+## Nyala governance supplement
+
+- Nyala-specific governance index: [`docs/nyala-governance/INDEX.md`](docs/nyala-governance/INDEX.md); it supplements the sources of truth above and never replaces them.
+- Code OSS upstream syncs must preserve tagged Git ancestry through a merge commit; ordinary Nyala feature PRs may squash.
+- Report evidence as PASS / FAIL / BLOCKED / NOT RUN; a CI job blocked by billing or a missing runner is neither a code failure nor a passing gate.

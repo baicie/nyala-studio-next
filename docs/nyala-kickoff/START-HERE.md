@@ -3,6 +3,7 @@
 > 文档版本：v1.0 · 2026-10-19 · **设计与 P0 Bootstrap 记录**
 > 基线：`microsoft/vscode` tag `1.142.0`，SHA `d956e8a6ac5d904486557eea07e1d6bd62a4d36f`，`.nvmrc` = `24.18.0`；当前开发版本为 `0.0.1-dev.0`。
 > 当前进度、未完成项与跨机器恢复步骤：[PROGRESS.md](PROGRESS.md)。
+> 工程治理规范（提交与 PR、上游同步、证据与门禁、领域安全）：[docs/nyala-governance/INDEX.md](../nyala-governance/INDEX.md)。
 
 ## 一句话目标
 
