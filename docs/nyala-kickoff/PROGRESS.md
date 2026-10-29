@@ -47,7 +47,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 ## 未完成 / 已知缺口
 
-1. **CI 仍然跑不出结果**：三个 PR 的检查全红都是 GitHub 账单问题（`The job was not started because recent account payments have failed or your spending limit needs to be increased`），任务根本没启动，与代码无关；合并后仍需解决，否则后续 PR 都拿不到真实检查。
+1. **CI 已能真实执行，但 Hygiene 失败**（2026-10-29 晚更新；原记录为 GitHub 账单阻断，任务未启动）：仓库转为公开后 Actions 正常启动，`Product baseline` 与 `Typecheck client` 通过；`Hygiene` 因 `nyala-ci.yml` 没有安装 `build/` 依赖而失败，详见下方表格。
 2. **P0 唯一未勾项**：Reload Window / 生命周期自动化回归（[P0 清单](checklists/P0-FIRST-14-DAYS.md) 第 22 行）。已手工验证首次启动与重复执行，缺自动化。
 3. Windows / Linux 原生启动、安装包、签名、更新链路均未验证。
 4. Chat / Copilot / 认证入口置空后只做过代码审计，没有系统 UI 回归。
@@ -64,18 +64,18 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
   - 保留：`nyala-ci.yml`（自有门禁）、`chat-lib-package.yml` 与 `chat-perf.yml`（仅手动触发）、`sessions-e2e.yml`（仅手动触发）、`pr-*-test.yml`（仅 `workflow_call`，由已停用的 `pr.yml` 调用）。
   - 恢复单条：`gh api -X PUT repos/baicie/nyala-studio-next/actions/workflows/<workflow-id>/enable`；`gh api repos/baicie/nyala-studio-next/actions/workflows --jq '.workflows[] | "\(.id) \(.state) \(.path)"'` 可查看状态。
 
-### BLOCKED（只能由仓库所有者操作）
+### 原 BLOCKED 项（只能由仓库所有者操作；2026-10-29 晚更新）
 
-| 事项 | 事实证据 | 用户操作 | 验收标准 |
+| 事项 | 原证据（2026-10-29 早） | 当前状态（2026-10-29 晚） | 剩余操作与验收 |
 |---|---|---|---|
-| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；2026-10-29 的 Run 全部 `failure`/`queued` | 在 Billing & plans 恢复 Actions 额度，或改 self-hosted runner / 公开仓库 | `nyala-ci.yml` 的 `Product baseline` 与 `Client typecheck and hygiene` 出现真实 step 并给出结论（红=代码问题，绿=通过） |
-| 分支保护 / rulesets 不可用 | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 与 `/rulesets` 均 403：`Upgrade to GitHub Pro or make this repository public` | 升级 GitHub 计划（Pro/Team）或接受人工门禁流程 | protection API 返回 200，且启用 required PR + required status checks；在此之前**不宣称仓库已受保护** |
+| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；当天的 Run 全部 `failure`/`queued`，Job 为 0 steps | **已解除**：仓库转为公开后，PR #21 的 [Run 40863715504](https://github.com/baicie/nyala-studio-next/actions/runs/40863715504)（attempt 2）执行了真实 step。`Product baseline` PASS；`Client typecheck and hygiene` 中 `Typecheck client` PASS，`Hygiene` FAIL，`Check diff` 被跳过 | Hygiene 失败原因是 `ERR_MODULE_NOT_FOUND: gulp-merge-json`：该包只在 `build/package.json` 声明，而 `nyala-ci.yml` 只在根目录跑 `npm ci --ignore-scripts`，postinstall 被跳过，`build/` 依赖未安装。这是 workflow 缺陷，不是计费问题，需单独 PR 修复；验收为该 Job 全绿 |
+| 分支保护 / rulesets 不可用 | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 与 `/rulesets` 均 403：`Upgrade to GitHub Pro or make this repository public` | **可配置但未开启**：`/branches/nyala/main/protection` 返回 404 `Branch not protected`，`/rulesets` 返回 `[]` | 由仓库所有者决定是否启用 required PR + required status checks；protection API 返回 200 之前**不宣称仓库已受保护** |
 
 ### CODEOWNERS 结论
 
-`.github/CODEOWNERS` 全部指向上游微软员工（`@lszomoru`、`@alexdima` 等）。由于分支保护在当前计划下不可用，该文件既无强制力、也无法真正请求到这些 reviewer，因此**本次不改文件**（避免无意义的上游 patch）。等分支保护可用时，再新增 Nyala 自有 owner 段；在此之前依靠 PR 模板 + 人工审查 + 证据记录。
+`.github/CODEOWNERS` 全部指向上游微软员工（`@lszomoru`、`@alexdima` 等）。由于分支保护尚未开启（2026-10-29 起已可配置），该文件既无强制力、也无法真正请求到这些 reviewer，因此**本次不改文件**（避免无意义的上游 patch）。等分支保护开启时，再新增 Nyala 自有 owner 段；在此之前依靠 PR 模板 + 人工审查 + 证据记录。
 
-### 人工门禁替代（保护不可用期间）
+### 人工门禁替代（分支保护开启前）
 
 1. PR 必须基于最新 `nyala/main`，模板中写明 PASS/FAIL/BLOCKED/NOT RUN。
 2. 本地证据至少包含：`git diff --check`、按改动类型选择的最小验证、以及"未运行项及原因"。
@@ -84,7 +84,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 ## 下一步（建议顺序）
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
-2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted）。~~在 `nyala-ci.yml` 增加 `npm run nyala:validate-rpc`~~ 已存在（`.github/workflows/nyala-ci.yml` 第 39 行，2026-10-29 核对）。
+2. ~~解决 CI 账单~~ 已解除（2026-10-29，仓库转为公开）；剩下的是修 `nyala-ci.yml` 的 `build/` 依赖安装，让 Hygiene 能跑通。~~在 `nyala-ci.yml` 增加 `npm run nyala:validate-rpc`~~ 已存在（`.github/workflows/nyala-ci.yml` 第 39 行，2026-10-29 核对）。
 3. 补 P0 生命周期回归：完整安装 + 编译后跑 Electron smoke（命令见下），把结果写回 P0 清单。
 4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
 
