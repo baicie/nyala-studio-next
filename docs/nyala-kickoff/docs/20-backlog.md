@@ -16,6 +16,8 @@
 
 ## P1 · Rust SQL Runtime
 
+> 合同基线：[`nyala/rpc/README.md`](../../../nyala/rpc/README.md) 已把协议 `1.0` 固化为可执行合同（envelope schema、错误码表、一致性样例、`npm run nyala:validate-rpc`）。N-101、N-102、N-110 的验收以该合同为准；实现与合同不一致时先改合同再改代码。
+
 | ID | Priority | Depends | 任务 | 验收/证据 |
 |---|---|---|---|---|
 | N-101 | P0 | N-001 | Runtime crate + Stdio framing | half-frame/oversize/error 测试 |

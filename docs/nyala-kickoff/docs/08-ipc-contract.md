@@ -91,3 +91,5 @@ Error taxonomy：`AUTH_FAILED`,`NETWORK_UNREACHABLE`,`TLS_ERROR`,`QUERY_TIMEOUT`
 ## 版本策略
 
 协议 `1.0` 在 P1 固定；字段扩展优先可选，不改变既有 enum 默认语义；破坏性变更升级 major。维护 JSON Schema + 类型生成工具与兼容性测试，不允许 TS/Rust 手工演化产生漂移。
+
+本文件是设计意图；**可执行合同**见 [`nyala/rpc/README.md`](../../../nyala/rpc/README.md)（envelope schema、错误码表、一致性样例，`npm run nyala:validate-rpc`）。两者冲突时以合同为准，并回头修正本文件。

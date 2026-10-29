@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "1.0",
+  "note": "Nyala RPC 领域错误码表。kind 是稳定标识，code 是 JSON-RPC 数值映射；新增错误必须同时更新 schema 与 conformance.ndjson。",
+  "reservedRange": {
+    "jsonRpc": [
+      -32700,
+      -32600
+    ],
+    "nyalaDomain": [
+      -32099,
+      -32001
+    ]
+  },
+  "codes": [
+    {
+      "kind": "PARSE_ERROR",
+      "code": -32700,
+      "retryable": false,
+      "layer": "transport",
+      "description": "帧 payload 不是合法 JSON。"
+    },
+    {
+      "kind": "INVALID_REQUEST",
+      "code": -32600,
+      "retryable": false,
+      "layer": "transport",
+      "description": "envelope 缺字段、类型错误或空帧。"
+    },
+    {
+      "kind": "METHOD_NOT_FOUND",
+      "code": -32601,
+      "retryable": false,
+      "layer": "transport",
+      "description": "方法未在 v1 目录中注册。"
+    },
+    {
+      "kind": "INVALID_PARAMS",
+      "code": -32602,
+      "retryable": false,
+      "layer": "transport",
+      "description": "params 未通过方法 schema 校验。"
+    },
+    {
+      "kind": "INTERNAL",
+      "code": -32603,
+      "retryable": false,
+      "layer": "transport",
+      "description": "Runtime 内部错误，不含敏感细节。"
+    },
+    {
+      "kind": "AUTH_FAILED",
+      "code": -32001,
+      "retryable": false,
+      "layer": "domain",
+      "description": "认证失败（SQLite 不涉及，保留给网络驱动）。"
+    },
+    {
+      "kind": "NETWORK_UNREACHABLE",
+      "code": -32002,
+      "retryable": true,
+      "layer": "domain",
+      "description": "目标数据库不可达。"
+    },
+    {
+      "kind": "TLS_ERROR",
+      "code": -32003,
+      "retryable": false,
+      "layer": "domain",
+      "description": "TLS 握手或证书校验失败。"
+    },
+    {
+      "kind": "QUERY_TIMEOUT",
+      "code": -32004,
+      "retryable": false,
+      "layer": "domain",
+      "description": "超过 deadlineMs 或驱动超时。"
+    },
+    {
+      "kind": "QUERY_CANCELLED",
+      "code": -32005,
+      "retryable": false,
+      "layer": "domain",
+      "description": "取消已生效，执行进入 cancelled。"
+    },
+    {
+      "kind": "SQL_SYNTAX",
+      "code": -32006,
+      "retryable": false,
+      "layer": "domain",
+      "description": "SQL 语法错误，附带 sqlState。"
+    },
+    {
+      "kind": "READ_ONLY_DENIED",
+      "code": -32007,
+      "retryable": false,
+      "layer": "domain",
+      "description": "只读会话拒绝写语句。"
+    },
+    {
+      "kind": "PERMISSION_DENIED",
+      "code": -32008,
+      "retryable": false,
+      "layer": "domain",
+      "description": "数据库权限不足。"
+    },
+    {
+      "kind": "RESULT_EXPIRED",
+      "code": -32009,
+      "retryable": false,
+      "layer": "domain",
+      "description": "结果句柄过期或已释放。"
+    },
+    {
+      "kind": "INVALID_SESSION",
+      "code": -32010,
+      "retryable": false,
+      "layer": "domain",
+      "description": "sessionId 未知或 generation 不匹配。"
+    },
+    {
+      "kind": "PROTOCOL_MISMATCH",
+      "code": -32011,
+      "retryable": false,
+      "layer": "domain",
+      "description": "protocolMajor 不一致或能力位缺失。"
+    },
+    {
+      "kind": "RUNTIME_LOST",
+      "code": -32012,
+      "retryable": true,
+      "layer": "domain",
+      "description": "Runtime 子进程退出，句柄全部作废。"
+    },
+    {
+      "kind": "UNKNOWN_COMMIT_STATUS",
+      "code": -32013,
+      "retryable": false,
+      "layer": "domain",
+      "description": "事务终态不可证明，禁止自动重试。"
+    },
+    {
+      "kind": "RESOURCE_LIMIT",
+      "code": -32014,
+      "retryable": false,
+      "layer": "domain",
+      "description": "超过帧/行数/内存/TTL 限额。"
+    }
+  ]
+}

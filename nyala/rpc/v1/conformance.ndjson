@@ -1,0 +1,33 @@
+{"jsonrpc":"2.0","id":"rq_001","method":"runtime.hello","params":{"protocolMajor":1,"protocolMinor":0,"clientBuild":"0.0.1-dev.0","supportedFeatures":["sqlite","metadata.listObjects","query.execute","query.cancel","result.fetchPage","result.release"]}}
+{"jsonrpc":"2.0","id":"rq_001","result":{"protocolMajor":1,"protocolMinor":0,"runtimeBuild":"0.1.0-dev.0","features":["sqlite","metadata.listObjects","query.execute","query.cancel","result.fetchPage","result.release"],"limits":{"frameMaxBytes":8388608,"maxInitialRows":200,"maxPageRows":1000,"maxResultTtlSecs":300,"maxConcurrentExecutions":4}}}
+{"jsonrpc":"2.0","id":"rq_002","method":"runtime.health","params":{}}
+{"jsonrpc":"2.0","id":"rq_002","result":{"status":"ok","uptimeMs":1240,"activeSessions":1,"activeExecutions":0,"pendingResults":1}}
+{"jsonrpc":"2.0","id":"rq_003","method":"connection.test","params":{"driver":"sqlite","path":"/tmp/nyala-demo.sqlite","readOnly":true}}
+{"jsonrpc":"2.0","id":"rq_003","result":{"ok":true,"serverVersion":"3.45.1","elapsedMs":4}}
+{"jsonrpc":"2.0","id":"rq_004","method":"connection.open","params":{"driver":"sqlite","path":"/tmp/nyala-demo.sqlite","readOnly":true,"profileId":"local-demo"}}
+{"jsonrpc":"2.0","id":"rq_004","result":{"sessionId":"s_001","sessionGeneration":1,"capabilities":{"driver":"sqlite","readOnly":true,"cancel":"none","supportsTransactions":true,"supportsMetadata":true}}}
+{"jsonrpc":"2.0","id":"rq_005","method":"metadata.listObjects","params":{"sessionId":"s_001","sessionGeneration":1,"kinds":["table","view"],"cursor":null,"limit":50}}
+{"jsonrpc":"2.0","id":"rq_005","result":{"objects":[{"name":"customers","kind":"table","schema":"main"},{"name":"recent_orders","kind":"view","schema":"main"}],"hasMore":false,"nextCursor":null}}
+{"jsonrpc":"2.0","id":"rq_006","method":"query.execute","params":{"sessionId":"s_001","sessionGeneration":1,"sql":"SELECT 1 AS answer","mode":"statement","timeoutMs":30000,"maxInitialRows":200}}
+{"jsonrpc":"2.0","id":"rq_006","result":{"executionId":"ex_001","state":"queued","sequence":1}}
+{"jsonrpc":"2.0","method":"query.stateChanged","params":{"executionId":"ex_001","sequence":2,"state":"running"}}
+{"jsonrpc":"2.0","method":"query.stateChanged","params":{"executionId":"ex_001","sequence":3,"state":"completed","resultIds":["rs_001"],"elapsedMs":11}}
+{"jsonrpc":"2.0","id":"rq_007","method":"result.fetchPage","params":{"resultId":"rs_001","cursor":null,"limit":200}}
+{"jsonrpc":"2.0","id":"rq_007","result":{"columns":[{"ordinal":0,"name":"answer","nativeType":"INTEGER"}],"rows":[[{"type":"int64","text":"1"}]],"hasMore":false,"nextCursor":null,"rowCountEstimate":1}}
+{"jsonrpc":"2.0","id":"rq_008","method":"result.release","params":{"resultId":"rs_001"}}
+{"jsonrpc":"2.0","id":"rq_008","result":{"released":true}}
+{"jsonrpc":"2.0","id":"rq_009","method":"query.execute","params":{"sessionId":"s_001","sessionGeneration":1,"sql":"SELECT FROM WHERE","mode":"statement","timeoutMs":30000,"maxInitialRows":200}}
+{"jsonrpc":"2.0","id":"rq_009","error":{"code":-32006,"message":"SQL syntax error","data":{"kind":"SQL_SYNTAX","retryable":false,"sessionId":"s_001","sqlState":"1","safeDetail":"near \"FROM\": syntax error"}}}
+{"jsonrpc":"2.0","id":"rq_010","method":"query.execute","params":{"sessionId":"s_001","sessionGeneration":1,"sql":"SELECT count(*) FROM customers","mode":"statement","timeoutMs":1000,"maxInitialRows":200,"cancelTokenId":"cu_001"}}
+{"jsonrpc":"2.0","id":"rq_010","result":{"executionId":"ex_002","state":"queued","sequence":1}}
+{"jsonrpc":"2.0","id":"rq_011","method":"query.cancel","params":{"executionId":"ex_002","reason":"user"}}
+{"jsonrpc":"2.0","id":"rq_011","result":{"accepted":true,"state":"cancel_requested"}}
+{"jsonrpc":"2.0","method":"query.stateChanged","params":{"executionId":"ex_002","sequence":2,"state":"cancel_requested"}}
+{"jsonrpc":"2.0","method":"query.stateChanged","params":{"executionId":"ex_002","sequence":3,"state":"cancelled","elapsedMs":5}}
+{"jsonrpc":"2.0","id":"rq_012","method":"query.getState","params":{"executionId":"ex_002"}}
+{"jsonrpc":"2.0","id":"rq_012","result":{"executionId":"ex_002","state":"cancelled","sequence":3,"elapsedMs":5}}
+{"jsonrpc":"2.0","id":"rq_013","method":"result.fetchPage","params":{"resultId":"rs_001","cursor":null,"limit":200}}
+{"jsonrpc":"2.0","id":"rq_013","error":{"code":-32009,"message":"Result handle expired","data":{"kind":"RESULT_EXPIRED","retryable":false,"safeDetail":"result released or ttl exceeded"}}}
+{"jsonrpc":"2.0","id":"rq_014","method":"connection.close","params":{"sessionId":"s_001","sessionGeneration":1}}
+{"jsonrpc":"2.0","id":"rq_014","result":{"closed":true}}
+{"jsonrpc":"2.0","method":"runtime.restarted","params":{"reason":"unexpected-exit","pendingExecutions":"unknown","previousBuild":"0.1.0-dev.0"}}
