@@ -1,7 +1,8 @@
 # Nyala P0 Upstream Compatibility Report
 
-更新时间：2026-10-19。报告针对 macOS 原生开发环境，基线为 Code OSS `1.142.0` /
-`d956e8a6ac5d904486557eea07e1d6bd62a4d36f`，开发版本为 `0.0.1-dev.0`。
+更新时间：2026-10-29。报告针对 macOS 原生开发环境。初始化基线为 Code OSS `1.142.0` /
+`d956e8a6ac5d904486557eea07e1d6bd62a4d36f`，当前同步基线为 `1.143.0` /
+`2d0b7506a36c1d6db9a466440131a8e01eab2289`，开发版本为 `0.0.1-dev.0`。
 
 ## 已执行
 
@@ -26,6 +27,33 @@ git diff --check                        passed
 - 执行后显示 `Nyala Studio Workbench is ready.`；
 - `Nyala Connections` View 显示 `Nyala connections will appear here.`；
 - 空工作区、文本编辑、Split editor、Extension Host 基础激活和基础 Webview 渲染通过。
+
+## 1.143.0 同步回归（2026-10-29）
+
+同步通过 `git merge 1.143.0` 完成，合并提交保留上游 731 个提交作为祖先（不 squash、不 rebase）。
+53 个冲突中 46 个纯上游分歧取上游版本，7 个含 Nyala 意图的文件手工合并，细节见
+[`nyala/patch-ledger.md`](patch-ledger.md) 的「同步记录」。
+
+在 Node `24.18.0`、npm `11.16.0` 环境下完成：
+
+```text
+npm run typecheck-client               passed
+npm run compile                        passed（client + 内置扩展 + copilot）
+npm run gulp hygiene                   passed（13622 files）
+npm run nyala:validate-product         passed
+npm run nyala:validate-rpc             passed
+git diff --check                       passed
+```
+
+Debian 生命周期脚本另外做了 `bash -n` 与 Copilot marker 计数核对（postinst 1、postrm 1、
+rpm spec 2、gulpfile callback 2+1）。
+
+限制：
+
+- 依赖安装使用 `--ignore-scripts`（GitHub Release 下载被网络与速率限制挡住），因此
+  `@vscode/ripgrep`、Electron 二进制未下载；本轮没有 Electron 冒烟，只有编译与静态检查证据。
+- 依赖需要按 `build/npm/dirs.ts` 在各子目录单独安装；`npm run postinstall` 在本机没有真正落盘。
+- Windows/Linux 打包、签名、安装卸载仍未验证；`copilot_shim` 的 Rust 组件未构建。
 
 ## 证据边界
 

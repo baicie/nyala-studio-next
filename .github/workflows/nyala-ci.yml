@@ -35,6 +35,9 @@ jobs:
       - name: Validate product metadata
         run: npm run nyala:validate-product
 
+      - name: Validate RPC contract
+        run: npm run nyala:validate-rpc
+
   client:
     name: Client typecheck and hygiene
     runs-on: ubuntu-latest

@@ -1,14 +1,16 @@
 # Nyala P0 Patch Ledger
 
-更新时间：2026-10-19。基线是 Code OSS `1.142.0`，SHA
-`d956e8a6ac5d904486557eea07e1d6bd62a4d36f`。此 ledger 只登记本次初始化的产品差异；SQL
-Runtime、连接驱动和结果网格尚未进入主线。
+更新时间：2026-10-29。基线是 Code OSS `1.143.0`，SHA
+`2d0b7506a36c1d6db9a466440131a8e01eab2289`（2026-10-29 由 `1.142.0` /
+`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime、
+连接驱动和结果网格尚未进入主线。
 
 ## 计数口径
 
-`nyala/upstream-base.json` 的 `patchCount` 为 `34`：32 个已跟踪的上游文件发生修改，另有 2
-个 Nyala Workbench 源文件新增。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/` 和
-`nyala/` 元数据不计入该数字，但仍属于当前工作树，提交前应随变更审阅。
+`nyala/upstream-base.json` 的 `patchCount` 为 `45`：43 个已跟踪的上游文件发生修改，另有 2
+个 Nyala Workbench 源文件新增。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
+`.github/workflows/nyala-ci.yml`、`scripts/nyala/` 和 `nyala/` 元数据不计入该数字，但仍属于
+当前工作树，提交前应随变更审阅。
 
 ## 改动清单
 
@@ -21,9 +23,18 @@ Runtime、连接驱动和结果网格尚未进入主线。
 | Nyala Contribution | `src/vs/workbench/contrib/nyala/bootstrap/browser/nyala.contribution.ts`（新增） | `nyala.hello`、Command Palette、状态栏和 Connections 容器/命令。生命周期使用 Workbench contribution 与 Disposable。 | 命令执行、状态栏、View 显示 |
 | Connections View | `src/vs/workbench/contrib/nyala/bootstrap/browser/nyalaConnectionsView.ts`（新增） | 只提供占位 View，不连接数据库。风险为 Reload/Dispose 自动化覆盖不足。 | 原生 View smoke；自动化生命周期测试 pending |
 | 品牌/脚本/资源 | `README.md`、`scripts/code.{sh,bat}`、`resources/**`、`build/**`、`eslint.config.js` | CLI、WSL、Web manifest、Linux/Debian/RPM/Snap 元数据、Windows 资源和开发产物品牌同步；移除 Linux 安装脚本添加 Microsoft apt 源的逻辑。风险是实际各平台包尚未构建安装。 | shell/json 检查、hygiene、diff check |
-| Debian packaging | `build/gulpfile.vscode.linux.ts` | 不再将已停用更新源配置的 debconf 模板放进 DEBIAN 包，避免留下无效的 Microsoft 仓库选项。 | `node --experimental-strip-types --check`、postinst `bash -n` |
+| Debian packaging | `resources/linux/debian/postinst.template`、`resources/linux/debian/templates.template` | 删掉 postinst 中的 Microsoft apt 源注册与签名 key 写入、以及模板里的 `add-microsoft-repo` 问询；保留上游的 symlink/alternatives/mime/desktop 与 Copilot CLI 提示。1.143 同步后不再通过 gulpfile 移除 debconf 模板（旧做法会让新 postinst 的问询变成未注册模板）。 | postinst `bash -n`、模板 marker 计数、hygiene |
 | 依赖元数据 | `package.json`、锁文件、Copilot 元数据 | 版本统一为 `0.0.1-dev.0`，作者和禁用服务配置同步。 | npm metadata、compile |
 | 服务边界 | `product.json`、`src/vs/platform/product/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` | disabled Chat 使用空扩展/供应商 ID，并在未配置扩展时跳过 entitlement 初始化，避免安装占位扩展或后台探测 Microsoft 账户。 | `npm run nyala:validate-product`、typecheck、compile-client |
+
+## 同步记录
+
+| 日期 | 上游 Tag / SHA | 上游增量 | 冲突与处理 | 回归 |
+|---|---|---|---|---|
+| 2026-10-29 | `1.142.0` `d956e8a6` → `1.143.0` `2d0b7506` | 731 commits / 3431 files | 53 个冲突：46 个纯上游分歧直接取上游版本（我们的差异来自 1.142 发行分支，上游主干已被新实现替代）；7 个含 Nyala 意图手工合并——`package.json`/`package-lock.json`（名称 `nyala-studio-dev`、版本 `0.0.1-dev.0`、两个 nyala 校验脚本）、`extensions/copilot/package.json`+`lock`（engines.vscode 钉在 `^0.0.1-dev.0`）、`.github/workflows/chat-lib-package.yml`（上游已改成 manual-only，Nyala 的分支过滤补丁自然失效，取上游）、debian `postinst.template`/`templates.template`（删 Microsoft apt 段，其余跟上游） | `typecheck-client`、`npm run compile`、`gulp hygiene`、`nyala:validate-product`、`nyala:validate-rpc`、`git diff --check` 全部通过（详见 `nyala/upstream-compatibility.md`） |
+
+同步方法（脚本与产物留在 `sync/code-oss-1.143.0` 分支）：`git merge <tag>` 生成真正的合并提交，
+上游全部 731 个提交与历史保持为祖先，不做 squash、不做 rebase。
 
 ## 维护规则
 
