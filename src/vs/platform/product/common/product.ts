@@ -79,6 +79,7 @@ else {
 	if (Object.keys(product).length === 0) {
 		Object.assign(product, {
 			version: '0.0.1-dev.0',
+			extensionApiVersion: '1.143.0',
 			nameShort: 'Nyala Studio Dev',
 			nameLong: 'Nyala Studio Dev',
 			applicationName: 'nyala-studio',

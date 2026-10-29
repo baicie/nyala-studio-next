@@ -22,6 +22,11 @@
 新增的 `src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts` 是 Nyala 自有测试、不是上游跟踪文件，
 `scripts/nyala/smoke-electron.ts` 按口径不计入。没有触碰任何上游跟踪文件。
 
+`fix/extension-api-version` 合并后该数字应由 `46` 变为 `50`：新增修改 4 个此前与 `1.143.0` 一致的上游跟踪文件
+（`src/vs/base/common/product.ts`、`localProcessExtensionHost.ts`、`remoteExtensionHost.ts`、`webWorkerExtensionHost.ts`）；
+`product.json` 与 `src/vs/platform/product/common/product.ts` 已计入，`scripts/nyala/validate-product.ts` 与
+`docs/adr/0003-extension-api-version.md` 按口径不计入。按规则在合并之后再改 `upstream-base.json`。
+
 ## 改动清单
 
 | 范围 | 文件 | 目的与风险 | 验证 |
@@ -35,6 +40,7 @@
 | 品牌/脚本/资源 | `README.md`、`scripts/code.{sh,bat}`、`resources/**`、`build/**`、`eslint.config.js` | CLI、WSL、Web manifest、Linux/Debian/RPM/Snap 元数据、Windows 资源和开发产物品牌同步；移除 Linux 安装脚本添加 Microsoft apt 源的逻辑。风险是实际各平台包尚未构建安装。 | shell/json 检查、hygiene、diff check |
 | Debian packaging | `resources/linux/debian/postinst.template`、`resources/linux/debian/templates.template` | 删掉 postinst 中的 Microsoft apt 源注册与签名 key 写入、以及模板里的 `add-microsoft-repo` 问询；保留上游的 symlink/alternatives/mime/desktop 与 Copilot CLI 提示。1.143 同步后不再通过 gulpfile 移除 debconf 模板（旧做法会让新 postinst 的问询变成未注册模板）。 | postinst `bash -n`、模板 marker 计数、hygiene |
 | 依赖治理 | `.github/dependabot.yml` | 合并 GitHub Actions 的分组更新（1 个 PR）、并发上限 1、github-actions/devcontainers 改 monthly、npm 由 daily 改 weekly，降低 CI 不可用期间的依赖 PR 噪声。风险是上游同步时该文件产生小冲突，按行保留 Nyala 段即可。 | YAML 解析（ruby/python）、字段断言（groups/limits）、`git diff --check` |
+| 扩展 API 版本 | `src/vs/base/common/product.ts`、`src/vs/workbench/services/extensions/electron-browser/localProcessExtensionHost.ts`、`src/vs/workbench/services/extensions/common/remoteExtensionHost.ts`、`src/vs/workbench/services/extensions/browser/webWorkerExtensionHost.ts`、`product.json`、`src/vs/platform/product/common/product.ts` | 新增可选字段 `extensionApiVersion`（= 基线 Tag `1.143.0`），三个 Extension Host 把它作为 `vscode.version` 交给扩展，缺省回退 `version`；产品版本仍为 `0.0.1-dev.0`。修复内置 css/html/json/markdown 语言服务因 `vscode-languageclient` semver 检查而激活失败。风险：每次上游同步必须改为新 Tag（校验脚本强制）；第三方 VSIX 的 `engines.vscode` 校验仍用产品版本。见 [ADR 0003](../docs/adr/0003-extension-api-version.md)。移除条件：产品版本本身满足 `^1.x`，或上游提供独立 API 版本字段。 | `npm run nyala:validate-product`（含 2 个负向对照）、typecheck-client、compile、Windows 原生探针（4 个语言服务激活、Markdown 预览渲染）、`smoke-electron.ts` |
 | 依赖元数据 | `package.json`、锁文件、Copilot 元数据 | 版本统一为 `0.0.1-dev.0`，作者和禁用服务配置同步。 | npm metadata、compile |
 | 服务边界 | `product.json`、`src/vs/platform/product/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` | disabled Chat 使用空扩展/供应商 ID，并在未配置扩展时跳过 entitlement 初始化，避免安装占位扩展或后台探测 Microsoft 账户。 | `npm run nyala:validate-product`、typecheck、compile-client |
 
