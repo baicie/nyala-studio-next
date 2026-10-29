@@ -53,6 +53,33 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 5. Rust Runtime（P1.1–P1.4）未开始；`nyala/rpc` 合同是它的前置条件。
 6. 本机 `node_modules` / `out` / `.build` 已清理，恢复需要重新安装与编译（见下）。
 
+## 治理与 CI 现状（2026-10-29）
+
+### 已落地
+
+- **治理规范 v1.0**：`docs/nyala-governance/`（16 篇 + INDEX + 5 个 checklist）、3 个 `nyala-*.instructions.md`、`nyala/AGENTS.md`、`src/vs/workbench/contrib/nyala/AGENTS.md`，根 `AGENTS.md` 与 `START-HERE.md` 只做索引追加；见 PR #15。
+- **Dependabot 收敛**：github-actions 合并为 1 个分组 PR、三段并发上限 1、github-actions/devcontainers 改 monthly、npm 由 daily 改 weekly；见 PR #16。
+- **上游 workflow 降噪**：用 GitHub API 手动停用 8 个在本 fork 无法跑通的 workflow（**不改任何文件**，可逐条恢复）：`pr.yml`、`pr-node-modules.yml`、`codeql.yml`、`telemetry.yml`、`monaco-editor.yml`、`component-fixtures.yml`、`copilot-setup-steps.yml`、`css-order-scan.yml`。
+  - 保留：`nyala-ci.yml`（自有门禁）、`chat-lib-package.yml` 与 `chat-perf.yml`（仅手动触发）、`sessions-e2e.yml`（仅手动触发）、`pr-*-test.yml`（仅 `workflow_call`，由已停用的 `pr.yml` 调用）。
+  - 恢复单条：`gh api -X PUT repos/baicie/nyala-studio-next/actions/workflows/<workflow-id>/enable`；`gh api repos/baicie/nyala-studio-next/actions/workflows --jq '.workflows[] | "\(.id) \(.state) \(.path)"'` 可查看状态。
+
+### BLOCKED（只能由仓库所有者操作）
+
+| 事项 | 事实证据 | 用户操作 | 验收标准 |
+|---|---|---|---|
+| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；2026-10-29 的 Run 全部 `failure`/`queued` | 在 Billing & plans 恢复 Actions 额度，或改 self-hosted runner / 公开仓库 | `nyala-ci.yml` 的 `Product baseline` 与 `Client typecheck and hygiene` 出现真实 step 并给出结论（红=代码问题，绿=通过） |
+| 分支保护 / rulesets 不可用 | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 与 `/rulesets` 均 403：`Upgrade to GitHub Pro or make this repository public` | 升级 GitHub 计划（Pro/Team）或接受人工门禁流程 | protection API 返回 200，且启用 required PR + required status checks；在此之前**不宣称仓库已受保护** |
+
+### CODEOWNERS 结论
+
+`.github/CODEOWNERS` 全部指向上游微软员工（`@lszomoru`、`@alexdima` 等）。由于分支保护在当前计划下不可用，该文件既无强制力、也无法真正请求到这些 reviewer，因此**本次不改文件**（避免无意义的上游 patch）。等分支保护可用时，再新增 Nyala 自有 owner 段；在此之前依靠 PR 模板 + 人工审查 + 证据记录。
+
+### 人工门禁替代（保护不可用期间）
+
+1. PR 必须基于最新 `nyala/main`，模板中写明 PASS/FAIL/BLOCKED/NOT RUN。
+2. 本地证据至少包含：`git diff --check`、按改动类型选择的最小验证、以及"未运行项及原因"。
+3. 同步类 PR 必须保留上游 Tag 祖先，用 Merge Commit 合入；功能 PR 用 Squash。
+
 ## 下一步（建议顺序）
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
