@@ -1,4 +1,4 @@
-<!-- Nyala PRs target nyala/main. See docs/nyala-kickoff/docs/26-branching-and-upstream-sync.md. -->
+<!-- Nyala PRs target nyala/main. See docs/nyala-kickoff/docs/26-branching-and-upstream-sync.md and docs/nyala-governance/INDEX.md. -->
 
 ## Change
 
@@ -11,7 +11,8 @@
 - Commands run:
 - Platform and Node/npm version:
 - Desktop/Web smoke result:
-- Checks not run and reason:
+- Checks not run and reason: (use PASS / FAIL / BLOCKED / NOT RUN)
+- Evidence link (run, log, screenshot):
 
 ## Upstream sync fields
 
@@ -29,3 +30,13 @@
 - [ ] No `codex/*` branch or direct `upstream/main` merge is involved.
 - [ ] Tests and unrun checks are recorded.
 - [ ] User-visible behavior, docs, ADR, or Backlog entries are updated as needed.
+
+## Reviewer focus (Nyala)
+
+- [ ] Upstream mergeability / Patch Ledger updated when upstream-tracked files change.
+- [ ] Runtime or SQL surface: connection identity, cancellation, and ResultHandle release are covered.
+- [ ] Database privilege and connection isolation reviewed; no secret or row data in logs.
+
+## Rollback
+
+- Procedure and state migration impact:
