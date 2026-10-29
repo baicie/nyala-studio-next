@@ -12,6 +12,11 @@
 `.github/workflows/nyala-ci.yml`、`scripts/nyala/` 和 `nyala/` 元数据不计入该数字，但仍属于
 当前工作树，提交前应随变更审阅。
 
+`45` 是 `nyala/main` 在上一次上游同步（1.143.0）后的实测值。治理类 PR 会各新增少量受上游
+跟踪的文件修改（`.github/dependabot.yml`、`AGENTS.md`、`.github/pull_request_template.md`），
+按本 ledger 的规则在其**合并到 `nyala/main` 后**重新计数并更新 `upstream-base.json`，避免为未
+合并的 PR 虚增补丁数。
+
 ## 改动清单
 
 | 范围 | 文件 | 目的与风险 | 验证 |
@@ -24,6 +29,7 @@
 | Connections View | `src/vs/workbench/contrib/nyala/bootstrap/browser/nyalaConnectionsView.ts`（新增） | 只提供占位 View，不连接数据库。风险为 Reload/Dispose 自动化覆盖不足。 | 原生 View smoke；自动化生命周期测试 pending |
 | 品牌/脚本/资源 | `README.md`、`scripts/code.{sh,bat}`、`resources/**`、`build/**`、`eslint.config.js` | CLI、WSL、Web manifest、Linux/Debian/RPM/Snap 元数据、Windows 资源和开发产物品牌同步；移除 Linux 安装脚本添加 Microsoft apt 源的逻辑。风险是实际各平台包尚未构建安装。 | shell/json 检查、hygiene、diff check |
 | Debian packaging | `resources/linux/debian/postinst.template`、`resources/linux/debian/templates.template` | 删掉 postinst 中的 Microsoft apt 源注册与签名 key 写入、以及模板里的 `add-microsoft-repo` 问询；保留上游的 symlink/alternatives/mime/desktop 与 Copilot CLI 提示。1.143 同步后不再通过 gulpfile 移除 debconf 模板（旧做法会让新 postinst 的问询变成未注册模板）。 | postinst `bash -n`、模板 marker 计数、hygiene |
+| 依赖治理 | `.github/dependabot.yml` | 合并 GitHub Actions 的分组更新（1 个 PR）、并发上限 1、github-actions/devcontainers 改 monthly、npm 由 daily 改 weekly，降低 CI 不可用期间的依赖 PR 噪声。风险是上游同步时该文件产生小冲突，按行保留 Nyala 段即可。 | YAML 解析（ruby/python）、字段断言（groups/limits）、`git diff --check` |
 | 依赖元数据 | `package.json`、锁文件、Copilot 元数据 | 版本统一为 `0.0.1-dev.0`，作者和禁用服务配置同步。 | npm metadata、compile |
 | 服务边界 | `product.json`、`src/vs/platform/product/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` | disabled Chat 使用空扩展/供应商 ID，并在未配置扩展时跳过 entitlement 初始化，避免安装占位扩展或后台探测 Microsoft 账户。 | `npm run nyala:validate-product`、typecheck、compile-client |
 

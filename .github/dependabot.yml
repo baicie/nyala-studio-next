@@ -1,20 +1,33 @@
 version: 2
 updates:
+  # Upstream Code OSS keeps this file minimal. Nyala limits the update noise
+  # because GitHub Actions cannot run on this fork yet (billing) and every open
+  # dependency PR stays red until that is fixed. Keep the shape simple so future
+  # Code OSS syncs only conflict on these few lines.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     cooldown:
-      default-days: 7
+      default-days: 14
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns:
+          - "*"
   - package-ecosystem: "devcontainers" # https://containers.dev/guide/dependabot
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    open-pull-requests-limit: 1
   - package-ecosystem: "npm"
     directory: "/extensions/markdown-language-features"
     schedule:
-      interval: "daily"
+      interval: "weekly"
       time: "16:00"
       timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
     allow:
       - dependency-name: "@vscode/markdown-editor"
