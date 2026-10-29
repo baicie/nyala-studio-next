@@ -7,15 +7,16 @@
 
 ## 计数口径
 
-`nyala/upstream-base.json` 的 `patchCount` 为 `45`：43 个已跟踪的上游文件发生修改，另有 2
+`nyala/upstream-base.json` 的 `patchCount` 为 `46`：44 个已跟踪的上游文件发生修改，另有 2
 个 Nyala Workbench 源文件新增。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
 `.github/workflows/nyala-ci.yml`、`scripts/nyala/` 和 `nyala/` 元数据不计入该数字，但仍属于
 当前工作树，提交前应随变更审阅。
 
-`45` 是 `nyala/main` 在上一次上游同步（1.143.0）后的实测值。治理类 PR 会各新增少量受上游
-跟踪的文件修改（`.github/dependabot.yml`、`AGENTS.md`、`.github/pull_request_template.md`），
-按本 ledger 的规则在其**合并到 `nyala/main` 后**重新计数并更新 `upstream-base.json`，避免为未
-合并的 PR 虚增补丁数。
+`46` 是治理 PR #15/#16/#17 合并到 `nyala/main` 后的实测值。相对 1.143.0 同步时的 `45`
+只增加 1 个：`.github/dependabot.yml`（新增的上游跟踪文件修改）；`AGENTS.md` 与
+`.github/pull_request_template.md` 的修改在同步当时已计入 `45`，治理 PR 只在其上追加内容。
+后续每次上游同步、或上游跟踪文件的增删改，都要按同一口径重算，并且只在**合并之后**更新，
+避免为未合并的 PR 虚增补丁数。
 
 ## 改动清单
 
