@@ -1,0 +1,67 @@
+name: Nyala Baseline
+
+on:
+  push:
+    branches:
+      - nyala/main
+      - 'release/*'
+  pull_request:
+    branches:
+      - nyala/main
+      - 'release/*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nyala-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  product:
+    name: Product baseline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Validate product metadata
+        run: npm run nyala:validate-product
+
+  client:
+    name: Client typecheck and hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+      - name: Prepare Electron types
+        run: node build/npm/electronTypes.ts
+
+      - name: Typecheck client
+        run: npm run typecheck-client
+
+      - name: Hygiene
+        run: npm run gulp hygiene
+
+      - name: Check diff
+        run: git diff --check

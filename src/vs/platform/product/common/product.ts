@@ -99,9 +99,9 @@ else {
 
 function createDisabledChatAgent(): NonNullable<IProductConfiguration['defaultChatAgent']> {
 	return {
-		extensionId: 'nyala.disabled',
-		chatExtensionId: 'nyala.disabled-chat',
-		chatExtensionOutputId: 'nyala.disabled-chat.log',
+		extensionId: '',
+		chatExtensionId: '',
+		chatExtensionOutputId: '',
 		chatExtensionOutputExtensionStateCommand: '',
 		documentationUrl: '',
 		termsStatementUrl: '',
@@ -113,11 +113,11 @@ function createDisabledChatAgent(): NonNullable<IProductConfiguration['defaultCh
 		upgradePlanUrl: '',
 		signUpUrl: '',
 		provider: {
-			default: { id: 'nyala-disabled', name: 'Nyala Studio' },
-			enterprise: { id: 'nyala-disabled-enterprise', name: 'Nyala Studio' },
-			google: { id: 'nyala-disabled-google', name: 'Nyala Studio' },
-			apple: { id: 'nyala-disabled-apple', name: 'Nyala Studio' },
-			microsoft: { id: 'nyala-disabled-microsoft', name: 'Nyala Studio' }
+			default: { id: '', name: '' },
+			enterprise: { id: '', name: '' },
+			google: { id: '', name: '' },
+			apple: { id: '', name: '' },
+			microsoft: { id: '', name: '' }
 		},
 		providerExtensionId: '',
 		providerUriSetting: '',

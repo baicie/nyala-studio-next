@@ -23,6 +23,7 @@ Runtime、连接驱动和结果网格尚未进入主线。
 | 品牌/脚本/资源 | `README.md`、`scripts/code.{sh,bat}`、`resources/**`、`build/**`、`eslint.config.js` | CLI、WSL、Web manifest、Linux/Debian/RPM/Snap 元数据、Windows 资源和开发产物品牌同步；移除 Linux 安装脚本添加 Microsoft apt 源的逻辑。风险是实际各平台包尚未构建安装。 | shell/json 检查、hygiene、diff check |
 | Debian packaging | `build/gulpfile.vscode.linux.ts` | 不再将已停用更新源配置的 debconf 模板放进 DEBIAN 包，避免留下无效的 Microsoft 仓库选项。 | `node --experimental-strip-types --check`、postinst `bash -n` |
 | 依赖元数据 | `package.json`、锁文件、Copilot 元数据 | 版本统一为 `0.0.1-dev.0`，作者和禁用服务配置同步。 | npm metadata、compile |
+| 服务边界 | `product.json`、`src/vs/platform/product/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` | disabled Chat 使用空扩展/供应商 ID，并在未配置扩展时跳过 entitlement 初始化，避免安装占位扩展或后台探测 Microsoft 账户。 | `npm run nyala:validate-product`、typecheck、compile-client |
 
 ## 维护规则
 

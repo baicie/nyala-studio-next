@@ -35,7 +35,7 @@ Code OSS `microsoft/vscode` 源码采用 MIT；保留原版权、许可证与 No
 | 项目 | P0 状态 | 处理与边界 |
 |---|---|---|
 | 产品身份、数据目录、协议、平台 ID | 已替换为 Nyala | `Nyala Studio`、`.nyala-studio*`、`nyala://` 和独立开发态目录；发行前仍需确认 GUID/Bundle ID 的最终唯一性 |
-| Copilot/Chat/Agent 默认入口 | 默认禁用 | `defaultChatAgent` 使用 `nyala.disabled` 占位，相关账号、entitlement、MCP、quota 和文档 URL 置空；Copilot 源码仍保留用于上游构建兼容，不代表服务可用或获授权 |
+| Copilot/Chat/Agent 默认入口 | 默认禁用 | `defaultChatAgent` 使用空扩展/供应商 ID，相关账号、entitlement、MCP、quota 和文档 URL 置空；Chat entitlement 在未配置扩展时短路。Copilot 源码仍保留用于上游构建兼容，不代表服务可用或获授权 |
 | 同步、Marketplace、自动更新 | 默认关闭/未配置 | 未配置微软 Marketplace、同步和更新 feed；扩展以仓库内置和后续明确的 VSIX/Open VSX 策略为准 |
 | 遥测/语音 | 未配置产品服务 | 产品字段中不再提供 voice WebSocket 或微软服务 URL；通用上游遥测代码仍存在，发布前需以最终构建参数和隐私声明复核 |
 | 内置调试扩展 | 保留开源上游依赖 | `ms-vscode.js-debug-companion`、`ms-vscode.js-debug`、`ms-vscode.vscode-js-profile-table` 固定版本、SHA 和 GitHub 源码地址；这些是开源代码依赖，不是 Marketplace 在线服务。需在发行物中随附其许可证/NOTICE |
@@ -53,6 +53,8 @@ Code OSS `microsoft/vscode` 源码采用 MIT；保留原版权、许可证与 No
 3. 是否有意外联网/遥测/数据上传？
 4. 是否需要 UI 开关、删除 build asset 或替换默认源？
 5. 不合法/不可用时如何友好降级或禁用？
+
+disabled 配置中的扩展 ID 和 social provider ID 必须为空；尤其不能为 Microsoft provider 保留非空占位值，否则 Chat 的后台探测会把它当成可用认证入口并调用 `getSessions('microsoft', ...)`。
 
 ## 发布流程
 
