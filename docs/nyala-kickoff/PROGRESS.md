@@ -1,6 +1,6 @@
 # Nyala Studio · 项目进度快照
 
-> 快照时间：2026-10-28 · 基线 Code OSS `1.142.0`（`d956e8a6ac5d904486557eea07e1d6bd62a4d36f`）· 开发版本 `0.0.1-dev.0`
+> 快照时间：2026-10-29 · 基线 Code OSS `1.142.0`（`d956e8a6ac5d904486557eea07e1d6bd62a4d36f`）· 开发版本 `0.0.1-dev.0`
 > 用途：跨机器移交与断点续做。**状态权威顺序：Git 分支与 PR ＞ 本文档 ＞ 会话记忆**；阶段验收仍以 [19-roadmap.md](docs/19-roadmap.md) 为准。
 
 ## 一句话状态
@@ -11,11 +11,12 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 | 分支 | HEAD | 目标 | 状态 |
 |---|---|---|---|
-| `nyala/main` | `ac619e960df` | 稳定主线 | 干净，与 origin 同步 |
-| `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | OPEN；CI 全部因 GitHub 账单未启动，非代码失败 |
-| `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | OPEN；`npm run nyala:validate-rpc` 通过 |
+| `nyala/main` | `3b17d4e184a` | 稳定主线 | 已合入 #8、#11；#13 合并后即为本文档所在提交 |
+| `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
+| `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
+| `feat/progress-snapshot` | 本文档 | → `nyala/main`（PR #13） | 随本快照合并 |
 
-> ⚠️ Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.mjs`、`.github/workflows/nyala-ci.yml` 以及 `product.json` 的 Chat/认证置空改动都在 **PR #8** 里，尚未进入 `nyala/main`。任何从 `nyala/main` 切出的新分支暂时看不到这些约束。
+> Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.mjs`、`.github/workflows/nyala-ci.yml`、`product.json` 的 Chat/认证置空改动已随 **PR #8** 进入 `nyala/main`；`nyala/rpc/` 合同随 **PR #11** 进入。
 
 ## 已完成
 
@@ -28,7 +29,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 质量门禁：`npm run compile`、`typecheck-client`、`build-fast --client-only`、`gulp hygiene`、定向 ESLint、JSON/脚本检查（同上报告）。
 - 文档落位：设计包 `docs/nyala-kickoff/`、`docs/adr/`、`nyala/patch-ledger.md`。
 
-### P1 · 协议合同（PR #11，未合并）
+### P1 · 协议合同（已合并，PR #11）
 
 - `nyala/rpc/README.md`：分帧、envelope、版本协商、15 个 v1 方法、状态机、cell 类型、错误模型、限流、变更策略。
 - `nyala/rpc/v1/`：envelope + 方法级 params/result JSON Schema、错误码表、一致性样例。
@@ -37,7 +38,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 ## 未完成 / 已知缺口
 
-1. **PR #8 未合并**；其 CI 全红的原因是 GitHub 账单：`The job was not started because recent account payments have failed or your spending limit needs to be increased`，任务根本没启动，与代码无关。
+1. **CI 仍然跑不出结果**：三个 PR 的检查全红都是 GitHub 账单问题（`The job was not started because recent account payments have failed or your spending limit needs to be increased`），任务根本没启动，与代码无关；合并后仍需解决，否则后续 PR 都拿不到真实检查。
 2. **P0 唯一未勾项**：Reload Window / 生命周期自动化回归（[P0 清单](checklists/P0-FIRST-14-DAYS.md) 第 22 行）。已手工验证首次启动与重复执行，缺自动化。
 3. Windows / Linux 原生启动、安装包、签名、更新链路均未验证。
 4. Chat / Copilot / 认证入口置空后只做过代码审计，没有系统 UI 回归。
@@ -46,7 +47,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 ## 下一步（建议顺序）
 
-1. 合并 **PR #8**，让产品约束、产品校验脚本和 CI 回到 `nyala/main`。
+1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
 2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted），并在 `nyala-ci.yml` 增加一行 `npm run nyala:validate-rpc`。
 3. 补 P0 生命周期回归：完整安装 + 编译后跑 Electron smoke（命令见下），把结果写回 P0 清单。
 4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
