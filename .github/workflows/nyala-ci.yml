@@ -63,6 +63,12 @@ jobs:
       - name: Typecheck client
         run: npm run typecheck-client
 
+      # The root install skips postinstall, which normally installs build/ dependencies
+      # (e.g. gulp-merge-json) that the gulpfiles import when gulp loads.
+      - name: Install build dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: build
+
       - name: Hygiene
         run: npm run gulp hygiene
 
