@@ -5,7 +5,7 @@
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 尚未开始写代码**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟为 **FAIL 11/12**，唯一失败项是内置 Markdown 语言功能与开发版本号 `0.0.1-dev.0` 不兼容。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 尚未开始写代码**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟在 `fix/p0-windows-smoke` 上为 FAIL 11/12（内置语言功能与开发版本号 `0.0.1-dev.0` 不兼容），叠加 `fix/extension-api-version`（向扩展报告 Extension API 版本 `1.143.0`，ADR 0003）后为 **PASS 12/12**，两个分支均待合并。
 
 ## 分支与 PR
 
@@ -16,7 +16,8 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
 | `feat/progress-snapshot` | 本文档 | → `nyala/main`（PR #13） | 随本快照合并 |
-| `fix/p0-windows-smoke` | 基于 `48f99b1916b` | → `nyala/main` | Windows 1.143.0 原生冒烟 + Reload/Dispose 单元测试；未推送 |
+| `fix/p0-windows-smoke` | `595db6c10f7` | → `nyala/main`（PR #23，Draft） | Windows 1.143.0 原生冒烟 + Reload/Dispose 单元测试 |
+| `fix/extension-api-version` | 基于 `595db6c10f7` | → `fix/p0-windows-smoke`（#23 合并后改投 `nyala/main`） | 向扩展报告 Extension API 版本，修复内置语言功能激活失败；ADR 0003；未推送 |
 
 > Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.ts`、`.github/workflows/nyala-ci.yml`、`product.json` 的 Chat/认证置空改动已随 **PR #8** 进入 `nyala/main`；`nyala/rpc/` 合同随 **PR #11** 进入。
 
@@ -27,7 +28,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 基线锁定：Code OSS `1.142.0` / SHA / Node `24.18.0` / npm，补丁口径 34 条记录在 [`nyala/upstream-base.json`](../../nyala/upstream-base.json) 与 [`nyala/patch-ledger.md`](../../nyala/patch-ledger.md)。
 - 产品身份：`Nyala Studio` / `nyala-studio` / `.nyala-studio` / `nyala://` / `0.0.1-dev.0`。
 - macOS 原生 Electron 启动、编辑器、Split、Extension Host、Webview 冒烟通过（`1.142.0`），见 [`nyala/upstream-compatibility.md`](../../nyala/upstream-compatibility.md)。
-- Windows 11 原生 Electron 冒烟（`1.143.0`，2026-10-29）：`scripts/nyala/smoke-electron.ts` 经 `scripts\code.bat` 启动，**FAIL 11/12**；Nyala 入口、空工作区编辑、Split、最小 Webview、Extension Host、2 次 Reload Window 均 PASS，`vscode.markdown-language-features` 激活失败。详见兼容性报告 Windows 节。
+- Windows 11 原生 Electron 冒烟（`1.143.0`）：`scripts/nyala/smoke-electron.ts` 经 `scripts\code.bat` 启动。2026-10-29 在 `fix/p0-windows-smoke`（`595db6c10f7`）上为 **FAIL 11/12**，唯一失败项是 `vscode.markdown-language-features` 激活失败；2026-10-30 在 `fix/extension-api-version`（`6d35da69627`）上为 **PASS 12/12**，css/html/json/markdown 语言功能全部激活、Markdown 预览渲染正常。详见兼容性报告 Windows 节。
 - Reload / Dispose 自动化回归：`src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts`（8 passing）。
 - Hello Workbench：`nyala.hello` 命令 + `Nyala Connections` 视图容器 + 状态栏入口，源码在 `src/vs/workbench/contrib/nyala/bootstrap/browser/`。
 - 质量门禁：`npm run compile`、`typecheck-client`、`build-fast --client-only`、`gulp hygiene`、定向 ESLint、JSON/脚本检查（同上报告）。
@@ -50,7 +51,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 ## 未完成 / 已知缺口
 
 1. **CI 仍然跑不出结果**：三个 PR 的检查全红都是 GitHub 账单问题（`The job was not started because recent account payments have failed or your spending limit needs to be increased`），任务根本没启动，与代码无关；合并后仍需解决，否则后续 PR 都拿不到真实检查。
-2. **开发版本号与内置语言服务不兼容**：`0.0.1-dev.0` 不满足 `vscode-languageclient` 的 `^1.67.0`，`vscode.markdown-language-features` 激活失败、Markdown 预览不可用；css/html/json 语言服务预计同样失败（未在 UI 验证）。修复会涉及 `product.json`/`package.json` 等上游跟踪文件，需单独 PR。Windows 原生冒烟在修复前不能勾选。
+2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，待合并）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；合并后 `patchCount` 应由 46 改为 50。
 3. **运行时 Chat / Copilot 仍可见**：Windows 原生运行时出现 Chat 视图，`GitHub.copilot-chat` 激活，`vscode.microsoft-authentication` 经 `onAuthenticationRequest:microsoft` 激活并读取本机账户缓存。此前「disabled Chat 不触发 Microsoft 账户探测」的结论只覆盖 `product.json`，运行时不成立。
 4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
 5. Rust Runtime（P1.1–P1.4）未开始；`nyala/rpc` 合同是它的前置条件。
@@ -87,7 +88,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
 2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted），并在 `nyala-ci.yml` 增加一行 `npm run nyala:validate-rpc`。
-3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；下一步修复开发版本号导致的内置语言服务激活失败，再审计运行时 Chat / Microsoft 认证入口，之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
+3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；下一步审计运行时 Chat / Microsoft 认证入口，之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
 4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
 
 ## 新机器恢复步骤（macOS / Linux）
@@ -131,7 +132,7 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 | 路径 | 作用 |
 |---|---|
 | `docs/nyala-kickoff/` | 设计包：15 份设计文档 + 路线图/backlog + P0 清单 + 本快照 |
-| `docs/adr/` | 架构决策记录（当前 0001：RPC 合同 v1.0） |
+| `docs/adr/` | 架构决策记录（0001：RPC 合同 v1.0；0003：Extension API 版本，待合并；0002 由 `feat/p1-rust-runtime` 占用） |
 | `nyala/` | 产品元数据：upstream-base、patch-ledger、upstream-compatibility、rpc 合同 |
 | `scripts/nyala/` | 校验脚本（RPC 合同、产品基线）与原生 Electron 冒烟脚本 `smoke-electron.ts` |
 | `src/vs/workbench/contrib/nyala/` | Hello Workbench 贡献与 Connections 占位视图 |
