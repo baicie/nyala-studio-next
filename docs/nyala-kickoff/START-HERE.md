@@ -50,6 +50,13 @@
 
 能够在固定版本的 Code OSS/Electron 中独立启动 Nyala 开发实例；存在一条最小的 Nyala Workbench Command；默认产品身份/敏感服务已列清单；干净代码能够重现开发启动；**此时不要求有数据库 UI**。当前已满足 macOS 开发态条件；Windows/Linux、签名发行和 SQL UI 仍是后续阶段。
 
+## v1.1 设计修订（2026-10-29）
+
+- 当前同步基线为 Code OSS **1.143.0**（SHA 见 [`nyala/upstream-base.json`](../../nyala/upstream-base.json)）；上方 1.142.0 内容是初始化历史，保留不改。
+- 新增 Agent 设计 [27](docs/27-agent-platform.md)–[30](docs/30-agent-security-evaluation.md)、SQL 工作台交互 [31](docs/31-sql-workspace-product.md)，以及 Proposed 的 [ADR-0007](docs/adr/0007-sql-first-task-first-workspace.md)、[ADR-0008](docs/adr/0008-optional-codex-app-server-adapter.md)。这些都是设计提案，**没有对应实现**；[ADR-0006](docs/adr/0006-no-default-ai.md)（Agent 不属于 SQL MVP）继续有效。
+- 下一步实施路径：先补 1.143.0 Electron Smoke 与 Reload/Dispose 回归（N-R01），再按 `nyala/rpc/v1` 合同实现 N-101/102/103。见 [路线图](docs/19-roadmap.md)与 [Backlog](docs/20-backlog.md)。
+- 逐文件修订说明：[DESIGN-CHANGELOG-v1.1](DESIGN-CHANGELOG-v1.1.md)。
+
 ## 文档权威度
 
 `docs/03-architecture.md` 是工程边界的权威文档；`docs/19-roadmap.md` 是阶段验收权威；变更须新增/更新 ADR；`AGENTS.md` 为 AI Coding Agent 的约束，若与上游强制规约冲突，遵循更严格的规则并登记原因。

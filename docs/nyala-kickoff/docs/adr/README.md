@@ -12,3 +12,12 @@
 | [0006](0006-no-default-ai.md) | Agent 不作为 MVP 核心 | Accepted |
 
 注：此处 Accepted 指**本设计包中建议冻结的设计决策**，不是代码已经实现；如用户在开工前改变取舍，应更新 ADR 状态。
+
+## v1.1 Proposed ADRs（仅文档提案，未得到仓库批准）
+
+- [ADR-0007: SQL-first / Task-first 双工作区](0007-sql-first-task-first-workspace.md)
+- [ADR-0008: Codex app-server 作为可替换 Harness Adapter](0008-optional-codex-app-server-adapter.md)
+
+旧 ADR-0006「AI Agent 和 Tauri 不属于 SQL MVP」**继续保持 Accepted，不覆盖、不删除**。新增提案仅确立远期架构。
+
+仓库级 ADR 另见 [`docs/adr/`](../../../adr/)（当前 [0001 RPC 合同 v1.0](../../../adr/0001-rpc-contract-v1.md)），与本目录编号相互独立；引用时写明目录，避免两个 0001 混淆。

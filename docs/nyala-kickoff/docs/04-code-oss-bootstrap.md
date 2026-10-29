@@ -1,5 +1,7 @@
 # 04 · Code OSS Fork、首次构建与品牌初始化
 
+> **v1.1 状态提示**：下面的 1.142.0 构建步骤属于首次 Bootstrap 历史；仓库已同步到 Code OSS **1.143.0**。见文末最新同步说明；1.143.0 原生 Electron Smoke 尚未完成。
+
 > 状态更新：2026-10-19。已在 macOS 开发机完成 Nyala Bootstrap 的编译和原生 Electron 验证。本文记录的是开发态证据，不代表 Windows/Linux 安装包、签名或 SQL 功能已完成。
 
 ## 固定上游
@@ -95,3 +97,9 @@ View 显示 `Nyala connections will appear here.`。
 - https://github.com/microsoft/vscode/tree/1.142.0
 - https://github.com/microsoft/vscode/wiki/How-to-Contribute
 - https://github.com/microsoft/vscode/wiki/Source-Code-Organization
+
+## v1.1 现状修订 · 1.143.0 同步（2026-10-29）
+
+本文件之前关于 1.142.0 的内容属于**初始化历史记录**，不得整体替换。仓库 `nyala/upstream-base.json` 显示已通过真实 Git Merge 同步至 **1.143.0**（`2d0b7506a36c1d6db9a466440131a8e01eab2289`），PR #14 保留上游祖先。同步遇 53 个冲突，其中 7 个涉及 Nyala 的产品意图，由维护者手工处理（见仓库 `nyala/patch-ledger.md`）。
+
+同步 PR 与 `nyala/upstream-compatibility.md` 自报本地 macOS compile / typecheck-client / hygiene / Nyala product + RPC contract 校验通过；**本次升级未完成 Electron Smoke**（依赖下载/安装受阻）。Windows/Linux 安装及发行也未验收。在线 GitHub Actions 因账户计费阻断，无真实运行结论。上述内容以仓库动态记录为准；v1.1 设计修订没有重跑这些检查，不能作为独立测试证据。

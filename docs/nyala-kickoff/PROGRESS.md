@@ -11,7 +11,8 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 | 分支 | HEAD | 目标 | 状态 |
 |---|---|---|---|
-| `nyala/main` | `13d253ee4a9` | 稳定主线 | 已合入 #8、#11、#13 |
+| `nyala/main` | `48f99b1916b`（2026-10-29 更新；原快照为 `13d253ee4a9`） | 稳定主线 | 已合入 #8、#11、#13、#14、#15、#16、#17、#18 |
+| `docs/nyala-design-v1.1` | 本次设计修订 | → `nyala/main` | Design v1.1 文档 PR（只改 `docs/nyala-kickoff/`，不含实现） |
 | `sync/code-oss-1.143.0` | 合并 `1.143.0` | → `nyala/main` | 同步分支：真正的 merge commit，上游 731 个提交保持为祖先 |
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
@@ -83,9 +84,11 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 ## 下一步（建议顺序）
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
-2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted），并在 `nyala-ci.yml` 增加一行 `npm run nyala:validate-rpc`。
+2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted）。~~在 `nyala-ci.yml` 增加 `npm run nyala:validate-rpc`~~ 已存在（`.github/workflows/nyala-ci.yml` 第 39 行，2026-10-29 核对）。
 3. 补 P0 生命周期回归：完整安装 + 编译后跑 Electron smoke（命令见下），把结果写回 P0 清单。
 4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
+
+> Design v1.1（2026-10-29）只修订设计文档：新增 Agent 专题 [27](docs/27-agent-platform.md)–[30](docs/30-agent-security-evaluation.md)、[31 SQL Workspace](docs/31-sql-workspace-product.md)、Proposed [ADR-0007](docs/adr/0007-sql-first-task-first-workspace.md)/[0008](docs/adr/0008-optional-codex-app-server-adapter.md)，并在 [19](docs/19-roadmap.md)/[20](docs/20-backlog.md) 增加 N-R*（基线收尾）与 N-A*（Agent 延后轨道）。Agent 相关内容均**未实现**，不改变上面的下一步顺序；变更明细见 [DESIGN-CHANGELOG-v1.1](DESIGN-CHANGELOG-v1.1.md)。
 
 ## 新机器恢复步骤（macOS / Linux）
 
@@ -109,7 +112,7 @@ npm run nyala:validate-rpc   # 纯 Node，无依赖，可先跑
 
 | 路径 | 作用 |
 |---|---|
-| `docs/nyala-kickoff/` | 设计包：15 份设计文档 + 路线图/backlog + P0 清单 + 本快照 |
+| `docs/nyala-kickoff/` | 设计包：`docs/01`–`31` 设计文档（含路线图/backlog、Agent 专题）+ ADR 0001–0008 + P0 清单 + 本快照 |
 | `docs/adr/` | 架构决策记录（当前 0001：RPC 合同 v1.0） |
 | `nyala/` | 产品元数据：upstream-base、patch-ledger、upstream-compatibility、rpc 合同 |
 | `scripts/nyala/` | 校验脚本（RPC 合同；产品基线脚本在 PR #8） |

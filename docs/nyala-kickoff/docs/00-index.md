@@ -28,8 +28,17 @@
 | 24 | [维护与文档治理](24-maintainer-playbook.md) | 升级、Bug、发布例行操作 |
 | 25 | [架构边界与编码规约](25-engineering-rules.md) | 跨层依赖、命名、测试 |
 | 26 | [分支模型与上游同步](26-branching-and-upstream-sync.md) | 分支命名、PR、Code OSS Tag 同步、安全回补 |
-| ADR | [ADR 目录](adr/README.md) | 关键决策与变更历史 |
+| 27 | [Agent Platform](27-agent-platform.md) | v1.1 设计：Harness、Context、Tools、Task Domain（未实现） |
+| 28 | [Agent Workspace](28-agent-workspace.md) | v1.1 设计：Task-first、Artifact、审批 UX（未实现） |
+| 29 | [Codex Runtime Manager](29-agent-runtime-management.md) | v1.1 设计：可选 app-server、认证/安装/回滚（未实现） |
+| 30 | [Agent 安全与评价](30-agent-security-evaluation.md) | v1.1 设计：Query Authority、Policy、Evals（未实现） |
+| 31 | [SQL Workspace 产品体验](31-sql-workspace-product.md) | v1.1 设计：SQL-first 工作台交互原则 |
+| ADR | [ADR 目录](adr/README.md) | 关键决策与变更历史；ADR-0006 继续有效，0007/0008 为 Proposed |
 
 ## 推荐维护流程
 
 重大架构决策先写 ADR → 更新系统设计与 Backlog → 代码改动 → 自动化测试 → 回写真实验证结果。**文档中的预计时间、性能指标不是项目当前事实。**
+
+## 权威优先级（v1.1 补充）
+
+实际代码与可复现测试 > [`nyala/rpc/v1`](../../../nyala/rpc/README.md) 与仓库 ADR > [治理规范](../../nyala-governance/INDEX.md)及本目录 22、25、26 > 设计快照（含 v1.1 新增的 27–31）。发现差异先记录、开 ADR 或治理 PR，不用设计快照反向覆盖已合并的代码或规范。v1.1 修订记录见 [DESIGN-CHANGELOG-v1.1](../DESIGN-CHANGELOG-v1.1.md)。

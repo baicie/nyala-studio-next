@@ -96,3 +96,11 @@ pub trait DatabaseDriver: Send + Sync {
 ## 性能观察点
 
 创建连接时长、RPC encode/decode、Query queue / execute / fetch 时长、Result 缓存字节、Grid render、Sidecar RSS/CPU、超时/取消比例。默认本地日志不记录结果内容。
+
+## v1.1 实现优先级与状态边界
+
+- 当前仓库仅存在 `nyala/rpc/v1` 可执行协议合同，**尚未实现 Nyala 专有 Rust DB Sidecar**；这里的结构/接口属于 P1 设计要求。
+- P1 实施顺序 N-101/102/103：独立 Rust Workspace → stdio 帧编解码与 hello/health/error → Electron Main Supervisor，真实跨进程测试优先；随后 SQLite Session/Metadata/Query/Result/Cancel/Readonly。
+- 以当前合同为规范来源，保持 major/minor、sessionGeneration、Execution/Result IDs、sequence、`Unknown` 状态语义；不得私自“简化”掉取消/资源释放/未知提交状态。
+- 允许最早纵向 smoke 跑通 Workbench → TS Bridge → Rust → SQLite → Workbench，但不得越权绕开统一 Query Service 或把大结果直接 JSON 化。
+- Agent 将来只能经 Tool Gateway 和该 Runtime 执行 SQL，Agent 的审批不同于 DB 原生授权，不允许误用 Agent Shell 代替 SQL Query Authority。
