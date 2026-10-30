@@ -101,6 +101,8 @@ export interface IProductConfiguration {
 	readonly date?: string;
 	readonly quality?: string;
 	readonly commit?: string;
+	/** Version of the extension API reported to extensions as `vscode.version`. Defaults to `version`. */
+	readonly extensionApiVersion?: string;
 
 	readonly nameShort: string;
 	readonly nameLong: string;

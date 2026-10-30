@@ -39,6 +39,8 @@ for (const field of [
 ]) {
 	assert.equal(defaultChatAgent[field], '', `disabled Chat field ${field} must be empty`);
 }
+assert.equal(productJson.extensionApiVersion, upstreamBase.tag, 'extensionApiVersion must equal the Code OSS baseline tag in nyala/upstream-base.json');
+assert.match(readFileSync('src/vs/platform/product/common/product.ts', 'utf8'), new RegExp(`extensionApiVersion: '${upstreamBase.tag.replace(/\./g, '\\.')}'`), 'the out-of-sources product fallback must report the same extensionApiVersion');
 assert.match(upstreamBase.sha, /^[a-f0-9]{40}$/, 'upstream baseline SHA must be complete');
 assert.equal(upstreamBase.packageManager, 'npm');
 assert.equal(upstreamBase.node, nodeVersion, 'upstream baseline Node version must match .nvmrc');

@@ -1,8 +1,9 @@
 # Nyala P0 Upstream Compatibility Report
 
-更新时间：2026-10-29。报告覆盖 macOS（`1.142.0`）与 Windows 11（`1.143.0`）原生开发环境。初始化基线为 Code OSS `1.142.0` /
+更新时间：2026-10-30。报告覆盖 macOS（`1.142.0`）与 Windows 11（`1.143.0`）原生开发环境。初始化基线为 Code OSS `1.142.0` /
 `d956e8a6ac5d904486557eea07e1d6bd62a4d36f`，当前同步基线为 `1.143.0` /
-`2d0b7506a36c1d6db9a466440131a8e01eab2289`，开发版本为 `0.0.1-dev.0`。
+`2d0b7506a36c1d6db9a466440131a8e01eab2289`，开发版本为 `0.0.1-dev.0`；报告给扩展的 Extension API 版本为 `1.143.0`
+（`product.json` 的 `extensionApiVersion`，见 [ADR 0003](../docs/adr/0003-extension-api-version.md)）。
 
 ## 已执行
 
@@ -145,16 +146,51 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 | `electron-20261029-215449` | FAIL 8/11 | 冒烟脚本缺陷：语言选择列表是虚拟列表，不先过滤就找不到 `Markdown`。已修正脚本。 |
 | `electron-20261029-215852` | FAIL 10/11 | Markdown 预览打不开，原因即发现 1。Webview 检查改用不依赖语言服务的图片预览，并新增「内置扩展激活无错误」检查，让该问题在每次运行中保持可见。 |
 | `electron-20261029-220606` | FAIL 11/12 | 见上表。 |
+| `electron-20261030-002545` | PASS 12/12 | 分支 `fix/extension-api-version` 的提交 `6d35da69627`（修复发现 1），见下一小节。 |
+
+### 修复发现 1 后复跑（2026-10-30）
+
+```text
+代码          fix/extension-api-version 6d35da69627723e9fd20c8f202eb8a32c1e0b875（基于 fix/p0-windows-smoke 595db6c10f7），工作树干净
+构建          npm run compile 0 errors；out/ 由该提交编译
+环境          同上（Windows 11 Pro 10.0.26200 x64、Node 24.18.0、npm 11.16.0、Electron 43.7.7）
+命令          node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence %TEMP%\nyala-p0-smoke\electron-20261030-002545 --reloads 2
+```
+
+`smoke-electron.ts` 的 12 个步骤全部 PASS，退出码 0。与 11/12 那次相比只有一处变化：「内置扩展激活无错误」
+由 FAIL 变为 PASS（0 次激活失败）；exthost.log 记录 14 次 `_doActivateExtension`，其中
+`vscode.markdown-language-features` 激活成功，并带起 `vscode.markdown-math` 与 `vscode.mermaid-markdown-features`。
+其余 11 步的观察与上表相同。
+
+**整体结果：PASS（12/12）。**
+
+`smoke-electron.ts` 不打开 css/html/json 文件，也不打开 Markdown 预览，所以另用一个临时 CDP 探针（不入库）在同一提交、
+同一 `out/` 上补查：打开一个含 `sample.css`、`sample.html`、`sample.json`、`sample.md` 的文件夹，经 Quick Open 逐个打开，
+等 exthost.log 出现对应扩展的 `_doActivateExtension` 后再查 `Activating extension … failed`，最后执行
+`Markdown: Open Preview to the Side` 并在 webview frame 里读 `h1`。修复前（`595db6c10f7`）与修复后（`6d35da69627`）的结果：
+
+| 检查 | 修复前 | 修复后 |
+|---|---|---|
+| `vscode.css-language-features` | FAIL（`requires VS Code version ^1.91.0 but received version 0.0.1-dev.0`） | PASS |
+| `vscode.html-language-features` | FAIL（同上） | PASS |
+| `vscode.json-language-features` | FAIL（同上） | PASS |
+| `vscode.markdown-language-features` | FAIL（`^1.67.0`） | PASS |
+| Markdown 预览 webview | FAIL（60 秒内没有渲染出标题） | PASS（webview 渲染出 `h1` `Nyala probe`） |
+| exthost.log 中的激活失败 | 4 个扩展 | 0 |
 
 ### 发现
 
-1. **开发版本号让内置 Markdown 语言功能激活失败（FAIL，未修复）。** Extension Host 把
-   `IProductService.version`（`0.0.1-dev.0`）作为 `vscode.version` 交给扩展（`localProcessExtensionHost.ts`）。
+1. **开发版本号让内置语言功能激活失败（已修复：`fix/extension-api-version` `6d35da69627`，PASS 12/12）。**
+   Extension Host 把 `IProductService.version`（`0.0.1-dev.0`）作为 `vscode.version` 交给扩展（`localProcessExtensionHost.ts`）。
    `markdown-language-features` 打包的 `vscode-languageclient` 8.0.2 用 semver 检查 `^1.67.0`，因此激活失败，
    Markdown 预览与语言服务都不可用。`css`/`html`/`json-language-features` 打包的 `vscode-languageclient`
-   10.1.1 有同样的检查（json 为 `^1.91.0`），预计同样失败，本次未在 UI 中验证。产品版本从 P0 起就是
-   `0.0.1-dev.0`，macOS `1.142.0` 冒烟很可能也有此问题但没有发现（未复核）。修复需要调整版本号方案，或给扩展
-   API 一个独立的兼容版本，会涉及 `product.json`/`package.json` 等上游跟踪文件，应单独开 PR。
+   10.1.1 有同样的检查（`^1.91.0`）；2026-10-30 的探针确认这三个扩展在修复前同样激活失败（见上一小节对照表）。
+   产品版本从 P0 起就是 `0.0.1-dev.0`，macOS `1.142.0` 冒烟很可能也有此问题但没有发现（未复核）。
+   修复见 [ADR 0003](../docs/adr/0003-extension-api-version.md)：`IProductConfiguration` 新增可选的
+   `extensionApiVersion`（`product.json` 与无源回退配置设为 `1.143.0`），三个 Extension Host 报告
+   `extensionApiVersion ?? version`；用户可见的产品版本仍是 `0.0.1-dev.0`，`nyala:validate-product` 断言该字段等于
+   `nyala/upstream-base.json` 的 `tag`。修复后 css/html/json/markdown 四个语言功能全部激活，Markdown 预览渲染正常。
+   仍未覆盖：第三方 VSIX 的 `engines.vscode` 校验依旧使用 `0.0.1-dev.0`（ADR 0003「后果」）；macOS / Linux 未复跑。
 2. **禁用的 Chat 在运行时仍然可见，并触发 Microsoft 账户探测（未修复）。** 窗口右侧显示 Chat 视图
    （"Build with Agent"、"Set BYOK utility models"）；内置 `GitHub.copilot-chat` 经
    `onChatParticipant:github.copilot.editsAgent` 激活；`vscode.microsoft-authentication` 经
@@ -174,7 +210,8 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 证明以下事项：
 
 - Linux 原生启动，以及任何平台的安装卸载、签名、更新和 WSL 完整链路（Windows 只验证了开发态 `scripts\code.bat` 启动）；
-- 所有内置扩展、复杂 Webview 权限和多窗口场景（已知 Markdown 语言功能在 `0.0.1-dev.0` 下激活失败，见 Windows 节发现 1）；
+- 所有内置扩展、复杂 Webview 权限和多窗口场景（Windows 上只验证了 css/html/json/markdown 语言功能激活与 Markdown 预览，见 Windows 节发现 1）；
+- 第三方 VSIX 的 `engines.vscode` 兼容判断：它仍按产品版本 `0.0.1-dev.0` 校验，见 ADR 0003「后果」；
 - SQL Runtime、Rust Sidecar、连接驱动、查询执行或结果网格；
 - 完整桌面 E2E、上游 smoke 套件和发布包回归（Reload Window 生命周期已有单元测试与 Nyala 原生冒烟覆盖）；
 - 上游 Microsoft 服务、Marketplace 或 Copilot 的可再分发授权。
@@ -186,7 +223,7 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 
 1. ~~为 `Nyala Connections` 增加 Reload/Dispose 自动化测试。~~ 已完成：`nyalaBootstrap.test.ts` 与 `scripts/nyala/smoke-electron.ts`。
 2. ~~在目标 Windows 环境完成 `scripts/code.bat`、数据目录隔离和原生启动记录。~~ 已完成开发态启动，见 Windows 1.143.0 节。
-3. 修复开发版本号导致的内置语言服务激活失败，之后让 `smoke-electron.ts` 的「内置扩展激活无错误」通过。
+3. ~~修复开发版本号导致的内置语言服务激活失败，之后让 `smoke-electron.ts` 的「内置扩展激活无错误」通过。~~ 已完成：`fix/extension-api-version` `6d35da69627`，Windows 原生冒烟 PASS 12/12。
 4. 审计并关闭运行时 Chat/Copilot 与 Microsoft 认证入口，补网络出口检查。
 5. 在 Linux 与 macOS 上用 `smoke-electron.ts` 复跑 1.143.0 原生冒烟。
 6. 在进入 P1 前实现 Rust RPC 合同的半帧、超限、错误和版本不匹配测试。

@@ -35,6 +35,7 @@
 	"nodejsArtifactFeed": "",
 	"electronArtifactFeed": "",
 	"urlProtocol": "nyala",
+	"extensionApiVersion": "1.143.0",
 	"agentsTelemetryAppName": "agents",
 	"builtInExtensions": [
 		{
