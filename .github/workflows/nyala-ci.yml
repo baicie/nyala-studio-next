@@ -145,14 +145,19 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-  browser-tests:
-    name: Browser tests (manual)
-    # The Nyala workbench bootstrap test lives under test/browser, which the node runner
-    # excludes. It needs a real browser, so it runs only on workflow_dispatch instead of on
-    # every PR (a full client build plus a Chromium download would roughly double PR latency).
+  full-tests:
+    name: Full test suites (manual)
+    # Mirrors the upstream Code OSS Linux test job (`npm run test-node`,
+    # `npm run test-browser-no-install -- --browser chromium`) which upstream runs on self-hosted
+    # 1ES pools this fork does not have. It also covers the Nyala workbench bootstrap test, which
+    # lives under test/browser and therefore cannot run in the node runner. Manual only: a Chromium
+    # download plus the full suites would add well over ten minutes to every PR.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Measured 2026-10-30: the upstream full node suite did not finish within 45 minutes on a
+    # GitHub-hosted 2-core runner (upstream runs it on self-hosted 1ES pools). 120 keeps a single
+    # manual run able to complete.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -183,6 +188,23 @@ jobs:
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
+
+      # Upstream runs `npm run test-node` here (pr-linux-test.yml:315), but this fork cannot: two
+      # dispatches (45 min and 120 min) never finished, and at 120 min the runner was still
+      # emitting a 30-second timeout per test (indices 2107-2111 at 30 s intervals). Scope the node
+      # run to the extension-management suite, which is the area the Nyala patches touch.
+      - name: Node unit tests (extension management)
+        run: >
+          node test/unit/node/index.js
+          --runGlob "vs/platform/extensionManagement/**/*.test.js"
+
+      # Same command as upstream (pr-linux-test.yml:320). It runs (~10 min) but this fork has a
+      # known baseline of 8 failures (measured 41073529509: 42880 passing / 216 pending / 8 failing),
+      # mostly assertions that expect the Copilot chat authority that Nyala blanks out in
+      # product.json. Kept non-blocking so new regressions are visible against that baseline.
+      - name: Browser unit tests (full suite)
+        continue-on-error: true
+        run: npm run test-browser-no-install -- --browser chromium
 
       - name: Browser tests (Nyala workbench)
         run: >
