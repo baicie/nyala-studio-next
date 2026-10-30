@@ -154,7 +154,10 @@ jobs:
     # download plus the full suites would add well over ten minutes to every PR.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Measured 2026-10-30: the upstream full node suite did not finish within 45 minutes on a
+    # GitHub-hosted 2-core runner (upstream runs it on self-hosted 1ES pools). 120 keeps a single
+    # manual run able to complete.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
