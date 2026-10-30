@@ -5,7 +5,7 @@
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 尚未开始写代码**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟在 `fix/p0-windows-smoke` 上为 FAIL 11/12（内置语言功能与开发版本号 `0.0.1-dev.0` 不兼容），叠加 `fix/extension-api-version`（向扩展报告 Extension API 版本 `1.143.0`，ADR 0003）后为 **PASS 12/12**，两个分支均待合并。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 尚未开始写代码**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟在 `fix/p0-windows-smoke` 上为 FAIL 11/12（内置语言功能与开发版本号 `0.0.1-dev.0` 不兼容），叠加 `fix/extension-api-version`（向扩展报告 Extension API 版本 `1.143.0`，ADR 0003）后为 **PASS 12/12**，两个分支均待合并。`fix/disabled-chat-runtime` 关闭了运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证激活，冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，新增的出口检查发现 Agent Host 启动与 Chromium 拼写词典下载两条出站路径（未修复）。
 
 ## 分支与 PR
 
@@ -18,6 +18,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | `feat/progress-snapshot` | 本文档 | → `nyala/main`（PR #13） | 随本快照合并 |
 | `fix/p0-windows-smoke` | `595db6c10f7` | → `nyala/main`（PR #23，Draft） | Windows 1.143.0 原生冒烟 + Reload/Dispose 单元测试 |
 | `fix/extension-api-version` | 基于 `595db6c10f7` | → `nyala/main`（PR #24，Draft；含 #23 的提交，#23 合并后 rebase） | 向扩展报告 Extension API 版本，修复内置语言功能激活失败；ADR 0003 |
+| `fix/disabled-chat-runtime` | 基于 `c6488d318dc` | → `nyala/main`（Draft；含 #23、#24 的提交，二者合并后 rebase） | 运行时关闭 Chat 视图、内置 Copilot Chat 与 Microsoft 认证；冒烟增加 Chat 与出口检查 |
 
 > Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.ts`、`.github/workflows/nyala-ci.yml`、`product.json` 的 Chat/认证置空改动已随 **PR #8** 进入 `nyala/main`；`nyala/rpc/` 合同随 **PR #11** 进入。
 
@@ -52,7 +53,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 1. **CI 仍然跑不出结果**：三个 PR 的检查全红都是 GitHub 账单问题（`The job was not started because recent account payments have failed or your spending limit needs to be increased`），任务根本没启动，与代码无关；合并后仍需解决，否则后续 PR 都拿不到真实检查。
 2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，待合并）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；合并后 `patchCount` 应由 46 改为 50。
-3. **运行时 Chat / Copilot 仍可见**：Windows 原生运行时出现 Chat 视图，`GitHub.copilot-chat` 激活，`vscode.microsoft-authentication` 经 `onAuthenticationRequest:microsoft` 激活并读取本机账户缓存。此前「disabled Chat 不触发 Microsoft 账户探测」的结论只覆盖 `product.json`，运行时不成立。
+3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，待合并）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**仍有出站路径**：Agent Host 照常启动（加载 Copilot SDK / Claude / Codex provider），Chromium 从 `redirector.gvt1.com` 下载拼写词典；两者都未修复，冒烟中为 FAIL。
 4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
 5. Rust Runtime（P1.1–P1.4）未开始；`nyala/rpc` 合同是它的前置条件。
 6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）已有完整的 `node_modules` / `out` / `.build`；其他机器恢复需要重新安装与编译（见下）。
@@ -88,7 +89,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
 2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted），并在 `nyala-ci.yml` 增加一行 `npm run nyala:validate-rpc`。
-3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；下一步审计运行时 Chat / Microsoft 认证入口，之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
+3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；下一步关闭 Agent Host 启动与 Chromium 拼写词典下载，之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
 4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
 
 ## 新机器恢复步骤（macOS / Linux）

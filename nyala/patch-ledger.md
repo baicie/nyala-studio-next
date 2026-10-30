@@ -27,6 +27,11 @@
 `product.json` 与 `src/vs/platform/product/common/product.ts` 已计入，`scripts/nyala/validate-product.ts` 与
 `docs/adr/0003-extension-api-version.md` 按口径不计入。按规则在合并之后再改 `upstream-base.json`。
 
+`fix/disabled-chat-runtime`（基于 `fix/extension-api-version`）不再改变该数字：它修改的上游跟踪文件
+`product.json`、`src/vs/base/common/product.ts`、`extensionsScannerService.ts` 及其测试、`chatEntitlementService.ts`
+都已计入；新增的 `src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts` 是 Nyala 自有测试，
+`scripts/nyala/` 按口径不计入。两个 PR 都合并后 `patchCount` 为 `50`。
+
 ## 改动清单
 
 | 范围 | 文件 | 目的与风险 | 验证 |
@@ -42,7 +47,8 @@
 | 依赖治理 | `.github/dependabot.yml` | 合并 GitHub Actions 的分组更新（1 个 PR）、并发上限 1、github-actions/devcontainers 改 monthly、npm 由 daily 改 weekly，降低 CI 不可用期间的依赖 PR 噪声。风险是上游同步时该文件产生小冲突，按行保留 Nyala 段即可。 | YAML 解析（ruby/python）、字段断言（groups/limits）、`git diff --check` |
 | 扩展 API 版本 | `src/vs/base/common/product.ts`、`src/vs/workbench/services/extensions/electron-browser/localProcessExtensionHost.ts`、`src/vs/workbench/services/extensions/common/remoteExtensionHost.ts`、`src/vs/workbench/services/extensions/browser/webWorkerExtensionHost.ts`、`product.json`、`src/vs/platform/product/common/product.ts` | 新增可选字段 `extensionApiVersion`（= 基线 Tag `1.143.0`），三个 Extension Host 把它作为 `vscode.version` 交给扩展，缺省回退 `version`；产品版本仍为 `0.0.1-dev.0`。修复内置 css/html/json/markdown 语言服务因 `vscode-languageclient` semver 检查而激活失败。风险：每次上游同步必须改为新 Tag（校验脚本强制）；第三方 VSIX 的 `engines.vscode` 校验仍用产品版本。见 [ADR 0003](../docs/adr/0003-extension-api-version.md)。移除条件：产品版本本身满足 `^1.x`，或上游提供独立 API 版本字段。 | `npm run nyala:validate-product`（含 2 个负向对照）、typecheck-client、compile、Windows 原生探针（4 个语言服务激活、Markdown 预览渲染）、`smoke-electron.ts` |
 | 依赖元数据 | `package.json`、锁文件、Copilot 元数据 | 版本统一为 `0.0.1-dev.0`，作者和禁用服务配置同步。 | npm metadata、compile |
-| 服务边界 | `product.json`、`src/vs/platform/product/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` | disabled Chat 使用空扩展/供应商 ID，并在未配置扩展时跳过 entitlement 初始化，避免安装占位扩展或后台探测 Microsoft 账户。 | `npm run nyala:validate-product`、typecheck、compile-client |
+| 服务边界 | `product.json`、`src/vs/platform/product/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` | disabled Chat 使用空扩展/供应商 ID，并在未配置扩展时跳过 entitlement 初始化，避免安装占位扩展。空 ID 本身挡不住内置扩展：见下一行。 | `npm run nyala:validate-product`、typecheck、compile-client |
+| 内置 Chat 关闭 | `product.json`（`skipBuiltinExtensions`）、`src/vs/base/common/product.ts`（新增可选字段；该文件已由「扩展 API 版本」一行计入）、`src/vs/platform/extensionManagement/common/extensionsScannerService.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts`；测试 `src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts`（已计入），以及 Nyala 自有的 `src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts`（新增，不是上游跟踪文件） | 开发态把 `extensions/` 下每个目录都当作内置扩展扫描，打包的 `GitHub.copilot-chat` 因此加载、注册默认参与者 `github.copilot.editsAgent`，并在启动时经 `getAnyAdoSession` 静默请求 `microsoft` 会话（激活 `vscode.microsoft-authentication`）。上游原本靠 `defaultChatAgent.chatExtensionId` 在未完成 setup 时禁用该扩展，空 ID 让这条保护也失效。修复：产品字段 `skipBuiltinExtensions` 与环境变量 `VSCODE_SKIP_BUILTIN_EXTENSIONS` 语义相同，由扫描器合并处理，开发态与打包态都生效；产品禁用默认 Chat 时 `ChatEntitlementService` 置 `chatSetupHidden=true`，且 `setForceHidden(false)`（账户策略门）不能撤销。风险：上游新增带 Chat 贡献点的内置扩展时，`nyala:validate-product` 会失败，需要把它加进列表。 | `nyala:validate-product`（扫描 `extensions/*/package.json` 的 Chat 贡献点）、定向单测、`typecheck-client`、原生冒烟 |
 
 ## 同步记录
 

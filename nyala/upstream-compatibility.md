@@ -178,6 +178,67 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 | Markdown 预览 webview | FAIL（60 秒内没有渲染出标题） | PASS（webview 渲染出 `h1` `Nyala probe`） |
 | exthost.log 中的激活失败 | 4 个扩展 | 0 |
 
+### 关闭运行时 Chat 与 Microsoft 认证（2026-10-30）
+
+```text
+代码          fix/disabled-chat-runtime edfde8418f26494e903a50248d848e6676484b5e（基于 fix/extension-api-version c6488d318dc）；
+              工作树只有 nyala/patch-ledger.md 未提交，不影响运行
+构建          out/ 由同一源码转译（node build/next/index.ts transpile）
+环境          同上（Windows 11 Pro 10.0.26200 x64、Node 24.18.0、npm 11.16.0、Electron 43.7.7）
+命令          node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence %TEMP%\nyala-p0-smoke\electron-20261030-105353-head --reloads 2
+```
+
+审计结论（发现 2 的原因）：
+
+1. 开发态把 `extensions/` 下每个目录都当作内置扩展扫描，`extensions/copilot`（`GitHub.copilot-chat`）因此加载并注册默认
+   参与者 `github.copilot.editsAgent`；Chat 视图创建会话时，`chatServiceImpl.activateDefaultAgent` 以
+   `onChatParticipant:github.copilot.editsAgent` 激活它。上游在 setup 未完成时靠 `defaultChatAgent.chatExtensionId`
+   禁用该扩展（`extensionEnablementService.ensureChatExtensionInitialDisabledState`），PR #8 把 ID 置空后这条保护也失效。
+2. 激活 `vscode.microsoft-authentication` 的是 copilot-chat：启动时 `getAnyAdoSession` 以 Azure DevOps scope 静默请求
+   `microsoft` 会话。核心的 `chatSetupMicrosoftProbe` 没有运行：`provider.microsoft.id` 为空时它不探测，修复前的日志里
+   也没有它请求的 Entra scope。`copilot-cloud-agent` 的 "Sign in to GitHub" 错误同样来自 copilot-chat。
+3. Chat 视图的 `when` 是 `!chatSetupHidden || chatPanelParticipantRegistered`。`ChatEntitlementService` 遇到禁用的默认
+   Agent 直接返回，没有设置 `chatSetupHidden`；账户策略门在启动约 5 秒内又会调用 `setForceHidden(false)`。
+
+修复见 [patch ledger](patch-ledger.md)「内置 Chat 关闭」：产品字段 `skipBuiltinExtensions` 列出 `GitHub.copilot-chat`，
+由扩展扫描器与 `VSCODE_SKIP_BUILTIN_EXTENSIONS` 合并处理；产品禁用默认 Chat 时 `chatSetupHidden` 置为 true，
+`setForceHidden(false)` 不能撤销。`nyala:validate-product` 在任何带 Chat 贡献点的内置扩展未列入该字段时失败。
+
+`smoke-electron.ts` 新增 5 项检查，共 17 步：
+
+| 检查 | 结果 | 观察 |
+|---|---|---|
+| 原有 12 步（标题、状态栏、Hello、Connections、空工作区编辑、Split、Webview、Extension Host、内置扩展激活无错误、2 次 Reload） | PASS | 与上一小节相同；每次 Reload 后也检查 Chat |
+| disabled Chat 保持隐藏 | PASS | 启动后、按 `Ctrl+Alt+I` 后、2 次 Reload 后都没有 Chat 视图元素，也没有 "Build with Agent" / "Set BYOK utility models" |
+| Copilot Chat 与 Microsoft 认证不激活 | PASS | exthost.log 无 `GitHub.copilot-chat`、`vscode.microsoft-authentication` 的激活；没有 `Microsoft Authentication.log` |
+| Agent Host 不启动 | FAIL | main.log 有 1 次 `AgentHostProcessManager: agent host started`，见下 |
+| NetLog 无非回环主机 | FAIL | 只有 `redirector.gvt1.com` 与其重定向到的 `*.gvt1-cn.com`，请求 `/edgedl/chrome/dict/en-us-10-1.bdic`，见下 |
+| 日志未提到非回环主机 | FAIL | 只有 `api.github.com`，全部来自 renderer.log 的 `[AgentHost] No signed-in session resolved for resource: …` |
+
+整体结果：**FAIL（14/17）**。本任务的验收项（无 Chat 视图；`GitHub.copilot-chat`、`vscode.microsoft-authentication`
+不激活）全部 PASS。3 个 FAIL 是新增的出口检查发现的其他路径，本分支没有处理，脚本保留这些检查让问题保持可见：
+
+- **Agent Host 仍会启动（FAIL，未修复）。** renderer 的 `AgentHostPrewarmContribution` 在
+  `IAgentHostEnablementService.enabled`（运行时可用且 `chat.disableAIFeatures` 不为 true）时连接 agent host，主进程随即
+  启动 utility 进程；agenthost.log 显示它加载 Copilot SDK、Claude、Codex provider。它不受 `defaultChatAgent` 或
+  `skipBuiltinExtensions` 控制。`api.github.com` 只出现在认证解析日志里，不能证明发出了请求。
+- **Chromium 拼写词典下载（FAIL，未修复）。** 主窗口 `webPreferences.spellcheck` 为 false，发起方尚未定位。Electron 在
+  Windows/Linux 上默认从 Google CDN 下载 Hunspell 词典；候选修复是为 session 设置词典下载地址或关闭 spellchecker（未验证）。
+- **出口检查的边界。** NetLog（`--log-net-log`）只覆盖 Chromium 网络栈；Extension Host、Agent Host 等 Node 进程的请求
+  不经过它，只能用日志中的主机名作线索；Node inspector 的帮助链接已在脚本中过滤。没有做系统级抓包。
+
+对照运行（证据留在本机 `%TEMP%\nyala-p0-smoke\`，不入库）：
+
+| 运行 | 代码 | Chat 视图 | copilot-chat / Microsoft 认证 | 外部主机 |
+|---|---|---|---|---|
+| `electron-20261029-220606` | `595db6c10f7`，修复前 | 显示 | 都激活 | 日志：`api.github.com`、`embeddings.vscode-cdn.net`、`login.microsoftonline.com`（当时没有 NetLog） |
+| `electron-20261030-014948-negative` | 只有 `chatSetupHidden` 修复，去掉 `skipBuiltinExtensions` | 显示（copilot-chat 注册了 Chat 参与者） | 都激活 | NetLog：`*.vscode-cdn.net`、词典下载；日志：`api.github.com`、`login.microsoftonline.com` |
+| `electron-20261030-090727-no-hidden` | 只有 `skipBuiltinExtensions`，`chatEntitlementService.ts` 回退到 `c6488d318dc` | 显示（核心 Chat 视图 "Build with Agent"） | 都不激活 | NetLog：词典下载；日志：`api.github.com` |
+| `electron-20261030-105353-head` | `edfde8418f2`，两项修复都在 | 不显示 | 都不激活 | NetLog：词典下载；日志：`api.github.com` |
+
+两个负向对照说明两项改动都必要：只隐藏 Chat 挡不住 copilot-chat 激活和 Microsoft 认证；只跳过内置扩展挡不住核心
+Chat 视图。没有可以删掉的部分。
+
 ### 发现
 
 1. **开发版本号让内置语言功能激活失败（已修复：`fix/extension-api-version` `6d35da69627`，PASS 12/12）。**
@@ -191,12 +252,13 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
    `extensionApiVersion ?? version`；用户可见的产品版本仍是 `0.0.1-dev.0`，`nyala:validate-product` 断言该字段等于
    `nyala/upstream-base.json` 的 `tag`。修复后 css/html/json/markdown 四个语言功能全部激活，Markdown 预览渲染正常。
    仍未覆盖：第三方 VSIX 的 `engines.vscode` 校验依旧使用 `0.0.1-dev.0`（ADR 0003「后果」）；macOS / Linux 未复跑。
-2. **禁用的 Chat 在运行时仍然可见，并触发 Microsoft 账户探测（未修复）。** 窗口右侧显示 Chat 视图
-   （"Build with Agent"、"Set BYOK utility models"）；内置 `GitHub.copilot-chat` 经
+2. **禁用的 Chat 在运行时仍然可见，并触发 Microsoft 账户探测（已修复：`fix/disabled-chat-runtime` `f6f1e2489bb`）。**
+   修复前窗口右侧显示 Chat 视图（"Build with Agent"、"Set BYOK utility models"）；内置 `GitHub.copilot-chat` 经
    `onChatParticipant:github.copilot.editsAgent` 激活；`vscode.microsoft-authentication` 经
    `onAuthenticationRequest:microsoft` 激活，MSAL 原生 broker 读取了本机 Windows 账户缓存中的已有账户（所请求
-   scope 返回 0 个 session）；renderer.log 有 `copilot-cloud-agent` 的 "Sign in to GitHub" 错误。这与下文「disabled
-   Chat 不会触发 Microsoft 账户探测」的结论相反。本次没有做网络出口审计。该日志含个人账户信息，只留在本机证据目录，
+   scope 返回 0 个 session）；renderer.log 有 `copilot-cloud-agent` 的 "Sign in to GitHub" 错误。原因与修复见
+   「关闭运行时 Chat 与 Microsoft 认证」一节：修复后 Chat 视图不显示，两个扩展都不激活。同一节新增的出口检查发现
+   Agent Host 启动和 Chromium 拼写词典下载两条出站路径（FAIL，未修复）。该日志含个人账户信息，只留在本机证据目录，
    不入库、不引用。
 3. **Windows 构建前置条件。** 所用 MSVC 版本必须装有 Spectre 缓解库（VS Installer → 单个组件），或用
    `VCToolsVersion` 指向已装有该库的版本；GitHub 匿名 API 额度用完时，ripgrep 与 Electron 下载需要
@@ -215,16 +277,20 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 - SQL Runtime、Rust Sidecar、连接驱动、查询执行或结果网格；
 - 完整桌面 E2E、上游 smoke 套件和发布包回归（Reload Window 生命周期已有单元测试与 Nyala 原生冒烟覆盖）；
 - 上游 Microsoft 服务、Marketplace 或 Copilot 的可再分发授权。
-- 产品基线校验只证明 `product.json` 中 disabled Chat 的扩展/供应商 ID 为空；Windows 原生运行时观察到 Chat 视图、
-  `GitHub.copilot-chat` 激活和 Microsoft 认证扩展的账户探测（见 Windows 节发现 2），因此**不能**再宣称运行时不会触发
-  Microsoft 账户探测。
+- disabled Chat 的运行时边界：产品基线校验证明 `product.json` 中 disabled Chat 的扩展/供应商 ID 为空，且所有带 Chat
+  贡献点的内置扩展都列在 `skipBuiltinExtensions` 中；Windows 开发态原生冒烟（`edfde8418f2`）证明 Chat 视图不显示、
+  `GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 不激活。它们**不**证明 Nyala 没有出站连接：Agent Host
+  仍会启动、Chromium 会下载拼写词典（均为 FAIL，见「关闭运行时 Chat 与 Microsoft 认证」）；Node 进程的请求不经过
+  NetLog，也没有做系统级抓包；打包版本与 macOS / Linux 未验证。
 
 ## 下一步验收
 
 1. ~~为 `Nyala Connections` 增加 Reload/Dispose 自动化测试。~~ 已完成：`nyalaBootstrap.test.ts` 与 `scripts/nyala/smoke-electron.ts`。
 2. ~~在目标 Windows 环境完成 `scripts/code.bat`、数据目录隔离和原生启动记录。~~ 已完成开发态启动，见 Windows 1.143.0 节。
 3. ~~修复开发版本号导致的内置语言服务激活失败，之后让 `smoke-electron.ts` 的「内置扩展激活无错误」通过。~~ 已完成：`fix/extension-api-version` `6d35da69627`，Windows 原生冒烟 PASS 12/12。
-4. 审计并关闭运行时 Chat/Copilot 与 Microsoft 认证入口，补网络出口检查。
+4. ~~审计并关闭运行时 Chat/Copilot 与 Microsoft 认证入口，补网络出口检查。~~ 已完成：`fix/disabled-chat-runtime`
+   `f6f1e2489bb`（修复）与 `edfde8418f2`（冒烟检查）。下一步关闭 Agent Host 启动与 Chromium 拼写词典下载，让
+   `smoke-electron.ts` 的 3 项出口检查通过。
 5. 在 Linux 与 macOS 上用 `smoke-electron.ts` 复跑 1.143.0 原生冒烟。
 6. 在进入 P1 前实现 Rust RPC 合同的半帧、超限、错误和版本不匹配测试。
 7. 每次上游升级重新运行本报告中的基础命令与原生冒烟，并更新 [patch ledger](patch-ledger.md)。
