@@ -53,6 +53,8 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 4. Chat / Copilot / 认证入口置空后只做过代码审计，没有系统 UI 回归。
 5. Rust Runtime（P1.1–P1.4）未开始；`nyala/rpc` 合同是它的前置条件。
 6. 本机 `node_modules` / `out` / `.build` 已清理，恢复需要重新安装与编译（见下）。
+7. **CI 无单元测试与 smoke 门禁**：`.github/workflows/nyala-ci.yml` 的 12 个 step 中没有测试执行步骤，因此 #23/#24/#26 新增的 `nyalaBootstrap.test.ts`、`nyalaDisabledChat.test.ts`、`extensionsScannerService.test.ts` 在本仓库 CI 中从不运行，只能靠本地手工执行。修复需单独立 PR（transpile + 定向 mocha），会让 CI 明显变长，属需所有者拍板的工程取舍。
+8. **`validate-product` 扫描范围缺口**：脚本只扫描仓库 `extensions/`，未覆盖 `product.json` 的 `builtInExtensions`（打包态来源）。将来上游把 copilot-chat 移入 `builtInExtensions` 时校验不会报警（运行时仍会被 `skipBuiltinExtensions` 跳过，故非安全缺口）。
 
 ## 治理与 CI 现状（2026-10-29）
 
@@ -94,6 +96,16 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 - 合并顺序（已用 `git merge-tree` 演练）：`#22 → #23 → #24 → #26 → #25 → #21`；前四步无冲突，#25 与 #21 各只需手解 `docs/nyala-kickoff/PROGRESS.md`。
 - 合并前需让各分支先跟上 `nyala/main` 再 squash（堆叠链固有代价）；合并方式与是否合并由仓库所有者决定，PR #21 描述中保留「请勿自动合并」约束直到所有者明确授权。
+
+#### 只读治理审查结论（2026-10-30）
+
+| PR 组 | 结论 | 必须解决项 |
+|---|---|---|
+| #25 feat/p1-rust-runtime | PASS-WITH-RISK | 失败信封 `id: null` 违反 v1 schema（`server.rs:73-75`，`conformance.rs:329-339` 反向断言）：需改 schema 允许 null（符合 JSON-RPC 2.0）、或改实现、或记录偏差；`docs/adr/0002-rust-runtime-workspace.md:81`「client job 不改」与事实不符（stack 了 #22 的 commit） |
+| #23 / #24 / #26 | PASS-WITH-RISK | `extensionsScannerService.ts:223-227` 与 `chatEntitlementService.ts` 两处超出 1–3 行且未记录否决替代方案；ADR 0003 合并时 Proposed→Accepted；新增 3 个测试未进 CI（见缺口 7） |
+
+- 审查方式：只读 `git show/diff` + 在临时目录 `git archive` 后实跑 `cargo fmt/clippy/test`（未改动仓库）。
+- 已驳回的误判：审查提出「PR #26 描述缺第 7 个上游文件」，复核后 PR body 已列出 `chatEntitlementService.ts`，不采纳。
 
 ## 下一步（建议顺序）
 
