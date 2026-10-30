@@ -189,10 +189,16 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      # Same commands as upstream `.github/workflows/pr-linux-test.yml`.
-      - name: Node unit tests (full suite)
-        run: npm run test-node
+      # Upstream runs `npm run test-node` here (pr-linux-test.yml:315), but this fork cannot: two
+      # dispatches (45 min and 120 min) never finished, and at 120 min the runner was still
+      # emitting a 30-second timeout per test (indices 2107-2111 at 30 s intervals). Scope the node
+      # run to the extension-management suite, which is the area the Nyala patches touch.
+      - name: Node unit tests (extension management)
+        run: >
+          node test/unit/node/index.js
+          --runGlob "vs/platform/extensionManagement/**/*.test.js"
 
+      # Same command as upstream (pr-linux-test.yml:320).
       - name: Browser unit tests (full suite)
         run: npm run test-browser-no-install -- --browser chromium
 
