@@ -68,7 +68,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 | 事项 | 原证据（2026-10-29 早） | 当前状态（2026-10-29 晚） | 剩余操作与验收 |
 |---|---|---|---|
-| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；当天的 Run 全部 `failure`/`queued`，Job 为 0 steps | **已解除**：仓库转为公开后，PR #21 的 [Run 40863715504](https://github.com/baicie/nyala-studio-next/actions/runs/40863715504)（attempt 2）执行了真实 step。`Product baseline` PASS；`Client typecheck and hygiene` 中 `Typecheck client` PASS，`Hygiene` FAIL，`Check diff` 被跳过 | Hygiene 失败原因是 `ERR_MODULE_NOT_FOUND: gulp-merge-json`：该包只在 `build/package.json` 声明，而 `nyala-ci.yml` 只在根目录跑 `npm ci --ignore-scripts`，postinstall 被跳过，`build/` 依赖未安装。这是 workflow 缺陷，不是计费问题，需单独 PR 修复；验收为该 Job 全绿 |
+| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；当天的 Run 全部 `failure`/`queued`，Job 为 0 steps | **已解除**：仓库转为公开后，PR #21 的 [Run 40863715504](https://github.com/baicie/nyala-studio-next/actions/runs/40863715504)（attempt 2）执行了真实 step。`Product baseline` PASS；`Client typecheck and hygiene` 中 `Typecheck client` PASS，`Hygiene` FAIL，`Check diff` 被跳过 | Hygiene 失败原因是 `ERR_MODULE_NOT_FOUND: gulp-merge-json`：该包只在 `build/package.json` 声明，而 `nyala-ci.yml` 只在根目录跑 `npm ci --ignore-scripts`，postinstall 被跳过，`build/` 依赖未安装。这是 workflow 缺陷，不是计费问题，需单独 PR 修复；验收为该 Job 全绿。2026-10-30 更新：修复已提交为 PR #22（run 40870342300 全绿），尚未合入；其余 5 个 PR 已 stack 该 commit，Hygiene 在各自分支上均真实通过。 |
 | 分支保护 / rulesets 不可用 | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 与 `/rulesets` 均 403：`Upgrade to GitHub Pro or make this repository public` | **可配置但未开启**：`/branches/nyala/main/protection` 返回 404 `Branch not protected`，`/rulesets` 返回 `[]` | 由仓库所有者决定是否启用 required PR + required status checks；protection API 返回 200 之前**不宣称仓库已受保护** |
 
 ### CODEOWNERS 结论
@@ -81,10 +81,25 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 2. 本地证据至少包含：`git diff --check`、按改动类型选择的最小验证、以及"未运行项及原因"。
 3. 同步类 PR 必须保留上游 Tag 祖先，用 Merge Commit 合入；功能 PR 用 Squash。
 
+### 2026-10-30 接手轮状态（全部经 CI 复核）
+
+| PR | 分支 | head | CI run | 结果 |
+|---|---|---|---|---|
+| #22 | `fix/nyala-ci-hygiene-deps` | `fd138d074c51c6de990676278634ea21f0c871e2` | [40870342300](https://github.com/baicie/nyala-studio-next/actions/runs/40870342300) | 2/2 |
+| #23 | `fix/p0-windows-smoke` | `f7cb481013a5ceb981bb3ab2221391519f5d36b1` | [40999566128](https://github.com/baicie/nyala-studio-next/actions/runs/40999566128) | 2/2 |
+| #24 | `fix/extension-api-version` | `38a8b4910b225773b2e0cfc86333d831149a0a93` | [41000130664](https://github.com/baicie/nyala-studio-next/actions/runs/41000130664) | 2/2 |
+| #25 | `feat/p1-rust-runtime` | `d6050e7505fc9eb9723a95ba0a7849382dbd06e8` | [40999226065](https://github.com/baicie/nyala-studio-next/actions/runs/40999226065) | 3/3（含 Rust runtime） |
+| #26 | `fix/disabled-chat-runtime` | `12f5c3fd0e992dd16ff9eab04ba820c3f94c5010` | [41000542635](https://github.com/baicie/nyala-studio-next/actions/runs/41000542635) | 2/2 |
+| #21 | `docs/nyala-design-v1.1` | `ceac606c0a6ff026b99c06c0a343c3525df222a5` | [40999456736](https://github.com/baicie/nyala-studio-next/actions/runs/40999456736) | 2/2 |
+
+- 合并顺序（已用 `git merge-tree` 演练）：`#22 → #23 → #24 → #26 → #25 → #21`；前四步无冲突，#25 与 #21 各只需手解 `docs/nyala-kickoff/PROGRESS.md`。
+- 合并前需让各分支先跟上 `nyala/main` 再 squash（堆叠链固有代价）；合并方式与是否合并由仓库所有者决定，PR #21 描述中保留「请勿自动合并」约束直到所有者明确授权。
+
 ## 下一步（建议顺序）
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
 2. ~~解决 CI 账单~~ 已解除（2026-10-29，仓库转为公开）；剩下的是修 `nyala-ci.yml` 的 `build/` 依赖安装，让 Hygiene 能跑通。~~在 `nyala-ci.yml` 增加 `npm run nyala:validate-rpc`~~ 已存在（`.github/workflows/nyala-ci.yml` 第 39 行，2026-10-29 核对）。
+2026-10-30：workflow 修复已作为 PR #22 提交并在其分支上全绿（run 40870342300），待合入；#23/#24/#25/#26/#21 已各自 stack 该 commit 并全部转绿，当前均处于「CI 全绿、待合并」的 Draft 状态。
 3. 补 P0 生命周期回归：完整安装 + 编译后跑 Electron smoke（命令见下），把结果写回 P0 清单。
 4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
 
@@ -107,6 +122,8 @@ npm run nyala:validate-rpc   # 纯 Node，无依赖，可先跑
 - `npm run compile` 生成 `out/`；`./scripts/code.sh` 负责 Electron 下载与启动。
 - Rust 侧当前只需 `cargo`（本机验证 `cargo 1.96.0` 可用）；`cli/` 是上游 CLI 资源，不含 Nyala Runtime。
 - 校验基线：`npm run compile`、`npm run typecheck-client`、`npm run build-fast -- --client-only`、`npm run gulp hygiene`、定向 ESLint、`git diff --check`。
+
+- 本机（Windows）git-lfs smudge 不可用：`git worktree add` 新检出会在 `extensions/copilot/test/simulation/cache/base.sqlite` 报 `smudge filter lfs failed`。需要新 worktree 前先安装并初始化 git-lfs。
 
 ## 目录地图
 
