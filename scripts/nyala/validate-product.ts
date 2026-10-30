@@ -61,6 +61,26 @@ for (const entry of readdirSync('extensions', { withFileTypes: true })) {
 		assert.ok(skipBuiltinExtensions.has(id.toLowerCase()), `built-in ${id} contributes ${points.join(', ')} and must be listed in product.json skipBuiltinExtensions`);
 	}
 }
+// The extensions/ scan above cannot see extensions that a packaged build resolves from
+// product.json builtInExtensions. Apply the same chat restriction to any entry that maps to a
+// folder in this repository, and refuse chat-related entries outright.
+for (const entry of productJson.builtInExtensions ?? []) {
+	const name = String(entry?.name ?? '');
+	if (!name) {
+		continue;
+	}
+	const folder = name.includes('.') ? name.slice(name.indexOf('.') + 1) : name;
+	const manifestPath = join('extensions', folder, 'package.json');
+	const manifest = existsSync(manifestPath) ? readJson(manifestPath) : undefined;
+	if (manifest) {
+		const id = `${manifest.publisher}.${manifest.name}`;
+		const points = chatContributionPoints.filter(point => manifest.contributes?.[point]);
+		if (points.length) {
+			assert.ok(skipBuiltinExtensions.has(id.toLowerCase()), `builtInExtensions entry ${name} resolves to extensions/${folder}, which contributes ${points.join(', ')} and must be listed in product.json skipBuiltinExtensions`);
+		}
+	}
+	assert.ok(!/copilot|chat/i.test(name) || skipBuiltinExtensions.has(name.toLowerCase()), `builtInExtensions entry ${name} looks like a chat extension and must be listed in product.json skipBuiltinExtensions`);
+}
 assert.ok(skipBuiltinExtensions.has('github.copilot-chat'), 'product.json skipBuiltinExtensions must list GitHub.copilot-chat');
 
 assert.match(upstreamBase.sha, /^[a-f0-9]{40}$/, 'upstream baseline SHA must be complete');

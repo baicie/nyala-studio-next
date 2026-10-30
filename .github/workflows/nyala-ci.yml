@@ -75,6 +75,42 @@ jobs:
       - name: Check diff
         run: git diff --check
 
+  unit-tests:
+    name: Unit tests (node)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+      - name: Prepare Electron types
+        run: node build/npm/electronTypes.ts
+
+      # build-fast.ts imports esbuild from build/node_modules, which the root install skips.
+      - name: Install build dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: build
+
+      # The node test runner loads compiled tests from out/, so transpile the client first.
+      - name: Build client (transpile)
+        run: npm run build-fast -- --client-only
+
+      # Browser-only suites (src/vs/workbench/contrib/nyala/test/browser) cannot load in this
+      # runner; PROGRESS.md gap 7 tracks them separately.
+      - name: Unit tests (node)
+        run: node test/unit/node/index.js --run src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts
+
   rust:
     name: Rust runtime
     runs-on: ubuntu-latest
