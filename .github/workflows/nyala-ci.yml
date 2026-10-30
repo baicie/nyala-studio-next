@@ -145,11 +145,13 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-  browser-tests:
-    name: Browser tests (manual)
-    # The Nyala workbench bootstrap test lives under test/browser, which the node runner
-    # excludes. It needs a real browser, so it runs only on workflow_dispatch instead of on
-    # every PR (a full client build plus a Chromium download would roughly double PR latency).
+  full-tests:
+    name: Full test suites (manual)
+    # Mirrors the upstream Code OSS Linux test job (`npm run test-node`,
+    # `npm run test-browser-no-install -- --browser chromium`) which upstream runs on self-hosted
+    # 1ES pools this fork does not have. It also covers the Nyala workbench bootstrap test, which
+    # lives under test/browser and therefore cannot run in the node runner. Manual only: a Chromium
+    # download plus the full suites would add well over ten minutes to every PR.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -183,6 +185,13 @@ jobs:
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
+
+      # Same commands as upstream `.github/workflows/pr-linux-test.yml`.
+      - name: Node unit tests (full suite)
+        run: npm run test-node
+
+      - name: Browser unit tests (full suite)
+        run: npm run test-browser-no-install -- --browser chromium
 
       - name: Browser tests (Nyala workbench)
         run: >
