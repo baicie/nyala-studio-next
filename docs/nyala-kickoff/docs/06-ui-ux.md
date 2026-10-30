@@ -62,3 +62,14 @@ Status Bar: Active Profile/DB/Schema · READ ONLY · Query State · Elapsed
 ## 不做的 UI
 
 不额外开发自定义全局 TabBar/Docking/Command Palette，不复制原 Sidebar 核心源码，不为 SQL 专用页面引入 React Router。局部复杂 Webview 可考虑其他框架，但不得重新封装整个 Workbench。
+
+## v1.1 产品交互决策：SQL-first + Task-first（规划）
+
+Nyala 保持 **SQL Workspace** 作为默认专业界面；额外的 **Agent Workspace** 是面向有界任务的工作区，不把全部 SQL 结果强行嵌入聊天流。
+
+- SQL Workspace：Connections、SQL Editor、多结果 Tab、Explain/History、Keyboard/Theme，用户保留直接控制权。
+- Agent Workspace：Task List + Timeline + Artifacts + Approval + Follow-up；任务可以从当前 SQL 选区、Schema Tree、Result、Plan 发起。
+- Artifact 必须是一等 IDE 对象：SQL Proposal → EditorInput；Explain → Plan Viewer；Result → Grid；Change → Diff/Approval，不只保留 Markdown 消息。
+- 模式共享 Query Context 与任务持久化身份，默认不共享原始数据库凭证、全表数据或隐藏的生产执行权限。
+
+目标交互和验收请见 [28](28-agent-workspace.md)、[31](31-sql-workspace-product.md)。本节为设计，不是当前 UI 已实现功能的描述。

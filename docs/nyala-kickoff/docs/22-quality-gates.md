@@ -35,3 +35,16 @@ P0 Block：泄露凭证、readonly 绕过、跨 Session 查询串库、自动重
 ## PR 模板
 
 见 `templates/PULL_REQUEST.md`。
+
+## v1.1 证据与阻断门槛
+
+在 PR 与阶段报告中统一使用 `PASS / FAIL / BLOCKED / NOT RUN`：
+
+- `PASS`：实际执行且通过，附命令、版本、平台与日志/Run。
+- `FAIL`：实际执行且失败，附可复现根因与关联 Issue。
+- `BLOCKED`：CI 账单、Runner、依赖下载/平台不可用导致无法跑，既不是通过也不等于代码失败。
+- `NOT RUN`：范围不要求或未执行，说明原因。
+
+**当前特别注意**：截至 2026-10-29 在线 GitHub Actions 的 Nyala Baseline Job 0 Steps（计费阻断），不得据此声明成功或代码错误；Code OSS 1.143.0 的编译报告不覆盖 Electron Smoke。用于 release 或上游同步的未完成验收必须保留单独门禁和显式风险授权。
+
+Agent 测试增加：Fake Harness determinism、工具审批拒绝、argumentsHash 不一致、跨库 Scope 隔离、Prompt Injection、凭证/结果脱敏、Task crash 恢复和未知执行状态；见 [30](30-agent-security-evaluation.md)。

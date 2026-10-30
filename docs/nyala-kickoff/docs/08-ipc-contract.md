@@ -1,5 +1,7 @@
 # 08 · IPC/RPC 协议与版本演进
 
+> **v1.1 重要提示**：本页原有字段/示例含早期设计意图，与仓库当前 v1.0 可执行合同时，**以仓库 `nyala/rpc/v1` 及 `nyala/rpc/README.md` 为准**；具体差异见文末“v1.1 协议勘误”。
+
 ## 决策
 
 Electron Main 启动 `nyala-runtime` 子进程，初期以 `stdio` 交换 **4 字节 little-endian 长度前缀 + UTF-8 JSON** 帧，JSON envelope 借鉴 JSON-RPC 2.0。Renderer 不直接访问子进程 stdin/stdout；仅通过最小权限的 Workbench Service 与 Main RPC Bridge。stderr 为非协议日志流；禁止 stdout 混入日志。
@@ -93,3 +95,12 @@ Error taxonomy：`AUTH_FAILED`,`NETWORK_UNREACHABLE`,`TLS_ERROR`,`QUERY_TIMEOUT`
 协议 `1.0` 在 P1 固定；字段扩展优先可选，不改变既有 enum 默认语义；破坏性变更升级 major。维护 JSON Schema + 类型生成工具与兼容性测试，不允许 TS/Rust 手工演化产生漂移。
 
 本文件是设计意图；**可执行合同**见 [`nyala/rpc/README.md`](../../../nyala/rpc/README.md)（envelope schema、错误码表、一致性样例，`npm run nyala:validate-rpc`）。两者冲突时以合同为准，并回头修正本文件。
+
+## v1.1 协议勘误与权威说明
+
+此前文档 `runtime.hello` 字段、方法目录和 `deadlineMs` 等表述是设计示意。**真正已冻结的可执行合同（实现基线）**：仓库 `nyala/rpc/README.md` 与 `nyala/rpc/v1/nyala-rpc.v1.schema.json`、`error-codes.json`、`conformance.ndjson`（PR #11）。
+
+- 不得直接把此设计里的 `deadlineMs`、`requestId` 等示意扩展当成 schema 已声明的字段；先读合同，例如当前合同以请求 `id`、`timeoutMs`、`sessionGeneration` 为准。
+- `transaction.*` 为后续版本，除非合同发布新能力位，不在 P1 v1.0 默认可用。
+- 任何字段语义更改先提出合同修订及兼容性 ADR，再做 TS/Rust 双端一致性、负向测试和 conformance；不能为了实现方便偷偷修改 `v1`。
+- [`../examples/`](../examples/) 下的 `rpc-envelope.schema.json`、`rpc-sample.ndjson` 是 v1.0 设计包的历史示例，明确禁用作正式生成源。

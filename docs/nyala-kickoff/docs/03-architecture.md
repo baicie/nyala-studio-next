@@ -110,3 +110,28 @@ Tauri 实验允许改 `ElectronAdapter` 到 `TauriAdapter`，但还需另外适�
 - 将 100 万行一次性 JSON 化后经 IPC 传给 Renderer。
 - 扩展直接把用户数据上传给默认 AI 服务。
 - 为“换肤”改动上游几十个 CSS 文件而没有公共主题层。
+
+## v1.1 补充 · 可选 Agent Platform 的架构位置（未实现）
+
+Agent 不接管 SQL Runtime，不通过 Renderer/Extension Host 直连数据库，也不替代现有 `INyalaQueryService`。候选依赖链如下：
+
+```mermaid
+flowchart TD
+  UI[SQL Workspace / Agent Task Workspace] --> AS[Nyala Agent Service]
+  AS --> HA[INyalaHarness Adapter]
+  HA --> CA[Codex app-server - optional]
+  HA --> NA[Native Harness - future]
+  AS --> CT[Context & Artifact Services]
+  CA --> TG[Nyala SQL Tool Gateway]
+  NA --> TG
+  TG --> PA[Policy and Approval]
+  PA --> QS[Nyala Query Service]
+  QS --> RR[Rust Runtime]
+  RR --> DB[(Database)]
+```
+
+- 单独 Agent Host 进程与 Electron/Rust DB Sidecar 不是同一进程；二者的协议、版本和升级周期独立。
+- Codex Thread/Turn/Item 仅在适配器内映射到 Nyala Task/Run/Event/Artifact；UI 和持久化不得直接绑定 Codex 的原始事件枚举。
+- Agent 只能调用 Gateway 暴露的受控数据库工具，SQL 的最终权限、会话身份及只读约束仍在 Query Authority 和 DB Role。
+- **当前状态**：这是一项未来架构边界，不代表 Agent 进程、MCP Server 或工具已经存在。
+- 详细决策见 [27](27-agent-platform.md)–[30](30-agent-security-evaluation.md)，原 SQL MVP 限制继续见 [ADR-0006](adr/0006-no-default-ai.md)。

@@ -14,6 +14,8 @@ Nyala 是一个开源学习型 SQL IDE 项目：沿用 VS Code Workbench 原生�
 - 功能切片：先 SQLite 完成完整执行闭环，再 PostgreSQL，再 MySQL。
 - 扩展：VS Code Extension API 优先；深度 Workbench 界面通过内置 Contribution。
 - 实验：Tauri、模块裁剪、AI Agent 都属于后续独立轨道。
+- 上游当前同步到 Code OSS `1.143.0`；协议 v1.0 可执行合同在 [`nyala/rpc/`](../../nyala/rpc/README.md)，Rust Runtime 尚未实现。
+- Design v1.1 增加了可选 Agent Workspace 的远期设计（[27](docs/27-agent-platform.md)–[31](docs/31-sql-workspace-product.md)），不改变 SQL-first 主线和 MVP 范围。
 
 当前开发版本：`0.0.1-dev.0`。上游固定基线和变更边界见 [`nyala/upstream-base.json`](../../nyala/upstream-base.json)、[patch ledger](../../nyala/patch-ledger.md) 与 [upstream compatibility report](../../nyala/upstream-compatibility.md)。
 

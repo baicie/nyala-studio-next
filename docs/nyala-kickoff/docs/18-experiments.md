@@ -46,3 +46,14 @@
 ## 实验记录模板
 
 使用 `templates/EXPERIMENT.md`，保存对应对比机器、版本和可复现实验脚本。实验可以失败，但需要保留工程结论，而不是仅留下一个未完成分支。
+
+## v1.1 E3 的拆分（不改变 Agent 非 SQL MVP 的 ADR）
+
+- **A0（设计期）**：定义 Task/Run/Event/Artifact、HarnessAdapter、ToolGateway/Policy 接口，禁止真实模型自动数据库执行；可与 P1 并行文档研究。
+- **A1（只读原型）**：在稳定 Query Authority 后，用 Mock Harness 与可选 Codex app-server PoC，完成进程启动、Thread/Turn 生命周期、流式事件、断线与取消；默认不给 Shell/File 任意权限。
+- **A2（工作区）**：Task Pane、Artifact 到 SQL Editor/Result/Plan 的映射；Event 状态恢复。
+- **A3（分析）**：Schema/Index/Explain 实际工具链，评价成本/准确率/误操作率。
+- **A4（受控执行）**：跨请求策略、审批绑定参数哈希、数据外发控制；写操作仍需额外安全评审，非默认能力。
+- **A5（研究）**：Native Harness、第三方 Harness 适配和差异测评，不将自研通用 Agent Loop 当作前置条件。
+
+必须给每个实验标明版本锁定、平台、上游接口兼容性、终止条件，并在 Agent 无法安装时确保 SQL IDE 可正常工作。见 [27](27-agent-platform.md)–[30](30-agent-security-evaluation.md)。

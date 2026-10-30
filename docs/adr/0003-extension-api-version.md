@@ -1,10 +1,10 @@
 # ADR 0003 · 向扩展报告独立的 Extension API 版本
 
-- 状态：Proposed（随 `fix/extension-api-version` 的 PR 审核）
+- 状态：Accepted（2026-10-30，随 PR #24 合入 `nyala/main`，squash `52664d3b715`）
 - 日期：2026-10-30
 - 决策域：产品版本合同（`IProductConfiguration`）与 Extension Host 初始化数据
 - 上位文档：[`docs/nyala-governance/11-release-versioning.md`](../nyala-governance/11-release-versioning.md)、[`docs/nyala-kickoff/docs/13-extensions.md`](../nyala-kickoff/docs/13-extensions.md)
-- 编号说明：`0002` 已被未合并的 `feat/p1-rust-runtime` 占用，本 ADR 取 `0003`。
+- 编号说明：`0002` 已被 `feat/p1-rust-runtime`（PR #25，`docs/adr/0002-rust-runtime-workspace.md`）占用，本 ADR 取 `0003`。
 
 ## 背景
 
