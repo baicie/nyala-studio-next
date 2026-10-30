@@ -83,7 +83,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
 5. Rust Runtime：N-101/N-102 已随 PR #25 合入 `nyala/main`（squash `7bfc4fc2a68`）；N-103 Supervisor 与 P1.2–P1.4 未开始；`nyala/rpc` 合同已冻结（PR #11）。CI 的 `Rust runtime` job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)）。
 6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）的 `node_modules` / `out` / `.build` / `build/node_modules` 均不存在（2026-10-30 实测）；其他机器恢复需要重新安装与编译（见下）。
-7. **单元测试门禁（部分关闭）**：新增 `Unit tests (node)` job——先 `npm run build-fast -- --client-only` 转译，再跑 `node test/unit/node/index.js --run src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts`。仍**未覆盖** `nyalaBootstrap.test.ts` 与 `nyalaDisabledChat.test.ts`：它们位于 `test/browser/`，node runner 排除该目录，需 playwright + 浏览器单测入口（会显著拉长 CI，待所有者拍板）。smoke（`scripts/nyala/smoke-electron.ts`）仍需本机执行，未进 CI。
+7. **单元测试门禁**：`Unit tests (node)` job 每次 PR 必跑，覆盖 `extensionsScannerService.test.ts` 与 `nyalaDisabledChat.test.ts`（后者在 `test/common/`，node runner 可直接加载），CI 实测 `39 passing`。`nyalaBootstrap.test.ts` 在 `test/browser/`，node runner 明确排除，改由 **`Browser tests (manual)` job 覆盖**（`workflow_dispatch` 手动触发：`build-fast` 转译 + `playwright install chromium` + browser runner），实测 `7 passing`（Chromium，run `41048113709`）。两件未做成的事及原因：①`npm run compile` 与 `compile-client` 在 CI 会因 `extensions/copilot` 的 esbuild、扩展 media 的 tsgo 缺依赖而失败，须先补齐各扩展依赖安装；②smoke（`scripts/nyala/smoke-electron.ts`）需真实窗口，ubuntu runner 不适用。
 8. ~~**`validate-product` 扫描范围缺口**~~：已关闭。脚本现在同时扫描 `product.json` 的 `builtInExtensions`：能映射到仓库内 `extensions/<folder>` 的条目沿用同一套 chat 贡献点检查；任何形似 chat/copilot 的条目必须出现在 `skipBuiltinExtensions` 中，否则断言失败。
 
 ## 治理与 CI 现状（2026-10-29）
