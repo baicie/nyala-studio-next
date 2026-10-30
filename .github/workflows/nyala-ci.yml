@@ -109,7 +109,10 @@ jobs:
       # Browser-only suites (src/vs/workbench/contrib/nyala/test/browser) cannot load in this
       # runner; PROGRESS.md gap 7 tracks them separately.
       - name: Unit tests (node)
-        run: node test/unit/node/index.js --run src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts
+        run: >
+          node test/unit/node/index.js
+          --run src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts
+          --run src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts
 
   rust:
     name: Rust runtime
@@ -141,3 +144,48 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+  browser-tests:
+    name: Browser tests (manual)
+    # The Nyala workbench bootstrap test lives under test/browser, which the node runner
+    # excludes. It needs a real browser, so it runs only on workflow_dispatch instead of on
+    # every PR (a full client build plus a Chromium download would roughly double PR latency).
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Prepare Electron types
+        run: node build/npm/electronTypes.ts
+
+      - name: Install build dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: build
+
+      # Browser suites load compiled modules and CSS from out/, so build the client fully.
+      - name: Build client
+        run: npm run compile
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests (Nyala workbench)
+        run: >
+          node test/unit/browser/index.js
+          --browser chromium
+          --reporter spec
+          --run src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts
+
