@@ -48,3 +48,12 @@ npm run nyala:validate-rpc
 #   methods: 15 implemented, 15 documented
 #   error kinds: 19 registered
 ```
+
+## 修订记录
+
+- **2026-10-30 · v1.0 勘误：`failure.id` 允许 `null`**
+  - **原约束过严**：schema 的 `$defs.failure.properties.id` 也写成 `$ref: #/$defs/id`（字符串 + pattern），比 JSON-RPC 2.0 §5 严格——该节要求无法识别请求 id 时 error 响应的 `id` 必须为 `null`。
+  - **实现未漂移**：Rust Runtime 在读不到请求 id 时一直输出 `"id": null`（`nyala-runtime/src/server.rs`），即实现符合规范、schema 落后于规范。因此修的是合同，不是实现。
+  - **改动**：新增 `$defs/failureId`，值为 `oneOf: [{$ref: #/$defs/id}, {type: "null"}]`；仅 `failure.properties.id` 改为引用它，并加 `description` 说明触发条件与客户端的 `data.kind` 分支要求。**`$defs/id` 本身未改**，请求、成功响应、通知的 `id` 仍是字符串。
+  - **受影响面仅失败响应**：字段集合不变、无字段语义变化，客户端本就按 `data.kind` 分支，故不构成破坏性变更，不新建 `v2/`、不走 major 协商。
+  - **连带同步**：`nyala/rpc/README.md` §2（null-id 规则）、§8（勘误记录）、§9（为何不加样例）已同步；`conformance.ndjson` 不加 `id: null` 样例，因为样例集按请求/响应对组织，校验脚本无法为无请求的响应配对。
