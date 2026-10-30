@@ -263,6 +263,22 @@ suite('NativeExtensionsScanerService Test', () => {
 		assert.deepStrictEqual(actual[0].manifest.version, '1.0.0');
 	});
 
+	test('scan system extensions skips builtin extensions listed by the product', async () => {
+		instantiationService.stub(IProductService, {
+			version: '1.66.0',
+			dataFolderName: '.nyala-studio',
+			builtInExtensionsEnabledWithAutoUpdates: [],
+			skipBuiltinExtensions: ['Pub.Skipped']
+		});
+		await aSystemExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub' }));
+		await aSystemExtension(anExtensionManifest({ 'name': 'skipped', 'publisher': 'pub' }));
+		const testObject: IExtensionsScannerService = disposables.add(instantiationService.createInstance(ExtensionsScannerService));
+
+		const actual = await testObject.scanSystemExtensions({});
+
+		assert.deepStrictEqual(actual.map(extension => extension.identifier), [{ id: 'pub.name' }]);
+	});
+
 	test('scan all user extensions with default nls replacements', async () => {
 		const extensionLocation = await aUserExtension(anExtensionManifest({ 'name': 'name', 'publisher': 'pub', displayName: '%displayName%' }));
 		await instantiationService.get(IFileService).writeFile(joinPath(extensionLocation, 'package.nls.json'), VSBuffer.fromString(JSON.stringify({ displayName: 'Hello World' })));

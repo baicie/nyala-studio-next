@@ -5,18 +5,21 @@
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 尚未开始写代码**，P0 清单只剩「Reload Window / 生命周期自动化回归」一项未关闭。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误）已在 `feat/p1-rust-runtime`（PR #25）实现、待审核；N-103 Supervisor 与 P1.2–P1.4 未开始**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟在 `fix/p0-windows-smoke` 上为 FAIL 11/12（内置语言功能与开发版本号 `0.0.1-dev.0` 不兼容），叠加 `fix/extension-api-version`（向扩展报告 Extension API 版本 `1.143.0`，ADR 0003）后为 **PASS 12/12**，两个分支均待合并。`fix/disabled-chat-runtime` 关闭了运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证激活，冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，新增的出口检查发现 Agent Host 启动与 Chromium 拼写词典下载两条出站路径（未修复）。
 
 ## 分支与 PR
 
 | 分支 | HEAD | 目标 | 状态 |
 |---|---|---|---|
-| `nyala/main` | `48f99b1916b`（2026-10-29 更新；原快照为 `13d253ee4a9`） | 稳定主线 | 已合入 #8、#11、#13、#14、#15、#16、#17、#18 |
-| `docs/nyala-design-v1.1` | 本次设计修订 | → `nyala/main` | Design v1.1 文档 PR（只改 `docs/nyala-kickoff/`，不含实现） |
+| `nyala/main` | `7bfc4fc2a68`（2026-10-30 收口时） | 稳定主线 | 已合入 #8、#11、#13、#14、#15、#16、#17、#18、#22、#23、#27、#24、#26、#25 |
 | `sync/code-oss-1.143.0` | 合并 `1.143.0` | → `nyala/main` | 同步分支：真正的 merge commit，上游 731 个提交保持为祖先 |
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
 | `feat/progress-snapshot` | 本文档 | → `nyala/main`（PR #13） | 随本快照合并 |
+| `fix/p0-windows-smoke` | `f7cb481013a` | → `nyala/main`（PR #23） | **MERGED**（squash `3a8cbc0b49f`）：Windows 1.143.0 原生冒烟 + Reload/Dispose 单元测试 |
+| `fix/extension-api-version` | `38a8b4910b2` | → `nyala/main`（PR #24） | **MERGED**（squash `52664d3b715`）：向扩展报告 Extension API 版本，修复内置语言功能激活失败；ADR 0003 |
+| `fix/disabled-chat-runtime` | `12f5c3fd0e9` | → `nyala/main`（PR #26） | **MERGED**（squash `dfa366609c5`）：运行时关闭 Chat 视图、内置 Copilot Chat 与 Microsoft 认证；冒烟增加 Chat 与出口检查 |
+| `feat/p1-rust-runtime` | `689a5aaec29` | → `nyala/main`（PR #25） | **MERGED**（squash `7bfc4fc2a68`）：`rust/` Runtime crate（N-101/N-102：分帧、hello/health、结构化错误） |
 
 > Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.ts`、`.github/workflows/nyala-ci.yml`、`product.json` 的 Chat/认证置空改动已随 **PR #8** 进入 `nyala/main`；`nyala/rpc/` 合同随 **PR #11** 进入。
 
@@ -26,7 +29,9 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 - 基线锁定：Code OSS `1.142.0` / SHA / Node `24.18.0` / npm，补丁口径 34 条记录在 [`nyala/upstream-base.json`](../../nyala/upstream-base.json) 与 [`nyala/patch-ledger.md`](../../nyala/patch-ledger.md)。
 - 产品身份：`Nyala Studio` / `nyala-studio` / `.nyala-studio` / `nyala://` / `0.0.1-dev.0`。
-- macOS 原生 Electron 启动、编辑器、Split、Extension Host、Webview 冒烟通过，见 [`nyala/upstream-compatibility.md`](../../nyala/upstream-compatibility.md)。
+- macOS 原生 Electron 启动、编辑器、Split、Extension Host、Webview 冒烟通过（`1.142.0`），见 [`nyala/upstream-compatibility.md`](../../nyala/upstream-compatibility.md)。
+- Windows 11 原生 Electron 冒烟（`1.143.0`）：`scripts/nyala/smoke-electron.ts` 经 `scripts\code.bat` 启动。2026-10-29 在 `fix/p0-windows-smoke`（`595db6c10f7`）上为 **FAIL 11/12**，唯一失败项是 `vscode.markdown-language-features` 激活失败；2026-10-30 在 `fix/extension-api-version`（`6d35da69627`）上为 **PASS 12/12**，css/html/json/markdown 语言功能全部激活、Markdown 预览渲染正常。详见兼容性报告 Windows 节。
+- Reload / Dispose 自动化回归：`src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts`（8 passing）。
 - Hello Workbench：`nyala.hello` 命令 + `Nyala Connections` 视图容器 + 状态栏入口，源码在 `src/vs/workbench/contrib/nyala/bootstrap/browser/`。
 - 质量门禁：`npm run compile`、`typecheck-client`、`build-fast --client-only`、`gulp hygiene`、定向 ESLint、JSON/脚本检查（同上报告）。
 - 文档落位：设计包 `docs/nyala-kickoff/`、`docs/adr/`、`nyala/patch-ledger.md`。
@@ -45,15 +50,37 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - `npm run nyala:validate-rpc`：分帧半包/粘包/零长度/超限、schema、请求响应配对、sequence 单调、错误码一致、README 与 schema 防漂移、负向对照。
 - ADR：`docs/adr/0001-rpc-contract-v1.md`（随 PR #11 引入，合并后才有该文件）。
 
+### P1.1 · Rust Runtime N-101/N-102（`feat/p1-rust-runtime`，待审核）
+
+- `rust/` 是独立的 Cargo workspace（不进上游 `cli/`），单 crate `rust/crates/nyala-runtime`：4 字节 LE 分帧（半包、粘包、零长度、超限）、envelope 解析、结构化错误（与 `error-codes.json` 逐项比对）、`runtime.hello`（major 不匹配回 `PROTOCOL_MISMATCH` 并以退出码 2 结束）、`runtime.health`。
+- 一致性测试直接读取 `nyala/rpc/v1/`；真实进程测试验证 stdout 只有协议帧、日志只在 stderr。
+- 本地证据（Windows 11，cargo 1.96.0）：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`（47 个）PASS；`nyala-ci.yml` 新增 `Rust runtime` job（ubuntu-latest），结果见本分支的 PR。目录选择、合同未写死之处和合同缺口见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)。
+
+## 2026-10-30 收口记录（六个 PR 全部合入）
+
+| PR | 分支 | head | CI run | 结果 |
+|---|---|---|---|---|
+| #22 | `fix/nyala-ci-hygiene-deps` | `fd138d074c5` | 40870342300 | 2/2 → squash `b48a859214a` |
+| #23 | `fix/p0-windows-smoke` | `85b141390c0` | 41021663868 | 2/2 → squash `3a8cbc0b49f` |
+| #27 | `fix/rpc-failure-id-null` | `bc87c4772c9` | 41022164396 | 2/2 → squash `1b0922d6321` |
+| #24 | `fix/extension-api-version` | `284c74242eb` | 41022562593 | 2/2 → squash `52664d3b715` |
+| #26 | `fix/disabled-chat-runtime` | `c1cd1365c69` | 41023407944 | 2/2 → squash `dfa366609c5` |
+| #25 | `feat/p1-rust-runtime` | `689a5aaec29` | 41024634079 | 3/3（含 Rust runtime）→ squash `7bfc4fc2a68` |
+| #21 | `docs/nyala-design-v1.1` | 本提交 | 见本 PR | 2/2 |
+
+- 合并方式：逐个 `gh pr merge --squash`；每个分支合并前先用新的 `nyala/main` 更新并重跑 CI，确保 PR diff 只含自身改动（#23 7 files / #24 13 files / #26 11 files / #25 19 files，均无其它 PR 内容泄漏）。
+- 合同勘误（新增 PR #27）：`nyala/rpc/v1` 的 `$defs/failureId` 允许 `"id": null`（JSON-RPC 2.0 §5），只放宽 `failure.id`，`$defs/id` 仍要求字符串。Rust 侧绊线断言已翻转为「schema 接受」，`cargo test --workspace --locked` 47 个测试通过。
+- 只读治理审查结论：#25 与 #23/#24/#26 均 PASS-WITH-RISK；必须解决项为「CI 无单测门禁」（见缺口 7）、`extensionsScannerService.ts` 与 `chatEntitlementService.ts` 两处超出 1–3 行且未记录否决替代方案的理由；`validate-product` 覆盖缺口见缺口 8。审查曾提出「PR #26 描述缺第 7 个上游文件」，经复核为误判未采纳。
+- 合并后校验：`npm run nyala:validate-rpc`（exit 0，36 definitions）、`npm run nyala:validate-product`（`Nyala product baseline is valid.`）在 `nyala/main` 上均通过。
 ## 未完成 / 已知缺口
 
-1. **CI 已能真实执行，但 Hygiene 失败**（2026-10-29 晚更新；原记录为 GitHub 账单阻断，任务未启动）：仓库转为公开后 Actions 正常启动，`Product baseline` 与 `Typecheck client` 通过；`Hygiene` 因 `nyala-ci.yml` 没有安装 `build/` 依赖而失败，详见下方表格。
-2. **P0 唯一未勾项**：Reload Window / 生命周期自动化回归（[P0 清单](checklists/P0-FIRST-14-DAYS.md) 第 22 行）。已手工验证首次启动与重复执行，缺自动化。
-3. Windows / Linux 原生启动、安装包、签名、更新链路均未验证。
-4. Chat / Copilot / 认证入口置空后只做过代码审计，没有系统 UI 回归。
-5. Rust Runtime（P1.1–P1.4）未开始；`nyala/rpc` 合同是它的前置条件。
-6. 本机 `node_modules` / `out` / `.build` 已清理，恢复需要重新安装与编译（见下）。
-7. **CI 无单元测试与 smoke 门禁**：`.github/workflows/nyala-ci.yml` 的 12 个 step 中没有测试执行步骤，因此 #23/#24/#26 新增的 `nyalaBootstrap.test.ts`、`nyalaDisabledChat.test.ts`、`extensionsScannerService.test.ts` 在本仓库 CI 中从不运行，只能靠本地手工执行。修复需单独立 PR（transpile + 定向 mocha），会让 CI 明显变长，属需所有者拍板的工程取舍。
+1. ~~**CI 仍然跑不出结果（GitHub 账单阻断 + workflow 缺 build/ 依赖）**~~：账单阻断已随仓库转为公开解除；`Hygiene` 因 `nyala-ci.yml` 未安装 `build/` 依赖而失败的缺陷已由 **PR #22** 修复并合入（`b48a859214a`）。
+2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，已随 PR #24 合入 `nyala/main`）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；合并后 `patchCount` 应由 46 改为 50。
+3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，已随 PR #26 合入 `nyala/main`）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**仍有出站路径**：Agent Host 照常启动（加载 Copilot SDK / Claude / Codex provider），Chromium 从 `redirector.gvt1.com` 下载拼写词典；两者都未修复，冒烟中为 FAIL。
+4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
+5. Rust Runtime：N-101/N-102 已随 PR #25 合入 `nyala/main`（squash `7bfc4fc2a68`）；N-103 Supervisor 与 P1.2–P1.4 未开始；`nyala/rpc` 合同已冻结（PR #11）。CI 的 `Rust runtime` job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)）。
+6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）的 `node_modules` / `out` / `.build` / `build/node_modules` 均不存在（2026-10-30 实测）；其他机器恢复需要重新安装与编译（见下）。
+7. **CI 无单元测试与 smoke 门禁**：`.github/workflows/nyala-ci.yml` 的 12 个 step 里没有测试执行步骤，#23/#24/#26 新增的 `nyalaBootstrap.test.ts`、`nyalaDisabledChat.test.ts`、`extensionsScannerService.test.ts` 在本仓库 CI 中从不运行（只能在本地手工跑）。修复需单独立 PR（transpile + 定向 mocha；browser 单测还需 playwright），会让 CI 明显变长，属需所有者拍板的工程取舍。
 8. **`validate-product` 扫描范围缺口**：脚本只扫描仓库 `extensions/`，未覆盖 `product.json` 的 `builtInExtensions`（打包态来源）。将来上游把 copilot-chat 移入 `builtInExtensions` 时校验不会报警（运行时仍会被 `skipBuiltinExtensions` 跳过，故非安全缺口）。
 
 ## 治理与 CI 现状（2026-10-29）
@@ -66,56 +93,29 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
   - 保留：`nyala-ci.yml`（自有门禁）、`chat-lib-package.yml` 与 `chat-perf.yml`（仅手动触发）、`sessions-e2e.yml`（仅手动触发）、`pr-*-test.yml`（仅 `workflow_call`，由已停用的 `pr.yml` 调用）。
   - 恢复单条：`gh api -X PUT repos/baicie/nyala-studio-next/actions/workflows/<workflow-id>/enable`；`gh api repos/baicie/nyala-studio-next/actions/workflows --jq '.workflows[] | "\(.id) \(.state) \(.path)"'` 可查看状态。
 
-### 原 BLOCKED 项（只能由仓库所有者操作；2026-10-29 晚更新）
+### BLOCKED（只能由仓库所有者操作）
 
-| 事项 | 原证据（2026-10-29 早） | 当前状态（2026-10-29 晚） | 剩余操作与验收 |
+| 事项 | 事实证据 | 用户操作 | 验收标准 |
 |---|---|---|---|
-| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；当天的 Run 全部 `failure`/`queued`，Job 为 0 steps | **已解除**：仓库转为公开后，PR #21 的 [Run 40863715504](https://github.com/baicie/nyala-studio-next/actions/runs/40863715504)（attempt 2）执行了真实 step。`Product baseline` PASS；`Client typecheck and hygiene` 中 `Typecheck client` PASS，`Hygiene` FAIL，`Check diff` 被跳过 | Hygiene 失败原因是 `ERR_MODULE_NOT_FOUND: gulp-merge-json`：该包只在 `build/package.json` 声明，而 `nyala-ci.yml` 只在根目录跑 `npm ci --ignore-scripts`，postinstall 被跳过，`build/` 依赖未安装。这是 workflow 缺陷，不是计费问题，需单独 PR 修复；验收为该 Job 全绿。2026-10-30 更新：修复已提交为 PR #22（run 40870342300 全绿），尚未合入；其余 5 个 PR 已 stack 该 commit，Hygiene 在各自分支上均真实通过。 |
-| 分支保护 / rulesets 不可用 | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 与 `/rulesets` 均 403：`Upgrade to GitHub Pro or make this repository public` | **可配置但未开启**：`/branches/nyala/main/protection` 返回 404 `Branch not protected`，`/rulesets` 返回 `[]` | 由仓库所有者决定是否启用 required PR + required status checks；protection API 返回 200 之前**不宣称仓库已受保护** |
+| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；2026-10-29 的 Run 全部 `failure`/`queued` | 在 Billing & plans 恢复 Actions 额度，或改 self-hosted runner / 公开仓库 | `nyala-ci.yml` 的 `Product baseline` 与 `Client typecheck and hygiene` 出现真实 step 并给出结论（红=代码问题，绿=通过） |
+| 分支保护 / rulesets 不可用 | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 与 `/rulesets` 均 403：`Upgrade to GitHub Pro or make this repository public` | 升级 GitHub 计划（Pro/Team）或接受人工门禁流程 | protection API 返回 200，且启用 required PR + required status checks；在此之前**不宣称仓库已受保护** |
 
 ### CODEOWNERS 结论
 
-`.github/CODEOWNERS` 全部指向上游微软员工（`@lszomoru`、`@alexdima` 等）。由于分支保护尚未开启（2026-10-29 起已可配置），该文件既无强制力、也无法真正请求到这些 reviewer，因此**本次不改文件**（避免无意义的上游 patch）。等分支保护开启时，再新增 Nyala 自有 owner 段；在此之前依靠 PR 模板 + 人工审查 + 证据记录。
+`.github/CODEOWNERS` 全部指向上游微软员工（`@lszomoru`、`@alexdima` 等）。由于分支保护在当前计划下不可用，该文件既无强制力、也无法真正请求到这些 reviewer，因此**本次不改文件**（避免无意义的上游 patch）。等分支保护可用时，再新增 Nyala 自有 owner 段；在此之前依靠 PR 模板 + 人工审查 + 证据记录。
 
-### 人工门禁替代（分支保护开启前）
+### 人工门禁替代（保护不可用期间）
 
 1. PR 必须基于最新 `nyala/main`，模板中写明 PASS/FAIL/BLOCKED/NOT RUN。
 2. 本地证据至少包含：`git diff --check`、按改动类型选择的最小验证、以及"未运行项及原因"。
 3. 同步类 PR 必须保留上游 Tag 祖先，用 Merge Commit 合入；功能 PR 用 Squash。
 
-### 2026-10-30 接手轮状态（全部经 CI 复核）
-
-| PR | 分支 | head | CI run | 结果 |
-|---|---|---|---|---|
-| #22 | `fix/nyala-ci-hygiene-deps` | `fd138d074c51c6de990676278634ea21f0c871e2` | [40870342300](https://github.com/baicie/nyala-studio-next/actions/runs/40870342300) | 2/2 |
-| #23 | `fix/p0-windows-smoke` | `f7cb481013a5ceb981bb3ab2221391519f5d36b1` | [40999566128](https://github.com/baicie/nyala-studio-next/actions/runs/40999566128) | 2/2 |
-| #24 | `fix/extension-api-version` | `38a8b4910b225773b2e0cfc86333d831149a0a93` | [41000130664](https://github.com/baicie/nyala-studio-next/actions/runs/41000130664) | 2/2 |
-| #25 | `feat/p1-rust-runtime` | `d6050e7505fc9eb9723a95ba0a7849382dbd06e8` | [40999226065](https://github.com/baicie/nyala-studio-next/actions/runs/40999226065) | 3/3（含 Rust runtime） |
-| #26 | `fix/disabled-chat-runtime` | `12f5c3fd0e992dd16ff9eab04ba820c3f94c5010` | [41000542635](https://github.com/baicie/nyala-studio-next/actions/runs/41000542635) | 2/2 |
-| #21 | `docs/nyala-design-v1.1` | `ceac606c0a6ff026b99c06c0a343c3525df222a5` | [40999456736](https://github.com/baicie/nyala-studio-next/actions/runs/40999456736) | 2/2 |
-
-- 合并顺序（已用 `git merge-tree` 演练）：`#22 → #23 → #24 → #26 → #25 → #21`；前四步无冲突，#25 与 #21 各只需手解 `docs/nyala-kickoff/PROGRESS.md`。
-- 合并前需让各分支先跟上 `nyala/main` 再 squash（堆叠链固有代价）；合并方式与是否合并由仓库所有者决定，PR #21 描述中保留「请勿自动合并」约束直到所有者明确授权。
-
-#### 只读治理审查结论（2026-10-30）
-
-| PR 组 | 结论 | 必须解决项 |
-|---|---|---|
-| #25 feat/p1-rust-runtime | PASS-WITH-RISK | 失败信封 `id: null` 违反 v1 schema（`server.rs:73-75`，`conformance.rs:329-339` 反向断言）：需改 schema 允许 null（符合 JSON-RPC 2.0）、或改实现、或记录偏差；`docs/adr/0002-rust-runtime-workspace.md:81`「client job 不改」与事实不符（stack 了 #22 的 commit） |
-| #23 / #24 / #26 | PASS-WITH-RISK | `extensionsScannerService.ts:223-227` 与 `chatEntitlementService.ts` 两处超出 1–3 行且未记录否决替代方案；ADR 0003 合并时 Proposed→Accepted；新增 3 个测试未进 CI（见缺口 7） |
-
-- 审查方式：只读 `git show/diff` + 在临时目录 `git archive` 后实跑 `cargo fmt/clippy/test`（未改动仓库）。
-- 已驳回的误判：审查提出「PR #26 描述缺第 7 个上游文件」，复核后 PR body 已列出 `chatEntitlementService.ts`，不采纳。
-
 ## 下一步（建议顺序）
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
-2. ~~解决 CI 账单~~ 已解除（2026-10-29，仓库转为公开）；剩下的是修 `nyala-ci.yml` 的 `build/` 依赖安装，让 Hygiene 能跑通。~~在 `nyala-ci.yml` 增加 `npm run nyala:validate-rpc`~~ 已存在（`.github/workflows/nyala-ci.yml` 第 39 行，2026-10-29 核对）。
-2026-10-30：workflow 修复已作为 PR #22 提交并在其分支上全绿（run 40870342300），待合入；#23/#24/#25/#26/#21 已各自 stack 该 commit 并全部转绿，当前均处于「CI 全绿、待合并」的 Draft 状态。
-3. 补 P0 生命周期回归：完整安装 + 编译后跑 Electron smoke（命令见下），把结果写回 P0 清单。
+2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted），并在 `nyala-ci.yml` 增加一行 `npm run nyala:validate-rpc`。
+3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；下一步关闭 Agent Host 启动与 Chromium 拼写词典下载，之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
 4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
-
-> Design v1.1（2026-10-29）只修订设计文档：新增 Agent 专题 [27](docs/27-agent-platform.md)–[30](docs/30-agent-security-evaluation.md)、[31 SQL Workspace](docs/31-sql-workspace-product.md)、Proposed [ADR-0007](docs/adr/0007-sql-first-task-first-workspace.md)/[0008](docs/adr/0008-optional-codex-app-server-adapter.md)，并在 [19](docs/19-roadmap.md)/[20](docs/20-backlog.md) 增加 N-R*（基线收尾）与 N-A*（Agent 延后轨道）。Agent 相关内容均**未实现**，不改变上面的下一步顺序；变更明细见 [DESIGN-CHANGELOG-v1.1](DESIGN-CHANGELOG-v1.1.md)。
 
 ## 新机器恢复步骤（macOS / Linux）
 
@@ -132,20 +132,38 @@ npm run nyala:validate-rpc   # 纯 Node，无依赖，可先跑
 ```
 
 - `npm run compile` 生成 `out/`；`./scripts/code.sh` 负责 Electron 下载与启动。
-- Rust 侧当前只需 `cargo`（本机验证 `cargo 1.96.0` 可用）；`cli/` 是上游 CLI 资源，不含 Nyala Runtime。
+- Rust 侧只需 `cargo`（本机验证 `cargo 1.96.0` 可用）；Nyala Runtime 在 `rust/`（`cd rust && cargo test`），`cli/` 是上游 CLI 资源，不含 Nyala Runtime。
 - 校验基线：`npm run compile`、`npm run typecheck-client`、`npm run build-fast -- --client-only`、`npm run gulp hygiene`、定向 ESLint、`git diff --check`。
-
 - 本机（Windows）git-lfs smudge 不可用：`git worktree add` 新检出会在 `extensions/copilot/test/simulation/cache/base.sqlite` 报 `smudge filter lfs failed`。需要新 worktree 前先安装并初始化 git-lfs。
+
+## 新机器恢复步骤（Windows）
+
+2026-10-29 在 Windows 11 Pro 10.0.26200 x64 上实测（Git Bash）：
+
+```bash
+nvm install 24.18.0 && nvm use 24.18.0     # nvm-windows
+export VCToolsVersion=14.42.34433           # 需指向装有 Spectre 缓解库的 MSVC；VS 2026 默认 14.51 没有，会报 MSB8040
+export GITHUB_TOKEN="$(gh auth token)"      # 匿名 GitHub API 额度用完时，ripgrep/Electron 下载会 403
+npm install                                 # 不要用 --ignore-scripts
+npm rebuild @vscode/sqlite3 native-keymap node-pty kerberos native-is-elevated   # 仅当这些包缺 .node 时
+npm run compile
+npm run electron
+node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不含空格的目录> --reloads 2
+```
+
+- 安装中断过的话，先核对上面 5 个包的 `build/Release/*.node`；缺 `vscode-sqlite3.node` 会导致存储无法打开，缺 `keymapping.node` 会让快捷键全部失效。
+- Reload / Dispose 单元测试：`scripts\test.bat --run src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts`。
 
 ## 目录地图
 
 | 路径 | 作用 |
 |---|---|
-| `docs/nyala-kickoff/` | 设计包：`docs/01`–`31` 设计文档（含路线图/backlog、Agent 专题）+ ADR 0001–0008 + P0 清单 + 本快照 |
-| `docs/adr/` | 架构决策记录（当前 0001：RPC 合同 v1.0） |
+| `docs/nyala-kickoff/` | 设计包：15 份设计文档 + 路线图/backlog + P0 清单 + 本快照 |
+| `docs/adr/` | 架构决策记录（0001：RPC 合同 v1.0；0003：Extension API 版本，待合并；0002 由 `feat/p1-rust-runtime` 占用） |
 | `nyala/` | 产品元数据：upstream-base、patch-ledger、upstream-compatibility、rpc 合同 |
-| `scripts/nyala/` | 校验脚本（RPC 合同；产品基线脚本在 PR #8） |
+| `scripts/nyala/` | 校验脚本（RPC 合同、产品基线）与原生 Electron 冒烟脚本 `smoke-electron.ts` |
 | `src/vs/workbench/contrib/nyala/` | Hello Workbench 贡献与 Connections 占位视图 |
+| `rust/` | Nyala Rust Runtime workspace（`crates/nyala-runtime`：N-101/N-102） |
 
 ## 移交清理记录（2026-10-28）
 

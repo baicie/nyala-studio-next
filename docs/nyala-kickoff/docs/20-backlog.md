@@ -22,8 +22,8 @@
 
 | ID | Priority | Depends | 任务 | 验收/证据 |
 |---|---|---|---|---|
-| N-101 | P0 | N-001 | Runtime crate + Stdio framing | half-frame/oversize/error 测试 |
-| N-102 | P0 | N-101 | Hello/version/error protocol | Major 不匹配拒绝 |
+| N-101 | P0 | N-001 | Runtime crate + Stdio framing | half-frame/oversize/error 测试 · **In Review**（`feat/p1-rust-runtime`，`rust/crates/nyala-runtime`；证据见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md#证据)） |
+| N-102 | P0 | N-101 | Hello/version/error protocol | Major 不匹配拒绝 · **In Review**（同 N-101） |
 | N-103 | P0 | N-102 | Electron Sidecar supervisor | 退出/重启/清理测试 |
 | N-104 | P0 | N-102 | SQLite Profile/Session connect | connect/close/invalid file 测试 |
 | N-105 | P0 | N-104 | SQLite metadata | 表/视图/列/permission/refresh |

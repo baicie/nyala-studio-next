@@ -59,7 +59,7 @@ Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([{
 	}
 }], nyalaConnectionsContainer);
 
-class NyalaStatusContribution extends Disposable implements IWorkbenchContribution {
+export class NyalaStatusContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.nyalaStatus';
 

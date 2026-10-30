@@ -22,6 +22,17 @@
       "type": "string",
       "pattern": "^[a-z]{1,4}_[A-Za-z0-9]{1,64}$"
     },
+    "failureId": {
+      "description": "失败响应的 id 引用。仅在无法识别请求 id 时允许 null（JSON-RPC 2.0 §5），其余情况仍是 $defs/id 字符串。",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "cell": {
       "oneOf": [
         {
@@ -617,7 +628,8 @@
           "const": "2.0"
         },
         "id": {
-          "$ref": "#/$defs/id"
+          "$ref": "#/$defs/failureId",
+          "description": "无法识别请求 id 时为 null（解析失败、帧错误、读不到 id），符合 JSON-RPC 2.0 §5；客户端必须按 data.kind 分支，不得依赖 id 存在。"
         },
         "error": {
           "$ref": "#/$defs/error"
