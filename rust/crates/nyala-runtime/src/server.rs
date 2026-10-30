@@ -69,7 +69,8 @@ pub fn success(id: &str, result: Value) -> Value {
 }
 
 /// Builds a failure envelope. `id` is `None` when no request id could be read; the envelope then
-/// carries `"id": null` as in JSON-RPC 2.0 (the v1 schema does not allow this yet, see `docs/adr/0002-rust-runtime-workspace.md`).
+/// carries `"id": null` as in JSON-RPC 2.0 §5, which the v1 schema allows via `$defs/failureId`
+/// (2026-10-30 erratum, see `docs/adr/0001-rpc-contract-v1.md`).
 pub fn failure(id: Option<&str>, error: &RpcError) -> Value {
 	json!({"jsonrpc": JSONRPC_VERSION, "id": id, "error": error.to_json()})
 }

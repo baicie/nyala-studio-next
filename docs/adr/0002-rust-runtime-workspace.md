@@ -59,7 +59,7 @@ rust/
 | 未协商能力位的方法 | §3：客户端不得调用 | `PROTOCOL_MISMATCH`，连接继续 |
 | 不在 v1 目录的方法（含 `transaction.*`） | §2 | `METHOD_NOT_FOUND` |
 | 无 `id` 的消息 | §2：通知无响应；v1 没有客户端到 Runtime 的通知 | 静默忽略 |
-| 读不出合法 `id` 的 payload（非法 JSON、非 object、id 不符合 pattern、帧错误） | JSON-RPC 2.0 用 `"id": null`；v1 `failure` schema 要求字符串 id | 回 `"id": null`。这是**已知的合同缺口**，见“后续项” |
+| 读不出合法 `id` 的 payload（非法 JSON、非 object、id 不符合 pattern、帧错误） | JSON-RPC 2.0 用 `"id": null` | 回 `"id": null`。v1 `failure` 已通过 2026-10-30 勘误允许该值（`$defs/failureId`，见 [ADR 0001](0001-rpc-contract-v1.md)） |
 | `runtimeBuild` | §2 | crate 版本 `0.1.0-dev.0`，与样例一致 |
 | `runtime.health` 计数 | §4 | `status: "ok"`，三个计数在 Session/Execution/Result 落地前固定为 0 |
 
@@ -79,11 +79,11 @@ rust/
 
 - 新增 Nyala 自有目录 `rust/`，不修改任何上游跟踪文件；`nyala/upstream-base.json` 的 `patchCount` 不变。
 - CI：`.github/workflows/nyala-ci.yml` 新增独立的 `Rust runtime` job，在 `rust/` 下跑 `cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`，使用 runner 预装的 stable 工具链，不引入第三方 toolchain action；`product` 与 `client` job 不改。
-- 合同缺口（id 为 null 的失败回复）不在本次修改：`nyala/rpc/**` 冻结，修改须走合同变更流程。测试里有一条断言会在合同接受 `"id": null` 时失败，提醒同步更新本 ADR 与测试。
+- 合同缺口（id 为 null 的失败回复）已由 2026-10-30 的 v1.0 勘误关闭（`$defs/failureId`，见 [ADR 0001](0001-rpc-contract-v1.md)）；`tests/conformance.rs` 的绊线断言已同步翻转为“schema 接受该回复”。
 
 ## 后续项
 
-1. **合同**：v1 `failure` 允许 `"id": null`（或另定读不出 id 时的回复规则），同步 schema、`conformance.ndjson`、README 与校验脚本。
+1. ~~**合同**：v1 `failure` 允许 `"id": null`~~ 已完成（2026-10-30 勘误）：schema 的 `$defs/failureId`、README §2/§8、ADR 0001 修订记录；`conformance.ndjson` 因校验脚本要求“响应必须匹配前置请求”而无法表达该场景，已在 README §9 说明。
 2. **合同**：为“重复 hello”“hello 前调用其他方法”写明错误 kind，确认或替换上表的选择。
 3. **CI**：Rust job 已随本 PR 加入，只覆盖 `ubuntu-latest` + stable。Windows / macOS runner 与 MSRV 1.82 构建仍未覆盖。
 4. **N-103**：Electron Main Supervisor 按上表的退出码区分“流错误”与“版本不匹配”（后者不得重启同一版本）。

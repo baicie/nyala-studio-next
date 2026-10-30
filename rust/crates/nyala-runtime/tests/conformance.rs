@@ -330,16 +330,9 @@ fn every_error_reply_uses_a_registered_kind_and_the_contract_shape() {
 		assert_eq!(reply["error"]["data"]["kind"], kind, "{reply}");
 		assert_eq!(reply["id"], Value::Null, "{reply}");
 		assert_registered(&registry, &reply["error"]);
-		// The v1 failure schema requires a string id, even for these replies (`docs/adr/0002-rust-runtime-workspace.md`). Check
-		// everything but the id, and fail once the contract settles the case so that this
-		// workaround is revisited.
-		assert!(
-			!schema.envelope_errors(&reply).is_empty(),
-			"the contract now accepts this reply; update docs/adr/0002-rust-runtime-workspace.md and this test"
-		);
-		let mut with_id = reply.clone();
-		with_id["id"] = json!("rq_0");
-		let errors = schema.envelope_errors(&with_id);
+		// The v1.0 erratum (2026-10-30, `docs/adr/0001-rpc-contract-v1.md`) allows `"id": null` in failure
+		// envelopes, so these replies validate as-is.
+		let errors = schema.envelope_errors(&reply);
 		assert!(errors.is_empty(), "{errors:?}");
 	}
 }
