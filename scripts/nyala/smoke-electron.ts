@@ -6,15 +6,17 @@
 // Native Electron smoke for the Nyala P0 bootstrap. Launches the dev build through
 // scripts/code.bat (scripts/code.sh elsewhere) with an isolated user data, extensions
 // and logs folder, drives the window over a local CDP port and checks the P0 entry
-// points, including repeated Reload Window. Requires `npm install`, `npm run compile`
-// and a downloaded Electron (`npm run electron`).
+// points, including repeated Reload Window. It also checks that the disabled Chat stays
+// hidden, that neither the bundled Copilot Chat nor Microsoft authentication activates, and
+// that no non-loopback host shows up in the Chromium NetLog or is named in the logs. Requires
+// `npm install`, `npm run compile` and a downloaded Electron (`npm run electron`).
 //
 // Usage: node --experimental-strip-types scripts/nyala/smoke-electron.ts [--evidence <dir>] [--reloads <n>] [--port <n>]
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { release, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright-core';
 
 const root = resolve(import.meta.dirname, '..', '..');
@@ -40,6 +42,15 @@ const QUICK_INPUT_ROW = '.quick-input-widget .quick-input-list .monaco-list-row'
 const ROW_LABEL = `${QUICK_INPUT_ROW} .quick-input-list-row > .monaco-icon-label .label-name`;
 const FOCUSED_LABEL = `${QUICK_INPUT_ROW}.focused .quick-input-list-row > .monaco-icon-label .label-name`;
 const TOAST_MESSAGE = '.notifications-toasts .notification-list-item-message';
+const CHAT_VIEW = '.chat-viewpane-container, .chat-viewpane';
+const CHAT_KEYBINDING = process.platform === 'darwin' ? 'Meta+Control+I' : 'Control+Alt+I';
+const CHAT_PROMPTS = ['Build with Agent', 'Set BYOK utility models'];
+const BLOCKED_EXTENSIONS = ['GitHub.copilot-chat', 'vscode.microsoft-authentication'];
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const NETLOG = 'netlog.json';
+// Log text that names a host with no request behind it: the Node inspector banner of language
+// servers that development builds start with --inspect.
+const STATIC_LOG_TEXT = /For help, see: https:\/\/nodejs\.org\//;
 
 interface IStepResult {
 	readonly name: string;
@@ -143,14 +154,30 @@ async function showHello(page: Page): Promise<number> {
 	return until(`'${READY_MESSAGE}' toast`, async () => (await texts(page, TOAST_MESSAGE)).filter(text => text.includes(READY_MESSAGE)).length);
 }
 
-function findLogs(name: string, dir = join(evidenceDir, 'logs')): string[] {
+function logFiles(dir = join(evidenceDir, 'logs')): string[] {
 	if (!existsSync(dir)) {
 		return [];
 	}
 	return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
 		const path = join(dir, entry.name);
-		return entry.isDirectory() ? findLogs(name, path) : entry.name === name ? [path] : [];
+		return entry.isDirectory() ? logFiles(path) : [path];
 	});
+}
+
+function findLogs(name: string): string[] {
+	return logFiles().filter(path => basename(path) === name);
+}
+
+/** The distinct, non-loopback host names captured by the first group of `pattern`. */
+function hosts(text: string, pattern: RegExp): string[] {
+	const found = new Set<string>();
+	for (const match of text.matchAll(pattern)) {
+		const host = match[1].toLowerCase().replace(/\.$/, '');
+		if (!LOOPBACK_HOSTS.has(host)) {
+			found.add(host);
+		}
+	}
+	return [...found].sort();
 }
 
 function logLines(name: string, pattern: RegExp): string[] {
@@ -172,6 +199,7 @@ function launch(): ChildProcess {
 		`--extensions-dir=${join(evidenceDir, 'extensions')}`,
 		`--logsPath=${join(evidenceDir, 'logs')}`,
 		`--remote-debugging-port=${port}`,
+		`--log-net-log=${join(evidenceDir, NETLOG)}`,
 		'--disable-gpu',
 		'--skip-welcome',
 		'--skip-release-notes',
@@ -230,6 +258,44 @@ async function connectionsView(page: Page): Promise<string> {
 	const activityItems = await page.locator(ACTIVITY_ITEM).count();
 	check(activityItems === 1, `activity bar entries: ${activityItems}`);
 	return `placeholder '${PLACEHOLDER}', 1 activity bar entry`;
+}
+
+async function chatSurfaces(page: Page): Promise<string[]> {
+	const views = await page.locator(CHAT_VIEW).count();
+	const text = await page.evaluate(() => document.body.textContent ?? '');
+	return [...(views ? [`${views} chat view element(s)`] : []), ...CHAT_PROMPTS.filter(prompt => text.includes(prompt)).map(prompt => `'${prompt}'`)];
+}
+
+/** Checks that no Chat view or Chat prompt is in the window, also after the Chat keybinding. */
+async function chatHidden(page: Page): Promise<string> {
+	const before = await chatSurfaces(page);
+	check(before.length === 0, `before ${CHAT_KEYBINDING}: ${before.join(', ')}`);
+	await page.keyboard.press(CHAT_KEYBINDING);
+	await new Promise(resolve => setTimeout(resolve, 2_000));
+	const after = await chatSurfaces(page);
+	await page.keyboard.press('Escape');
+	check(after.length === 0, `after ${CHAT_KEYBINDING}: ${after.join(', ')}`);
+	return `no chat view and no ${CHAT_PROMPTS.map(prompt => `'${prompt}'`).join(' or ')}, also after ${CHAT_KEYBINDING}`;
+}
+
+/** Closes the window so that Chromium finishes the NetLog, and waits for the launcher to exit. */
+async function closeWindow(page: Page, launcher: ChildProcess): Promise<boolean> {
+	if (launcher.exitCode !== null) {
+		return true;
+	}
+	const exited = new Promise<boolean>(resolve => launcher.once('exit', () => resolve(true)));
+	try {
+		await runCommand(page, 'Close Window');
+	} catch {
+		return false;
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<boolean>(resolve => timer = setTimeout(() => resolve(false), 30_000));
+	try {
+		return await Promise.race([exited, timedOut]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 async function singleRegistration(page: Page): Promise<string> {
@@ -326,6 +392,9 @@ async function main(): Promise<void> {
 			check(failures.length === 0, `failed: ${failures.join(', ')}; ${reasons.join('; ')}`);
 			return '0 failed activations';
 		});
+		// Runs after the steps above so that the account policy gate, which settles up to 5 seconds
+		// after restore and then clears its forced hidden state, has already run.
+		await step('disabled Chat stays hidden', chatHidden);
 
 		for (let i = 1; i <= reloads; i++) {
 			await step(`Reload Window ${i}`, async page => {
@@ -333,19 +402,59 @@ async function main(): Promise<void> {
 				const registrations = await singleRegistration(page);
 				const toasts = await showHello(page);
 				const view = await connectionsView(page);
-				return `reloaded; ${registrations}; Hello toast ${toasts}; ${view}`;
+				const chat = await chatHidden(page);
+				return `reloaded; ${registrations}; Hello toast ${toasts}; ${view}; ${chat}`;
 			});
 		}
 
+		await step('Copilot Chat and Microsoft authentication stay inactive', async () => {
+			const pattern = new RegExp(`_doActivateExtension (${BLOCKED_EXTENSIONS.map(id => id.replace(/[.-]/g, '\\$&')).join('|')})\\b`, 'i');
+			const activations = [...new Set(logLines('exthost.log', pattern).map(line => line.replace(/^.*_doActivateExtension /, '')))];
+			check(activations.length === 0, `activated: ${activations.join('; ')}`);
+			const microsoftLogs = findLogs('Microsoft Authentication.log').length;
+			check(microsoftLogs === 0, `${microsoftLogs} Microsoft Authentication.log file(s)`);
+			return `${findLogs('exthost.log').length} exthost.log file(s): no activation of ${BLOCKED_EXTENSIONS.join(' or ')}; no Microsoft Authentication.log`;
+		});
+		await step('Agent Host stays stopped', async () => {
+			const started = logLines('main.log', /AgentHostProcessManager: agent host started/);
+			check(started.length === 0, `${started.length} agent host start(s) in main.log`);
+			return 'main.log has no agent host start';
+		});
+
 		await step('renderer log has no Nyala errors', async () => {
-			const errors = logLines('renderer.log', /\[error\].*nyala|nyala.*\[error\]|Unable to create workbench contribution 'workbench\.contrib\.nyala|multiple contributions with same id 'workbench\.contrib\.nyala/i);
+			// The evidence folder name usually contains "nyala", so paths into it are masked before matching.
+			const evidencePath = new RegExp(evidenceDir.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&'), 'gi');
+			const errors = logLines('renderer.log', /./)
+				.map(line => line.replace(evidencePath, '<evidence>'))
+				.filter(line => /\[error\].*nyala|nyala.*\[error\]|Unable to create workbench contribution 'workbench\.contrib\.nyala|multiple contributions with same id 'workbench\.contrib\.nyala/i.test(line));
 			check(errors.length === 0, errors.slice(0, 5).join('\n'));
 			return `${findLogs('renderer.log').length} renderer.log file(s) scanned, 0 Nyala errors`;
 		});
 	} finally {
+		const closed = page ? await closeWindow(page, launcher) : false;
+		console.log(`window ${closed ? 'closed' : 'did not close; stopping the launcher'}`);
 		await browser?.close().catch(() => undefined);
 		stop(launcher);
 	}
+
+	// The NetLog covers the Chromium network stack (renderer, webviews, Electron net). Node
+	// requests from the extension host or the agent host bypass it, so the logs are also
+	// scanned for the http(s) hosts that something in the application reported using.
+	await step('no outbound hosts in the NetLog', async () => {
+		const netlog = join(evidenceDir, NETLOG);
+		check(existsSync(netlog), `${NETLOG} was not written`);
+		const found = hosts(readFileSync(netlog, 'utf8'), /\b(?:https?|wss?):\/\/([a-z0-9.-]+)/gi);
+		check(found.length === 0, `non-loopback hosts: ${found.join(', ')}`);
+		return `${NETLOG} has no non-loopback http(s)/ws(s) host`;
+	});
+	// A host named in a log line is not proof of a request, only a lead to follow up.
+	await step('logs mention no non-loopback host', async () => {
+		const files = logFiles();
+		const lines = files.flatMap(file => readFileSync(file, 'utf8').split(/\r?\n/)).filter(line => !STATIC_LOG_TEXT.test(line));
+		const found = hosts(lines.join('\n'), /\b(?:https?|wss?):\/\/([a-z0-9.-]+)/gi);
+		check(found.length === 0, `non-loopback hosts: ${found.join(', ')}`);
+		return `${files.length} log file(s) mention no non-loopback http(s)/ws(s) host`;
+	});
 }
 
 const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
