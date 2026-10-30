@@ -50,7 +50,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - `npm run nyala:validate-rpc`：分帧半包/粘包/零长度/超限、schema、请求响应配对、sequence 单调、错误码一致、README 与 schema 防漂移、负向对照。
 - ADR：`docs/adr/0001-rpc-contract-v1.md`（随 PR #11 引入，合并后才有该文件）。
 
-### P1.1 · Rust Runtime N-101/N-102（`feat/p1-rust-runtime`，待审核）
+### P1.1 · Rust Runtime N-101/N-102（已随 PR #25 合入）
 
 - `rust/` 是独立的 Cargo workspace（不进上游 `cli/`），单 crate `rust/crates/nyala-runtime`：4 字节 LE 分帧（半包、粘包、零长度、超限）、envelope 解析、结构化错误（与 `error-codes.json` 逐项比对）、`runtime.hello`（major 不匹配回 `PROTOCOL_MISMATCH` 并以退出码 2 结束）、`runtime.health`。
 - 一致性测试直接读取 `nyala/rpc/v1/`；真实进程测试验证 stdout 只有协议帧、日志只在 stderr。
@@ -67,11 +67,14 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | #26 | `fix/disabled-chat-runtime` | `c1cd1365c69` | 41023407944 | 2/2 → squash `dfa366609c5` |
 | #25 | `feat/p1-rust-runtime` | `689a5aaec29` | 41024634079 | 3/3（含 Rust runtime）→ squash `7bfc4fc2a68` |
 | #21 | `docs/nyala-design-v1.1` | 本提交 | 见本 PR | 2/2 |
+| #28 | `ci/unit-test-gate` | `8a47ae404e7` | 41031484168 | 4/4（新增 `Unit tests (node)`）→ squash |
+| — | `docs/record-branch-protection` | 本提交 | 见本 PR | 记录分支保护开启与 CI 门禁 |
 
 - 合并方式：逐个 `gh pr merge --squash`；每个分支合并前先用新的 `nyala/main` 更新并重跑 CI，确保 PR diff 只含自身改动（#23 7 files / #24 13 files / #26 11 files / #25 19 files，均无其它 PR 内容泄漏）。
 - 合同勘误（新增 PR #27）：`nyala/rpc/v1` 的 `$defs/failureId` 允许 `"id": null`（JSON-RPC 2.0 §5），只放宽 `failure.id`，`$defs/id` 仍要求字符串。Rust 侧绊线断言已翻转为「schema 接受」，`cargo test --workspace --locked` 47 个测试通过。
 - 只读治理审查结论：#25 与 #23/#24/#26 均 PASS-WITH-RISK；必须解决项为「CI 无单测门禁」（见缺口 7）、`extensionsScannerService.ts` 与 `chatEntitlementService.ts` 两处超出 1–3 行且未记录否决替代方案的理由；`validate-product` 覆盖缺口见缺口 8。审查曾提出「PR #26 描述缺第 7 个上游文件」，经复核为误判未采纳。
 - 合并后校验：`npm run nyala:validate-rpc`（exit 0，36 definitions）、`npm run nyala:validate-product`（`Nyala product baseline is valid.`）在 `nyala/main` 上均通过。
+- 分支保护已开启（2026-10-30）：`nyala/main` 要求四个 checks 通过、禁止 force-push 与删除分支，不要求人工 approve；关闭命令见上节。CI 门禁新增 `Unit tests (node)`，实测 `38 passing`（`extensionsScannerService.test.ts`）。
 ## 未完成 / 已知缺口
 
 1. ~~**CI 仍然跑不出结果（GitHub 账单阻断 + workflow 缺 build/ 依赖）**~~：账单阻断已随仓库转为公开解除；`Hygiene` 因 `nyala-ci.yml` 未安装 `build/` 依赖而失败的缺陷已由 **PR #22** 修复并合入（`b48a859214a`）。
@@ -93,22 +96,28 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
   - 保留：`nyala-ci.yml`（自有门禁）、`chat-lib-package.yml` 与 `chat-perf.yml`（仅手动触发）、`sessions-e2e.yml`（仅手动触发）、`pr-*-test.yml`（仅 `workflow_call`，由已停用的 `pr.yml` 调用）。
   - 恢复单条：`gh api -X PUT repos/baicie/nyala-studio-next/actions/workflows/<workflow-id>/enable`；`gh api repos/baicie/nyala-studio-next/actions/workflows --jq '.workflows[] | "\(.id) \(.state) \(.path)"'` 可查看状态。
 
-### BLOCKED（只能由仓库所有者操作）
+### 历史 BLOCKED 项（两项均已关闭）
 
-| 事项 | 事实证据 | 用户操作 | 验收标准 |
+| 事项 | 历史证据 | 当前状态 | 验收证据 |
 |---|---|---|---|
-| GitHub Actions 计费阻断 | Run 注解：`The job was not started because recent account payments have failed or your spending limit needs to be increased`；2026-10-29 的 Run 全部 `failure`/`queued` | 在 Billing & plans 恢复 Actions 额度，或改 self-hosted runner / 公开仓库 | `nyala-ci.yml` 的 `Product baseline` 与 `Client typecheck and hygiene` 出现真实 step 并给出结论（红=代码问题，绿=通过） |
-| 分支保护 / rulesets 不可用 | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 与 `/rulesets` 均 403：`Upgrade to GitHub Pro or make this repository public` | 升级 GitHub 计划（Pro/Team）或接受人工门禁流程 | protection API 返回 200，且启用 required PR + required status checks；在此之前**不宣称仓库已受保护** |
+| GitHub Actions 计费阻断 | Run 注解 `The job was not started because recent account payments have failed…`；2026-10-29 的 Run 全部 `failure`/`queued` | **已解除**：仓库转为公开后 Actions 正常启动（PR #22 起的 6 个 PR 均跑出真实 step） | 见下方「2026-10-30 收口记录」的 run id |
+| 分支保护 / rulesets 不可用 | `branches/nyala/main/protection` 与 `/rulesets` 曾返回 403 `Upgrade to GitHub Pro or make this repository public` | **已开启**（2026-10-30）：required status checks = `Product baseline`、`Client typecheck and hygiene`、`Unit tests (node)`、`Rust runtime`；`enforce_admins=false`；禁止 force-push 与删除分支；**未要求人工 approve**（单 owner 仓库会自锁） | `gh api repos/baicie/nyala-studio-next/branches/nyala/main/protection` 返回 200 且 contexts 与上面一致 |
+
+关闭分支配保护（如需）：
+
+```bash
+gh api -X DELETE repos/baicie/nyala-studio-next/branches/nyala/main/protection
+```
 
 ### CODEOWNERS 结论
 
-`.github/CODEOWNERS` 全部指向上游微软员工（`@lszomoru`、`@alexdima` 等）。由于分支保护在当前计划下不可用，该文件既无强制力、也无法真正请求到这些 reviewer，因此**本次不改文件**（避免无意义的上游 patch）。等分支保护可用时，再新增 Nyala 自有 owner 段；在此之前依靠 PR 模板 + 人工审查 + 证据记录。
+`.github/CODEOWNERS` 全部指向上游微软员工（`@lszomoru`、`@alexdima` 等），在本 fork 中既无强制力也无法真正请求到这些 reviewer。分支保护虽已开启，但**不要求人工 approve**，因此**本次仍不改该文件**（避免无意义的上游 patch）。后续若要引入 Nyala 自有 owner 段，应同时开启 required reviews，否则只是增加同步冲突面。
 
-### 人工门禁替代（保护不可用期间）
+### 合并纪律（protected branch 生效后）
 
-1. PR 必须基于最新 `nyala/main`，模板中写明 PASS/FAIL/BLOCKED/NOT RUN。
-2. 本地证据至少包含：`git diff --check`、按改动类型选择的最小验证、以及"未运行项及原因"。
-3. 同步类 PR 必须保留上游 Tag 祖先，用 Merge Commit 合入；功能 PR 用 Squash。
+1. 任何进入 `nyala/main` 的改动必须走 PR，且在 PR 上跑完四个 required checks。
+2. 功能 PR 用 Squash；同步类 PR（`sync/code-oss-<tag>`）必须保留上游 Tag 祖先，用 Merge Commit。
+3. PR 模板中写明 PASS / FAIL / BLOCKED / NOT RUN，并给出 `git diff --check` 与按改动类型选择的最小验证。
 
 ## 下一步（建议顺序）
 
