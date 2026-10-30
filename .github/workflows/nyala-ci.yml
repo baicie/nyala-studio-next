@@ -175,9 +175,11 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: build
 
-      # Browser suites load compiled modules and CSS from out/, so build the client fully.
+      # Browser suites load compiled modules and CSS from out/, so run the gulp client build.
+      # `npm run compile` additionally builds extensions/copilot, which needs its own esbuild
+      # install and is irrelevant to these suites.
       - name: Build client
-        run: npm run compile
+        run: npm run compile-client
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
