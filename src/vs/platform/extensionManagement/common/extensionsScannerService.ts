@@ -220,8 +220,9 @@ export abstract class AbstractExtensionsScannerService extends Disposable implem
 		const [defaultSystemExtensions, devSystemExtensions] = await Promise.all(promises);
 		let allSystemExtensions = [...defaultSystemExtensions, ...devSystemExtensions];
 
-		if (this.environmentService.skipBuiltinExtensions?.length) {
-			const skipSet = new Set(this.environmentService.skipBuiltinExtensions.map(id => id.toLowerCase()));
+		const skipBuiltinExtensions = [...this.environmentService.skipBuiltinExtensions ?? [], ...this.productService.skipBuiltinExtensions ?? []];
+		if (skipBuiltinExtensions.length) {
+			const skipSet = new Set(skipBuiltinExtensions.map(id => id.toLowerCase()));
 			allSystemExtensions = allSystemExtensions.filter(ext => !skipSet.has(ext.identifier.id.toLowerCase()));
 		}
 

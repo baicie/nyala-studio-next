@@ -4,7 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'));
 const packageJson = readJson('package.json');
@@ -39,6 +40,29 @@ for (const field of [
 ]) {
 	assert.equal(defaultChatAgent[field], '', `disabled Chat field ${field} must be empty`);
 }
+assert.equal(productJson.extensionApiVersion, upstreamBase.tag, 'extensionApiVersion must equal the Code OSS baseline tag in nyala/upstream-base.json');
+assert.match(readFileSync('src/vs/platform/product/common/product.ts', 'utf8'), new RegExp(`extensionApiVersion: '${upstreamBase.tag.replace(/\./g, '\\.')}'`), 'the out-of-sources product fallback must report the same extensionApiVersion');
+
+// Blank defaultChatAgent IDs do not stop a bundled chat extension from loading: every folder under
+// extensions/ is scanned as a built-in, so each one that contributes a chat participant, chat
+// provider or chat session must be listed in skipBuiltinExtensions.
+const skipBuiltinExtensions = new Set((productJson.skipBuiltinExtensions ?? []).map(id => id.toLowerCase()));
+const testOnlyExtensions = new Set(['vscode-api-tests']);
+const chatContributionPoints = ['chatParticipants', 'languageModelChatProviders', 'chatSessions', 'chatAgents'];
+for (const entry of readdirSync('extensions', { withFileTypes: true })) {
+	const manifestPath = join('extensions', entry.name, 'package.json');
+	if (!entry.isDirectory() || testOnlyExtensions.has(entry.name) || !existsSync(manifestPath)) {
+		continue;
+	}
+	const manifest = readJson(manifestPath);
+	const points = chatContributionPoints.filter(point => manifest.contributes?.[point]);
+	if (points.length) {
+		const id = `${manifest.publisher}.${manifest.name}`;
+		assert.ok(skipBuiltinExtensions.has(id.toLowerCase()), `built-in ${id} contributes ${points.join(', ')} and must be listed in product.json skipBuiltinExtensions`);
+	}
+}
+assert.ok(skipBuiltinExtensions.has('github.copilot-chat'), 'product.json skipBuiltinExtensions must list GitHub.copilot-chat');
+
 assert.match(upstreamBase.sha, /^[a-f0-9]{40}$/, 'upstream baseline SHA must be complete');
 assert.equal(upstreamBase.packageManager, 'npm');
 assert.equal(upstreamBase.node, nodeVersion, 'upstream baseline Node version must match .nvmrc');

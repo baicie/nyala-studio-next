@@ -24,7 +24,7 @@
 
 ## 2. Envelope
 
-沿用 JSON-RPC 2.0 的字段语义，但 `id` 必须是字符串（不使用数字 id，避免 JS 侧精度问题）。
+沿用 JSON-RPC 2.0 的字段语义，但 `id` 必须是字符串（不使用数字 id，避免 JS 侧精度问题）。唯一例外是失败响应无法识别请求 id 时的 `id: null`，见下。
 
 请求：
 
@@ -42,6 +42,12 @@
 
 ```json
 {"jsonrpc":"2.0","id":"rq_009","error":{"code":-32006,"message":"Query cancelled","data":{"kind":"QUERY_CANCELLED","retryable":false,"executionId":"ex_001","safeDetail":"cancel requested by user"}}}
+```
+
+失败响应的 `id` 允许为 **`null`**：payload 不是合法 JSON（解析失败）、帧错误、或无法从 payload 中读出请求 id 时，Runtime 无从回填 id，按 JSON-RPC 2.0 §5 输出 `"id": null`。客户端必须按 `error.data.kind` 分支处理，不得依赖 `id` 存在或能回查请求；请求、成功响应与通知的 `id` 仍是字符串。
+
+```json
+{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Frame payload is not valid JSON","data":{"kind":"PARSE_ERROR","retryable":false,"safeDetail":"unexpected end of JSON input"}}}
 ```
 
 通知（无 id、无响应）：
@@ -139,6 +145,7 @@ Created → Queued → Running → Streaming → Completed
 - 破坏性变更新建 `v2/`，并在 `runtime.hello` 走 major 协商；不在 v1 内改语义。
 - TypeScript 与 Rust 的类型必须从本 schema 生成或对照校验（N-110）；手写双份视为缺陷。
 - 任何合同改动都要同步：schema、`error-codes.json`、`conformance.ndjson`、本 README，并保持 `npm run nyala:validate-rpc` 通过。
+- **v1.0 勘误（2026-10-30）**：`failure.id` 允许 `null`（无法识别请求 id 时），理由是 JSON-RPC 2.0 §5 的要求，原 schema 的 `$ref: #/$defs/id` 过严。这是勘误而非破坏性变更：不新增/删除字段，不放宽请求、成功响应、通知的 `id` 语义，客户端按 `data.kind` 分支的既有行为不受影响，故不构成 v2。
 
 ## 9. 一致性样例与校验
 
@@ -154,3 +161,5 @@ npm run nyala:validate-rpc
 4. **错误码**：错误响应的 `data.kind` 与 `code` 必须在错误码表内且互相匹配，`retryable` 与表中默认值一致。
 
 样例文件 [`v1/conformance.ndjson`](v1/conformance.ndjson) 是唯一的协议回归输入；新增方法必须同时补样例，否则视为未完成。
+
+`id: null` 的失败响应**不进**一致性样例：样例集按请求/响应对组织，校验脚本要求每个响应的 `id` 都能匹配到一条前置请求（上列第 3 步），而 `id: null` 恰恰出现在无法识别请求的场景，没有可配对的请求。该形态由 schema 的 `$defs/failureId` 约束，并在 Rust 侧合同测试中单独覆盖。

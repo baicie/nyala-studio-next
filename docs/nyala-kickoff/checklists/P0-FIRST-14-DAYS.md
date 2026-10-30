@@ -1,6 +1,6 @@
 # P0 · 首 14 天行动清单（按完成情况而非日历强制推进）
 
-> 状态更新：2026-10-19。已完成的是当前 macOS 开发环境中的 Bootstrap 验收；跨平台发行、SQL 功能和完整回归仍按下方限制推进。
+> 状态更新：2026-10-30。macOS `1.142.0` 完成 Bootstrap 验收；Windows 11 `1.143.0` 完成开发态原生冒烟（`fix/extension-api-version` `6d35da69627` 上 PASS 12/12；此前 `595db6c10f7` 为 FAIL 11/12，原因是内置语言功能与开发版本号不兼容，已由 ADR 0003 修复）。跨平台发行、SQL 功能和完整回归仍按下方限制推进。
 
 ## Day 1–3：可复现的原生上游
 
@@ -8,6 +8,7 @@
 - [x] 按 `.nvmrc` 使用 Node `24.18.0` 与 npm；依赖已安装并完成增量编译。当前 shell 默认 Node 版本不作为验收证据，复现时应显式切换 `.nvmrc`。
 - [x] 通过 `scripts/code.sh` 启动原生 Electron；启动验证使用 macOS、`--disable-gpu` 和本地 CDP 连接。
 - [x] 已验证空工作区、文本编辑、Split editor、内置 Extension Host 和 Webview 基础渲染；证据与命令见 [bootstrap 记录](../docs/04-code-oss-bootstrap.md) 和 [兼容性报告](../../../nyala/upstream-compatibility.md)。
+- [x] Windows 11 · `1.143.0` 原生冒烟（`scripts\code.bat` + `scripts/nyala/smoke-electron.ts --reloads 2`）：2026-10-30 在 `fix/extension-api-version` `6d35da69627` 上 **PASS 12/12**（标题、状态栏、Hello Workbench、Connections View、空工作区编辑、Split Editor、最小 Webview（图片预览）、Extension Host、内置扩展激活无错误、2 次 Reload Window、renderer.log 无 Nyala 错误）；同一提交上另用探针确认 css/html/json/markdown 语言功能激活、Markdown 预览 webview 渲染。2026-10-29 在 `595db6c10f7` 上为 FAIL 11/12（`vscode.markdown-language-features` 因 `0.0.1-dev.0` 不满足 `vscode-languageclient` 的 `^1.67.0` 激活失败），修复见 [ADR 0003](../../adr/0003-extension-api-version.md)。见[兼容性报告 Windows 节](../../../nyala/upstream-compatibility.md#windows-11430-原生-electron-冒烟2026-10-29)。
 
 ## Day 4–6：产品边界
 
@@ -19,7 +20,7 @@
 
 - [x] Register `nyala.hello`，命令面板显示为 `Nyala: Hello Workbench`。
 - [x] 注册 `Nyala Connections` View、状态栏入口和占位内容；原生启动后可见并可执行。
-- [ ] Reload Window 与生命周期回归测试：当前已验证首次启动和重复命令，需补自动化测试后关闭此项。
+- [x] Reload Window 与生命周期回归测试：单元测试 `src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts`（8 passing：单次注册、重复注册不生效、命令重复执行、`ShutdownReason.RELOAD` 后状态栏条目释放并只重建一个、重复 Dispose、Connections View 重建）；Windows `1.143.0` 原生冒烟中 2 次 `Developer: Reload Window` 后状态栏 / Activity Bar / Command Palette 各只有 1 个 Nyala 条目，Hello 与 Connections 正常。原生冒烟脚本尚未接入 CI（CI 受账单阻断）。
 - [x] 记录 Workbench 启动 → Contribution → Command → View 的调用入口，见 [Workbench integration](../docs/05-workbench-integration.md) 与兼容性报告。
 
 ## Day 11–14：验收与下一阶段设计

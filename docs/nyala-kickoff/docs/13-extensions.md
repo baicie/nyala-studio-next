@@ -20,7 +20,7 @@
 
 ## 兼容层
 
-- Extension API 版本以 Code OSS Release 固定；仅对明确的功能列兼容矩阵，不保证所有第三方扩展。
+- Extension API 版本以 Code OSS Release 固定；仅对明确的功能列兼容矩阵，不保证所有第三方扩展。实现：`product.json` 的 `extensionApiVersion`（等于基线 Tag）作为 `vscode.version` 报告给扩展，产品版本不变，见 [ADR 0003](../../adr/0003-extension-api-version.md)。
 - 私有 Proposed API 不对外承诺稳定；Nyala 内置扩展尽量使用 stable API。
 - 完整 Node Extension Host 给开发者扩展以 Node 能力，这**不是**权限沙箱。若未来需运行不可信插件，必须独立设计真正的沙箱与 OS 权限隔离。
 
