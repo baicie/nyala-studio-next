@@ -17,7 +17,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
 | `feat/progress-snapshot` | 本文档 | → `nyala/main`（PR #13） | 随本快照合并 |
 | `fix/p0-windows-smoke` | `595db6c10f7` | → `nyala/main`（PR #23，Draft） | Windows 1.143.0 原生冒烟 + Reload/Dispose 单元测试 |
-| `fix/extension-api-version` | 基于 `595db6c10f7` | → `fix/p0-windows-smoke`（#23 合并后改投 `nyala/main`） | 向扩展报告 Extension API 版本，修复内置语言功能激活失败；ADR 0003；未推送 |
+| `fix/extension-api-version` | 基于 `595db6c10f7` | → `nyala/main`（PR #24，Draft；含 #23 的提交，#23 合并后 rebase） | 向扩展报告 Extension API 版本，修复内置语言功能激活失败；ADR 0003 |
 
 > Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.ts`、`.github/workflows/nyala-ci.yml`、`product.json` 的 Chat/认证置空改动已随 **PR #8** 进入 `nyala/main`；`nyala/rpc/` 合同随 **PR #11** 进入。
 
