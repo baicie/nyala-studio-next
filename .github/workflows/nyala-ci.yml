@@ -68,3 +68,34 @@ jobs:
 
       - name: Check diff
         run: git diff --check
+
+  rust:
+    name: Rust runtime
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Uses the stable toolchain that rustup preinstalls on the runner, so no third-party
+      # toolchain action is added. The versions are printed as evidence for the run.
+      - name: Prepare Rust toolchain
+        run: |
+          rustup component add rustfmt clippy
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked

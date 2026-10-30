@@ -78,14 +78,14 @@ rust/
 ## 后果
 
 - 新增 Nyala 自有目录 `rust/`，不修改任何上游跟踪文件；`nyala/upstream-base.json` 的 `patchCount` 不变。
-- CI 尚未运行 Rust 检查：`.github/workflows/nyala-ci.yml` 不在本次范围内，需要单独 PR 增加 Rust job。
+- CI：`.github/workflows/nyala-ci.yml` 新增独立的 `Rust runtime` job，在 `rust/` 下跑 `cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`，使用 runner 预装的 stable 工具链，不引入第三方 toolchain action；`product` 与 `client` job 不改。
 - 合同缺口（id 为 null 的失败回复）不在本次修改：`nyala/rpc/**` 冻结，修改须走合同变更流程。测试里有一条断言会在合同接受 `"id": null` 时失败，提醒同步更新本 ADR 与测试。
 
 ## 后续项
 
 1. **合同**：v1 `failure` 允许 `"id": null`（或另定读不出 id 时的回复规则），同步 schema、`conformance.ndjson`、README 与校验脚本。
 2. **合同**：为“重复 hello”“hello 前调用其他方法”写明错误 kind，确认或替换上表的选择。
-3. **CI**：在 `nyala-ci.yml` 增加 Rust job（`rust/` 下 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`）。PR #22 也在改这个文件，需在它合并后再做。
+3. **CI**：Rust job 已随本 PR 加入，只覆盖 `ubuntu-latest` + stable。Windows / macOS runner 与 MSRV 1.82 构建仍未覆盖。
 4. **N-103**：Electron Main Supervisor 按上表的退出码区分“流错误”与“版本不匹配”（后者不得重启同一版本）。
 5. **N-106 起**：请求 id 复用检测、并发执行、取消竞态；引入异步运行时时修订本 ADR。
 
@@ -103,4 +103,5 @@ npm run nyala:validate-rpc                                # PASS（合同未改�
 ```
 
 - `tests/stdio.rs` 启动真实的 `nyala-runtime` 进程，通过管道验证：hello/health 往返、逐字节与粘包写入、零长度与超限帧（含 hello 前 1 MiB / hello 后 8 MiB 的边界）、非法 payload 后连接继续、帧中途 EOF、major 不匹配退出码 2、stdout 只有完整帧且日志只在 stderr、payload 内容不出现在 stdout 或 stderr。
-- 未验证：MSRV 1.82 实际构建（本机 1.91.1 工具链损坏、1.80.0 早于 MSRV）记 NOT RUN；GitHub Actions 没有 Rust job，记 NOT RUN；macOS / Linux 记 NOT RUN。
+- GitHub Actions：`Rust runtime` job 在 `ubuntu-latest` 上执行同样三条命令，真实结果记录在 PR 描述中。
+- 未验证：MSRV 1.82 实际构建（本机 1.91.1 工具链损坏、1.80.0 早于 MSRV）记 NOT RUN；macOS 记 NOT RUN。

@@ -49,7 +49,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 - `rust/` 是独立的 Cargo workspace（不进上游 `cli/`），单 crate `rust/crates/nyala-runtime`：4 字节 LE 分帧（半包、粘包、零长度、超限）、envelope 解析、结构化错误（与 `error-codes.json` 逐项比对）、`runtime.hello`（major 不匹配回 `PROTOCOL_MISMATCH` 并以退出码 2 结束）、`runtime.health`。
 - 一致性测试直接读取 `nyala/rpc/v1/`；真实进程测试验证 stdout 只有协议帧、日志只在 stderr。
-- 本地证据（Windows 11，cargo 1.96.0）：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`（47 个）PASS；GitHub Actions 没有 Rust job，NOT RUN。目录选择、合同未写死之处和合同缺口见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)。
+- 本地证据（Windows 11，cargo 1.96.0）：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`（47 个）PASS；`nyala-ci.yml` 新增 `Rust runtime` job（ubuntu-latest），结果见本分支的 PR。目录选择、合同未写死之处和合同缺口见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)。
 
 ## 未完成 / 已知缺口
 
@@ -57,7 +57,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 2. **P0 唯一未勾项**：Reload Window / 生命周期自动化回归（[P0 清单](checklists/P0-FIRST-14-DAYS.md) 第 22 行）。已手工验证首次启动与重复执行，缺自动化。
 3. Windows / Linux 原生启动、安装包、签名、更新链路均未验证。
 4. Chat / Copilot / 认证入口置空后只做过代码审计，没有系统 UI 回归。
-5. Rust Runtime：N-101/N-102 在 `feat/p1-rust-runtime`（待审核，未合并）；N-103 Supervisor 与 P1.2–P1.4 未开始；CI 尚无 Rust job（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md) 后续项）。
+5. Rust Runtime：N-101/N-102 在 `feat/p1-rust-runtime`（待审核，未合并）；N-103 Supervisor 与 P1.2–P1.4 未开始；CI 的 Rust job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md) 后续项）。
 6. 本机 `node_modules` / `out` / `.build` 已清理，恢复需要重新安装与编译（见下）。
 
 ## 治理与 CI 现状（2026-10-29）
