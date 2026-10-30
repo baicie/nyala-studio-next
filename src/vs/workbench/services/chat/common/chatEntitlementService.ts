@@ -388,6 +388,8 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 	readonly context: Lazy<ChatEntitlementContext> | undefined;
 	readonly requests: Lazy<ChatEntitlementRequests> | undefined;
 
+	private defaultChatAgentDisabled = false;
+
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IProductService productService: IProductService,
@@ -450,13 +452,15 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 		);
 		this.sentimentObs = observableFromEvent(this.onDidChangeSentiment, () => this.sentiment);
 
-		if ((isWeb && !environmentService.remoteAuthority && !environmentService.isSessionsWindow)) {
-			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true); // hide copilot UI on web if unsupported
+		if (!productService.defaultChatAgent?.extensionId || !productService.defaultChatAgent.chatExtensionId) {
+			this.defaultChatAgentDisabled = true;
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true); // Nyala and other products can explicitly disable the default chat agent
 			return;
 		}
 
-		if (!productService.defaultChatAgent?.extensionId || !productService.defaultChatAgent.chatExtensionId) {
-			return; // Nyala and other products can explicitly disable the default chat agent
+		if ((isWeb && !environmentService.remoteAuthority && !environmentService.isSessionsWindow)) {
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true); // hide copilot UI on web if unsupported
+			return;
 		}
 
 		const context = this.context = new Lazy(() => this._register(instantiationService.createInstance(ChatEntitlementContext)));
@@ -729,8 +733,8 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 			this.context.value.setForceHidden(hidden);
 		} else {
 			// No ChatEntitlementContext (e.g. no defaultChatAgent in product.json).
-			// Set the context key directly as a fallback.
-			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(hidden);
+			// Set the context key directly as a fallback, but never reveal a disabled default chat agent.
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(hidden || this.defaultChatAgentDisabled);
 		}
 	}
 
