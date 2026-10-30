@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/nyala-runtime"]
+
+[workspace.package]
+edition = "2021"
+# Oldest toolchain the code is written for (Option::is_none_or); clippy checks API use against it.
+rust-version = "1.82"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# stdout carries protocol frames only (nyala/rpc/README.md §1); logs go to stderr.
+print_stdout = "deny"
+dbg_macro = "deny"

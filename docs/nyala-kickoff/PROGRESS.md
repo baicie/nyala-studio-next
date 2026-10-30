@@ -5,7 +5,7 @@
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 尚未开始写代码**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟在 `fix/p0-windows-smoke` 上为 FAIL 11/12（内置语言功能与开发版本号 `0.0.1-dev.0` 不兼容），叠加 `fix/extension-api-version`（向扩展报告 Extension API 版本 `1.143.0`，ADR 0003）后为 **PASS 12/12**，两个分支均待合并。`fix/disabled-chat-runtime` 关闭了运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证激活，冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，新增的出口检查发现 Agent Host 启动与 Chromium 拼写词典下载两条出站路径（未修复）。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误）已在 `feat/p1-rust-runtime`（PR #25）实现、待审核；N-103 Supervisor 与 P1.2–P1.4 未开始**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟在 `fix/p0-windows-smoke` 上为 FAIL 11/12（内置语言功能与开发版本号 `0.0.1-dev.0` 不兼容），叠加 `fix/extension-api-version`（向扩展报告 Extension API 版本 `1.143.0`，ADR 0003）后为 **PASS 12/12**，两个分支均待合并。`fix/disabled-chat-runtime` 关闭了运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证激活，冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，新增的出口检查发现 Agent Host 启动与 Chromium 拼写词典下载两条出站路径（未修复）。
 
 ## 分支与 PR
 
@@ -16,9 +16,10 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
 | `feat/progress-snapshot` | 本文档 | → `nyala/main`（PR #13） | 随本快照合并 |
-| `fix/p0-windows-smoke` | `595db6c10f7` | → `nyala/main`（PR #23，Draft） | Windows 1.143.0 原生冒烟 + Reload/Dispose 单元测试 |
-| `fix/extension-api-version` | 基于 `595db6c10f7` | → `nyala/main`（PR #24，Draft；含 #23 的提交，#23 合并后 rebase） | 向扩展报告 Extension API 版本，修复内置语言功能激活失败；ADR 0003 |
-| `fix/disabled-chat-runtime` | 基于 `c6488d318dc` | → `nyala/main`（Draft；含 #23、#24 的提交，二者合并后 rebase） | 运行时关闭 Chat 视图、内置 Copilot Chat 与 Microsoft 认证；冒烟增加 Chat 与出口检查 |
+| `fix/p0-windows-smoke` | `595db6c10f7` | → `nyala/main`（PR #23，**已合入**） | Windows 1.143.0 原生冒烟 + Reload/Dispose 单元测试 |
+| `fix/extension-api-version` | 基于 `595db6c10f7` | → `nyala/main`（PR #24，**已合入**） | 向扩展报告 Extension API 版本，修复内置语言功能激活失败；ADR 0003 |
+| `fix/disabled-chat-runtime` | 基于 `c6488d318dc` | → `nyala/main`（**已合入**） | 运行时关闭 Chat 视图、内置 Copilot Chat 与 Microsoft 认证；冒烟增加 Chat 与出口检查 |
+| `feat/p1-rust-runtime` | `d6050e7505f` | → `nyala/main`（PR #25，Draft） | `rust/` Runtime crate（N-101/N-102：分帧、hello/health、结构化错误），待审核，未合并 |
 
 > Nyala 版 `AGENTS.md`、`scripts/nyala/validate-product.ts`、`.github/workflows/nyala-ci.yml`、`product.json` 的 Chat/认证置空改动已随 **PR #8** 进入 `nyala/main`；`nyala/rpc/` 合同随 **PR #11** 进入。
 
@@ -49,14 +50,20 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - `npm run nyala:validate-rpc`：分帧半包/粘包/零长度/超限、schema、请求响应配对、sequence 单调、错误码一致、README 与 schema 防漂移、负向对照。
 - ADR：`docs/adr/0001-rpc-contract-v1.md`（随 PR #11 引入，合并后才有该文件）。
 
+### P1.1 · Rust Runtime N-101/N-102（`feat/p1-rust-runtime`，待审核）
+
+- `rust/` 是独立的 Cargo workspace（不进上游 `cli/`），单 crate `rust/crates/nyala-runtime`：4 字节 LE 分帧（半包、粘包、零长度、超限）、envelope 解析、结构化错误（与 `error-codes.json` 逐项比对）、`runtime.hello`（major 不匹配回 `PROTOCOL_MISMATCH` 并以退出码 2 结束）、`runtime.health`。
+- 一致性测试直接读取 `nyala/rpc/v1/`；真实进程测试验证 stdout 只有协议帧、日志只在 stderr。
+- 本地证据（Windows 11，cargo 1.96.0）：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`（47 个）PASS；`nyala-ci.yml` 新增 `Rust runtime` job（ubuntu-latest），结果见本分支的 PR。目录选择、合同未写死之处和合同缺口见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)。
+
 ## 未完成 / 已知缺口
 
 1. **CI 仍然跑不出结果**：三个 PR 的检查全红都是 GitHub 账单问题（`The job was not started because recent account payments have failed or your spending limit needs to be increased`），任务根本没启动，与代码无关；合并后仍需解决，否则后续 PR 都拿不到真实检查。
-2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，待合并）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；合并后 `patchCount` 应由 46 改为 50。
+2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，已随 PR #24 合入 `nyala/main`）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；合并后 `patchCount` 应由 46 改为 50。
 3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，待合并）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**仍有出站路径**：Agent Host 照常启动（加载 Copilot SDK / Claude / Codex provider），Chromium 从 `redirector.gvt1.com` 下载拼写词典；两者都未修复，冒烟中为 FAIL。
 4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
-5. Rust Runtime（P1.1–P1.4）未开始；`nyala/rpc` 合同是它的前置条件。
-6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）已有完整的 `node_modules` / `out` / `.build`；其他机器恢复需要重新安装与编译（见下）。
+5. Rust Runtime：N-101/N-102 在 `feat/p1-rust-runtime`（PR #25，待审核，未合并）；N-103 Supervisor 与 P1.2–P1.4 未开始；`nyala/rpc` 合同已冻结（PR #11）。CI 的 `Rust runtime` job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)）。
+6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）的 `node_modules` / `out` / `.build` / `build/node_modules` 均不存在（2026-10-30 实测）；其他机器恢复需要重新安装与编译（见下）。
 
 ## 治理与 CI 现状（2026-10-29）
 
@@ -107,7 +114,7 @@ npm run nyala:validate-rpc   # 纯 Node，无依赖，可先跑
 ```
 
 - `npm run compile` 生成 `out/`；`./scripts/code.sh` 负责 Electron 下载与启动。
-- Rust 侧当前只需 `cargo`（本机验证 `cargo 1.96.0` 可用）；`cli/` 是上游 CLI 资源，不含 Nyala Runtime。
+- Rust 侧只需 `cargo`（本机验证 `cargo 1.96.0` 可用）；Nyala Runtime 在 `rust/`（`cd rust && cargo test`），`cli/` 是上游 CLI 资源，不含 Nyala Runtime。
 - 校验基线：`npm run compile`、`npm run typecheck-client`、`npm run build-fast -- --client-only`、`npm run gulp hygiene`、定向 ESLint、`git diff --check`。
 
 ## 新机器恢复步骤（Windows）
@@ -137,6 +144,7 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 | `nyala/` | 产品元数据：upstream-base、patch-ledger、upstream-compatibility、rpc 合同 |
 | `scripts/nyala/` | 校验脚本（RPC 合同、产品基线）与原生 Electron 冒烟脚本 `smoke-electron.ts` |
 | `src/vs/workbench/contrib/nyala/` | Hello Workbench 贡献与 Connections 占位视图 |
+| `rust/` | Nyala Rust Runtime workspace（`crates/nyala-runtime`：N-101/N-102） |
 
 ## 移交清理记录（2026-10-28）
 
