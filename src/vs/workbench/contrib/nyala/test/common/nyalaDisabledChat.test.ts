@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { hasDefaultChatAgent } from '../../../../../base/common/product.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -50,6 +51,23 @@ suite('Nyala disabled Chat', () => {
 			context: undefined,
 			hiddenAfterStartup: true,
 			hiddenAfterGateCleared: true,
+		});
+	});
+
+	// The chat entitlement service and the desktop Agent Host enablement both gate on this predicate.
+	test('reports no default chat agent for the shipped product, and one only when both extension ids are set', () => {
+		const configured = { ...product.defaultChatAgent, extensionId: 'publisher.agent', chatExtensionId: 'publisher.agent-chat' };
+
+		assert.deepStrictEqual({
+			shipped: hasDefaultChatAgent(product),
+			configured: hasDefaultChatAgent({ defaultChatAgent: configured }),
+			withoutExtension: hasDefaultChatAgent({ defaultChatAgent: { ...configured, extensionId: '' } }),
+			withoutChatExtension: hasDefaultChatAgent({ defaultChatAgent: { ...configured, chatExtensionId: '' } }),
+		}, {
+			shipped: false,
+			configured: true,
+			withoutExtension: false,
+			withoutChatExtension: false,
 		});
 	});
 });

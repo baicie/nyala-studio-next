@@ -5,6 +5,7 @@
 
 import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
 import { Emitter } from '../../../base/common/event.js';
+import { hasDefaultChatAgent } from '../../../base/common/product.js';
 import { IpcMainEvent, WebContents } from 'electron';
 import { validatedIpcMain } from '../../../base/parts/ipc/electron-main/ipcMain.js';
 import { Client as MessagePortClient } from '../../../base/parts/ipc/electron-main/ipc.mp.js';
@@ -15,6 +16,7 @@ import { IEnvironmentMainService } from '../../environment/electron-main/environ
 import { parseAgentHostDebugPort } from '../../environment/node/environmentService.js';
 import { ILifecycleMainService } from '../../lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../../log/common/log.js';
+import { IProductService } from '../../product/common/productService.js';
 import { Schemas } from '../../../base/common/network.js';
 import { getResolvedShellEnv } from '../../shell/node/shellEnv.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
@@ -57,6 +59,7 @@ export class ElectronAgentHostStarter extends Disposable implements IAgentHostSt
 		@ILifecycleMainService private readonly _lifecycleMainService: ILifecycleMainService,
 		@ILogService private readonly _logService: ILogService,
 		@ITelemetryService private readonly _telemetryService: ITelemetryService,
+		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
 
@@ -101,6 +104,11 @@ export class ElectronAgentHostStarter extends Disposable implements IAgentHostSt
 	}
 
 	async start(): Promise<IAgentHostConnection> {
+		// Every spawn goes through here (window connections, restart requests, startup), so a product
+		// that disables the default chat agent refuses them all, not only the renderer's prewarm.
+		if (!hasDefaultChatAgent(this._productService)) {
+			throw new AgentHostStartError('The Agent Host is disabled because the product does not configure a default chat agent.', true);
+		}
 		if (this.utilityProcess) {
 			throw new Error('Agent Host utility process is already running.');
 		}
