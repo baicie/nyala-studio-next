@@ -1,6 +1,6 @@
 # Nyala P0 Patch Ledger
 
-更新时间：2026-10-29。基线是 Code OSS `1.143.0`，SHA
+更新时间：2026-11-01。基线是 Code OSS `1.143.0`，SHA
 `2d0b7506a36c1d6db9a466440131a8e01eab2289`（2026-10-29 由 `1.142.0` /
 `d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime
 目前只有 `rust/` 下的 stdio 分帧与 hello/health（N-101/N-102，不改上游文件），连接驱动和结果网格
@@ -8,31 +8,33 @@
 
 ## 计数口径
 
-`nyala/upstream-base.json` 的 `patchCount` 为 `46`：44 个已跟踪的上游文件发生修改，另有 2
+`nyala/upstream-base.json` 的 `patchCount` 为 `50`：48 个已跟踪的上游文件发生修改，另有 2
 个 Nyala Workbench 源文件新增。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
 `.github/workflows/nyala-ci.yml`、`scripts/nyala/`、`nyala/` 元数据和 Nyala 自有的 `rust/`
 Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runtime-workspace.md)）不计入
 该数字，但仍属于当前工作树，提交前应随变更审阅。
 
-`46` 是治理 PR #15/#16/#17 合并到 `nyala/main` 后的实测值。相对 1.143.0 同步时的 `45`
+`46` 是治理 PR #15/#16/#17 合并到 `nyala/main` 后的实测值（历史记录）。相对 1.143.0 同步时的 `45`
 只增加 1 个：`.github/dependabot.yml`（新增的上游跟踪文件修改）；`AGENTS.md` 与
 `.github/pull_request_template.md` 的修改在同步当时已计入 `45`，治理 PR 只在其上追加内容。
 后续每次上游同步、或上游跟踪文件的增删改，都要按同一口径重算，并且只在**合并之后**更新，
 避免为未合并的 PR 虚增补丁数。
 
+`50` 是 PR #23、#24、#26 合并后在 `nyala/main` `2db1dcd73ca` 上的实测值（2026-11-01）：与 `1.143.0` 相比，修改的上游跟踪文件从 44 个增加到 48 个，新增的 4 个都来自 PR #24（见下）；Nyala Workbench 源文件新增仍为 2 个。结果与下面几段的合并前预测一致。
+
 `fix/p0-windows-smoke` 不改变该数字：它修改的是已计入的 Nyala 自有文件 `nyala.contribution.ts`（只加 `export`），
 新增的 `src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts` 是 Nyala 自有测试、不是上游跟踪文件，
 `scripts/nyala/smoke-electron.ts` 按口径不计入。没有触碰任何上游跟踪文件。
 
-`fix/extension-api-version` 合并后该数字应由 `46` 变为 `50`：新增修改 4 个此前与 `1.143.0` 一致的上游跟踪文件
+`fix/extension-api-version`（PR #24）合并后该数字由 `46` 变为 `50`：新增修改 4 个此前与 `1.143.0` 一致的上游跟踪文件
 （`src/vs/base/common/product.ts`、`localProcessExtensionHost.ts`、`remoteExtensionHost.ts`、`webWorkerExtensionHost.ts`）；
 `product.json` 与 `src/vs/platform/product/common/product.ts` 已计入，`scripts/nyala/validate-product.ts` 与
-`docs/adr/0003-extension-api-version.md` 按口径不计入。按规则在合并之后再改 `upstream-base.json`。
+`docs/adr/0003-extension-api-version.md` 按口径不计入。`upstream-base.json` 已在合并后（2026-11-01）更新。
 
 `fix/disabled-chat-runtime`（基于 `fix/extension-api-version`）不再改变该数字：它修改的上游跟踪文件
 `product.json`、`src/vs/base/common/product.ts`、`extensionsScannerService.ts` 及其测试、`chatEntitlementService.ts`
 都已计入；新增的 `src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts` 是 Nyala 自有测试，
-`scripts/nyala/` 按口径不计入。两个 PR 都合并后 `patchCount` 为 `50`。
+`scripts/nyala/` 按口径不计入。两个 PR 均已合并，`patchCount` 为 `50`。
 
 ## 改动清单
 

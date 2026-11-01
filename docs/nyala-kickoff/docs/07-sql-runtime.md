@@ -99,7 +99,7 @@ pub trait DatabaseDriver: Send + Sync {
 
 ## v1.1 实现优先级与状态边界
 
-- 当前仓库仅存在 `nyala/rpc/v1` 可执行协议合同，**尚未实现 Nyala 专有 Rust DB Sidecar**；这里的结构/接口属于 P1 设计要求。
+- 当前仓库有 `nyala/rpc/v1` 可执行协议合同和 `rust/crates/nyala-runtime`（N-101/N-102：分帧、hello/health、结构化错误，PR #25）；**尚无数据库驱动、Session 与查询执行**，其余结构/接口仍属 P1 设计要求。
 - P1 实施顺序 N-101/102/103：独立 Rust Workspace → stdio 帧编解码与 hello/health/error → Electron Main Supervisor，真实跨进程测试优先；随后 SQLite Session/Metadata/Query/Result/Cancel/Readonly。
 - 以当前合同为规范来源，保持 major/minor、sessionGeneration、Execution/Result IDs、sequence、`Unknown` 状态语义；不得私自“简化”掉取消/资源释放/未知提交状态。
 - 允许最早纵向 smoke 跑通 Workbench → TS Bridge → Rust → SQLite → Workbench，但不得越权绕开统一 Query Service 或把大结果直接 JSON 化。

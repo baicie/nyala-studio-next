@@ -1,6 +1,6 @@
 # ADR 0001 · 用可执行合同冻结 Nyala RPC v1.0
 
-- 状态：Accepted（draft for review，随 PR 审核）
+- 状态：Accepted（2026-10-29 随 PR #11 合入；2026-10-30 勘误见文末修订记录，PR #27）
 - 日期：2026-10-28
 - 决策域：Nyala 跨进程协议（Electron Main ↔ `nyala-runtime`）
 - 上位文档：[`docs/nyala-kickoff/docs/08-ipc-contract.md`](../nyala-kickoff/docs/08-ipc-contract.md)、[`07-sql-runtime.md`](../nyala-kickoff/docs/07-sql-runtime.md)

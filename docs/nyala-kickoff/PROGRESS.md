@@ -1,17 +1,17 @@
 # Nyala Studio · 项目进度快照
 
-> 快照时间：2026-10-29 · 基线 Code OSS `1.143.0`（`2d0b7506a36c1d6db9a466440131a8e01eab2289`，2026-10-29 由 `1.142.0` 同步）· 开发版本 `0.0.1-dev.0`
+> 快照时间：2026-11-01（`nyala/main` `2db1dcd73ca`；原快照 2026-10-29）· 基线 Code OSS `1.143.0`（`2d0b7506a36c1d6db9a466440131a8e01eab2289`，2026-10-29 由 `1.142.0` 同步）· 开发版本 `0.0.1-dev.0`
 > 用途：跨机器移交与断点续做。**状态权威顺序：Git 分支与 PR ＞ 本文档 ＞ 会话记忆**；阶段验收仍以 [19-roadmap.md](docs/19-roadmap.md) 为准。
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误）已在 `feat/p1-rust-runtime`（PR #25）实现、待审核；N-103 Supervisor 与 P1.2–P1.4 未开始**。「Reload Window / 生命周期自动化回归」已由单元测试和 Windows 原生冒烟关闭（`fix/p0-windows-smoke`，待合并）；Windows 11 `1.143.0` 原生冒烟在 `fix/p0-windows-smoke` 上为 FAIL 11/12（内置语言功能与开发版本号 `0.0.1-dev.0` 不兼容），叠加 `fix/extension-api-version`（向扩展报告 Extension API 版本 `1.143.0`，ADR 0003）后为 **PASS 12/12**，两个分支均待合并。`fix/disabled-chat-runtime` 关闭了运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证激活，冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，新增的出口检查发现 Agent Host 启动与 Chromium 拼写词典下载两条出站路径（未修复）。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；截至 2026-11-01，PR #21–#31 已全部合入 `nyala/main`。**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误）已合入（PR #25）**；N-103 Supervisor 与 N-104 SQLite Session 于 2026-11-01 开工、尚无 PR；P1.3–P1.4 未开始。合同 v1.0 有一处勘误：`failure.id` 允许 `null`（PR #27）。Windows 11 `1.143.0` 原生冒烟与 Reload/Dispose 单元测试已合入（PR #23）；内置语言功能激活修复（PR #24，ADR 0003）后为 **PASS 12/12**。运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证已关闭（PR #26），冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，出口检查发现的 Agent Host 启动与 Chromium 拼写词典下载两条出站路径仍未修复（2026-11-01 开工）。CI 已能真实执行，`nyala/main` 的分支保护要求 4 个 checks。
 
 ## 分支与 PR
 
 | 分支 | HEAD | 目标 | 状态 |
 |---|---|---|---|
-| `nyala/main` | `7bfc4fc2a68`（2026-10-30 收口时） | 稳定主线 | 已合入 #8、#11、#13、#14、#15、#16、#17、#18、#22、#23、#27、#24、#26、#25 |
+| `nyala/main` | `2db1dcd73ca`（2026-11-01 核对；2026-10-30 收口时为 `7bfc4fc2a68`） | 稳定主线 | 已合入 #8、#11、#13–#18、#21–#31 |
 | `sync/code-oss-1.143.0` | 合并 `1.143.0` | → `nyala/main` | 同步分支：真正的 merge commit，上游 731 个提交保持为祖先 |
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
@@ -56,7 +56,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 一致性测试直接读取 `nyala/rpc/v1/`；真实进程测试验证 stdout 只有协议帧、日志只在 stderr。
 - 本地证据（Windows 11，cargo 1.96.0）：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`（47 个）PASS；`nyala-ci.yml` 新增 `Rust runtime` job（ubuntu-latest），结果见本分支的 PR。目录选择、合同未写死之处和合同缺口见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)。
 
-## 2026-10-30 收口记录（六个 PR 全部合入）
+## 2026-10-30 收口记录（#21–#31 全部合入）
 
 | PR | 分支 | head | CI run | 结果 |
 |---|---|---|---|---|
@@ -66,9 +66,11 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | #24 | `fix/extension-api-version` | `284c74242eb` | 41022562593 | 2/2 → squash `52664d3b715` |
 | #26 | `fix/disabled-chat-runtime` | `c1cd1365c69` | 41023407944 | 2/2 → squash `dfa366609c5` |
 | #25 | `feat/p1-rust-runtime` | `689a5aaec29` | 41024634079 | 3/3（含 Rust runtime）→ squash `7bfc4fc2a68` |
-| #21 | `docs/nyala-design-v1.1` | 本提交 | 见本 PR | 2/2 |
-| #28 | `ci/unit-test-gate` | `8a47ae404e7` | 41031484168 | 4/4（新增 `Unit tests (node)`）→ squash |
-| — | `docs/record-branch-protection` | 本提交 | 见本 PR | 记录分支保护开启与 CI 门禁 |
+| #21 | `docs/nyala-design-v1.1` | `a1d60e10c02` | 41025472617 | 2/2 → squash `b9639120316` |
+| #28 | `ci/unit-test-gate` | `8a47ae404e7` | 41031484168 | 4/4（新增 `Unit tests (node)`）→ squash `e17977fc7b0` |
+| #29 | `docs/record-branch-protection` | `52451c6c550` | 41032763612 | 4/4 → squash `e8fb3d3fce3`：记录分支保护开启与 CI 门禁 |
+| #30 | `ci/browser-test-manual` | `f02e67dd4d9` | 41048853809 | 4/4（`Browser tests (manual)` 为 SKIPPED）→ squash `2ac10fbc88f` |
+| #31 | `ci/upstream-parity-tests` | `7218555963b` | 41075763186 | 4/4（`Full test suites (manual)` 为 SKIPPED）→ squash `2db1dcd73ca`。合并后手动触发的 41076623105 五个 job 均为 success；其中 `Browser unit tests (full suite)` 设了 `continue-on-error`，它的 success 不代表全量浏览器测试通过 |
 
 - 合并方式：逐个 `gh pr merge --squash`；每个分支合并前先用新的 `nyala/main` 更新并重跑 CI，确保 PR diff 只含自身改动（#23 7 files / #24 13 files / #26 11 files / #25 19 files，均无其它 PR 内容泄漏）。
 - 合同勘误（新增 PR #27）：`nyala/rpc/v1` 的 `$defs/failureId` 允许 `"id": null`（JSON-RPC 2.0 §5），只放宽 `failure.id`，`$defs/id` 仍要求字符串。Rust 侧绊线断言已翻转为「schema 接受」，`cargo test --workspace --locked` 47 个测试通过。
@@ -78,10 +80,10 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 ## 未完成 / 已知缺口
 
 1. ~~**CI 仍然跑不出结果（GitHub 账单阻断 + workflow 缺 build/ 依赖）**~~：账单阻断已随仓库转为公开解除；`Hygiene` 因 `nyala-ci.yml` 未安装 `build/` 依赖而失败的缺陷已由 **PR #22** 修复并合入（`b48a859214a`）。
-2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，已随 PR #24 合入 `nyala/main`）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；合并后 `patchCount` 应由 46 改为 50。
+2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，已随 PR #24 合入 `nyala/main`）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；`patchCount` 已于 2026-11-01 由 46 改为 50（见 patch ledger）。
 3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，已随 PR #26 合入 `nyala/main`）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**仍有出站路径**：Agent Host 照常启动（加载 Copilot SDK / Claude / Codex provider），Chromium 从 `redirector.gvt1.com` 下载拼写词典；两者都未修复，冒烟中为 FAIL。
 4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
-5. Rust Runtime：N-101/N-102 已随 PR #25 合入 `nyala/main`（squash `7bfc4fc2a68`）；N-103 Supervisor 与 P1.2–P1.4 未开始；`nyala/rpc` 合同已冻结（PR #11）。CI 的 `Rust runtime` job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)）。
+5. Rust Runtime：N-101/N-102 已随 PR #25 合入 `nyala/main`（squash `7bfc4fc2a68`）；N-103 Supervisor 与 N-104 SQLite Session 于 2026-11-01 开工、尚无 PR，P1.3–P1.4 未开始；`nyala/rpc` 合同已冻结（PR #11）。CI 的 `Rust runtime` job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)）。
 6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）的 `node_modules` / `out` / `.build` / `build/node_modules` 均不存在（2026-10-30 实测）；其他机器恢复需要重新安装与编译（见下）。
 7. **单元测试门禁**：`Unit tests (node)` job 每次 PR 必跑，覆盖 `extensionsScannerService.test.ts` 与 `nyalaDisabledChat.test.ts`（后者在 `test/common/`，node runner 可直接加载），CI 实测 `39 passing`。`nyalaBootstrap.test.ts` 在 `test/browser/`，node runner 明确排除，改由 **`Full test suites (manual)` job 覆盖**（`workflow_dispatch` 手动触发）：该 job 复刻上游 `.github/workflows/pr-linux-test.yml` 的两条命令 `npm run test-node` 与 `npm run test-browser-no-install -- --browser chromium`，外加定向跑 `nyalaBootstrap.test.ts`（Chromium 实测 `7 passing`，run `41048113709`）。上游这条链路跑在自托管 1ES 池（`1ES.Pool=1es-vscode-oss-ubuntu-22.04-x64`）上，本 fork 没有该池，故降级为 GitHub 托管 runner + 手动触发。实测两次：run `41050593662`（45 分钟超时终止）与 run `41056484782`（120 分钟超时终止，此时仍在以**每 30 秒一条**的节奏输出超时（编号 2107–2111），即大量测试在本 fork 配置下持续超时）。结论：**上游全量 `npm run test-node` 在本 fork 的 GitHub 托管 runner 上不可行**，故手动 job 的 node 步骤收窄为 `--runGlob vs/platform/extensionManagement/**/*.test.js`（Nyala 补丁实际触及的领域），浏览器全量套件仍按上游命令保留，实测（run `41073529509`）：**42880 passing / 216 pending / 8 failing，约 10 分钟**。8 条失败已归类：4 条是 `…/upgrade-success` URI 断言期待 `GitHub.copilot-chat` 授权（本 fork 在 `product.json` 里置空，属预期差异）、`GitHub Enterprise URIs must be an array…`、`"undefined" === "not-a-url"`、`12 === 10` 三条与 product 配置相关、1 条 `welcomeOnboarding` 超时。因此该步骤设为 `continue-on-error`，基线固定为 8 条失败——**新增失败仍会在日志里显示，便于对比**。两件未做成的事及原因：①`npm run compile` 与 `compile-client` 在 CI 会因 `extensions/copilot` 的 esbuild、扩展 media 的 tsgo 缺依赖而失败，须先补齐各扩展依赖安装；②smoke（`scripts/nyala/smoke-electron.ts`）需真实窗口，ubuntu runner 不适用。
 8. ~~**`validate-product` 扫描范围缺口**~~：已关闭。脚本现在同时扫描 `product.json` 的 `builtInExtensions`：能映射到仓库内 `extensions/<folder>` 的条目沿用同一套 chat 贡献点检查；任何形似 chat/copilot 的条目必须出现在 `skipBuiltinExtensions` 中，否则断言失败。
@@ -122,9 +124,9 @@ gh api -X DELETE repos/baicie/nyala-studio-next/branches/nyala/main/protection
 ## 下一步（建议顺序）
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
-2. 解决 CI 账单（或把 workflow 收窄到 push / self-hosted），并在 `nyala-ci.yml` 增加一行 `npm run nyala:validate-rpc`。
-3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；下一步关闭 Agent Host 启动与 Chromium 拼写词典下载，之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
-4. P1.1：Rust crate + Supervisor + stdio framing，按 `nyala/rpc` 合同实现 hello / health / error。
+2. ~~解决 CI 账单~~ 已解除（2026-10-30 仓库转为公开）；`nyala:validate-rpc` 早已在 `nyala-ci.yml` 中，Hygiene 依赖缺口由 PR #22 修复。
+3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；Agent Host 启动与 Chromium 拼写词典下载两条出站路径于 2026-11-01 开工修复（尚无 PR），之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
+4. P1.1：~~Rust crate + stdio framing + hello / health / error~~ 已随 PR #25 合入。接下来是 N-103 Electron Main Supervisor 与 N-104 SQLite Profile/Session（2026-11-01 开工），然后是 N-105–N-110。
 
 ## 新机器恢复步骤（macOS / Linux）
 
@@ -167,8 +169,8 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 
 | 路径 | 作用 |
 |---|---|
-| `docs/nyala-kickoff/` | 设计包：15 份设计文档 + 路线图/backlog + P0 清单 + 本快照 |
-| `docs/adr/` | 架构决策记录（0001：RPC 合同 v1.0；0003：Extension API 版本，待合并；0002 由 `feat/p1-rust-runtime` 占用） |
+| `docs/nyala-kickoff/` | 设计包：`docs/01`–`31` 设计文档（含路线图/backlog、Agent 专题）+ ADR 0001–0008 + P0 清单 + 本快照 |
+| `docs/adr/` | 架构决策记录（0001：RPC 合同 v1.0；0002：Rust Runtime workspace；0003：Extension API 版本；均已合入） |
 | `nyala/` | 产品元数据：upstream-base、patch-ledger、upstream-compatibility、rpc 合同 |
 | `scripts/nyala/` | 校验脚本（RPC 合同、产品基线）与原生 Electron 冒烟脚本 `smoke-electron.ts` |
 | `src/vs/workbench/contrib/nyala/` | Hello Workbench 贡献与 Connections 占位视图 |

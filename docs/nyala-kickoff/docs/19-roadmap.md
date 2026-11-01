@@ -15,23 +15,23 @@
 | P6 | 1.0 候选 | 文档、发行、上游升级测试 | 由风险决定 | 上游升级 + 多 OS 质量门禁 |
 | EX | Tauri/瘦身实验 | 独立 PR/报告，不强制合入 | 独立时间盒 | 定量报告与 ADR |
 
-## v1.1 阶段状态（2026-10-29 快照）
+## v1.1 阶段状态（2026-10-29 快照，2026-11-01 更新）
 
 > 状态以 Git/PR/真实测试为准，本表只是快照；证据来源为 [PROGRESS](../PROGRESS.md)、[`nyala/upstream-compatibility.md`](../../../nyala/upstream-compatibility.md) 和 PR #8/#11/#14–#18。本设计修订没有重新运行编译、Electron 冒烟或 SQL 执行。
 
 | 阶段 | 当前状态 | 是否阻塞下一阶段 |
 |---|---|---|
-| P0 | 基本完成：1.142.0 macOS Electron Smoke 通过；1.143.0 只有 compile/typecheck/hygiene 证据，Electron Smoke 与 Reload/Dispose 自动化仍缺 | 核心 smoke 闭环必须补，不能当发行通过 |
-| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Sidecar 未实现 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
+| P0 | 基本完成：1.142.0 macOS Electron Smoke 通过；1.143.0 Windows 原生冒烟 PASS 12/12（PR #24），Reload/Dispose 单元测试已合入（PR #23）；17 步冒烟中 Agent Host 与拼写词典两条出站路径仍 FAIL；Linux/macOS 未用 1.143.0 复跑 | 核心 smoke 闭环必须补，不能当发行通过 |
+| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Runtime N-101/N-102 已合入（PR #25）；N-103–N-110 未合入 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
 | P2–P4、P6 | 未开始 | 按各自 Exit |
 | P5 | 仅有 Agent 设计研究（[27](27-agent-platform.md)–[30](30-agent-security-evaluation.md)），无实现 | **不得阻塞 P1–P4** |
 | EX | 不纳入主线 | 独立 ADR，受控时间盒 |
 
 ### P0 收尾（N-R01～N-R02）
 
-- **P0-R1**：以 Code OSS 1.143.0 为基线运行真实 Electron 开发态启动，验证 Command Palette、Connections View、StatusBar、Split Editor、Extension Host、最小 Webview，记录平台/Node/npm/commit/日志。
-- **P0-R2**：Nyala View 的 Reload Window / Dispose 自动化回归（重复注册、泄漏、状态恢复、错误态）；环境不允许时标 BLOCKED 并保留门禁，不用旧版本 smoke 代替。
-- **P0-R3**：`nyala-ci.yml` 中的 `nyala:validate-product`、`nyala:validate-rpc` 与 TypeScript 基线需要真实 runner 运行；计费或额度失败记 BLOCKED，在此之前依靠人工 PR + 本地证据。
+- **P0-R1**：以 Code OSS 1.143.0 为基线运行真实 Electron 开发态启动，验证 Command Palette、Connections View、StatusBar、Split Editor、Extension Host、最小 Webview，记录平台/Node/npm/commit/日志。**状态**：Windows 11 已完成（PR #23/#24）；Linux/macOS 未复跑。
+- **P0-R2**：Nyala View 的 Reload Window / Dispose 自动化回归（重复注册、泄漏、状态恢复、错误态）；环境不允许时标 BLOCKED 并保留门禁，不用旧版本 smoke 代替。**状态**：已完成（PR #23，`nyalaBootstrap.test.ts` 8 passing）。
+- **P0-R3**：`nyala-ci.yml` 中的 `nyala:validate-product`、`nyala:validate-rpc` 与 TypeScript 基线需要真实 runner 运行；计费或额度失败记 BLOCKED，在此之前依靠人工 PR + 本地证据。**状态**：已解除（2026-10-30），四个 required checks 在每个 PR 上真实运行。
 
 ## P0（0.0）拆分
 

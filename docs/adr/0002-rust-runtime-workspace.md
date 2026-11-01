@@ -1,6 +1,6 @@
 # ADR 0002 · Rust Runtime workspace 与 N-101/N-102 的实现约定
 
-- 状态：Proposed（随 `feat/p1-rust-runtime` 的 PR 审核）
+- 状态：Accepted（2026-10-30 随 PR #25 合入 `nyala/main`，squash `7bfc4fc2a68`）
 - 日期：2026-10-29
 - 决策域：Nyala SQL Runtime（`nyala-runtime` sidecar）的目录、依赖与 RPC v1 实现细节
 - 上位文档：[`nyala/rpc/README.md`](../../nyala/rpc/README.md)（可执行合同）、[ADR 0001](0001-rpc-contract-v1.md)、设计包 [ADR-0002 Rust Sidecar](../nyala-kickoff/docs/adr/0002-rust-sidecar.md)、[07-sql-runtime.md](../nyala-kickoff/docs/07-sql-runtime.md)
