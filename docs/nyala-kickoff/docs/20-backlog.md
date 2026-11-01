@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | N-101 | P0 | N-001 | Runtime crate + Stdio framing | half-frame/oversize/error 测试 · **Done**（PR #25，squash `7bfc4fc2a68`，`rust/crates/nyala-runtime`；证据见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md#证据)） |
 | N-102 | P0 | N-101 | Hello/version/error protocol | Major 不匹配拒绝 · **Done**（同 N-101） |
-| N-103 | P0 | N-102 | Electron Sidecar supervisor | 退出/重启/清理测试 · **In Review**（Draft PR #35，集成 head `8938b6e22c4` 已包含 N-104；run `41307225775` 四项必需 CI PASS，Node 67 passing；Windows Runtime 5/5 为此前分支 smoke 证据；最终复核 staging 缓存身份/权限 P2 待修、回归待补，未合入，不标 Done） |
+| N-103 | P0 | N-102 | Electron Sidecar supervisor | 退出/重启/清理测试 · **In Review**（Draft PR #35，修复 head `58a30bf4349`；集成 head `8938b6e22c4` 的 run `41307225775` 四项必需 CI PASS、Node 67 passing 不含 P2 修复；staging 缓存身份已改为内容 SHA-256 + 执行位并补齐回归，本机旧实现红绿对照成立、70 passing / 1 pending，修复后 CI 待复验；Windows Runtime 5/5 为此前分支 smoke 证据；未合入，不标 Done） |
 | N-104 | P0 | N-102 | SQLite Profile/Session connect | connect/close/invalid file 测试 · **Done**（PR #33，squash `195475b84b3`；会话生命周期、无效文件、OS 拒绝、WAL 只读副作用与 capabilities 测试；主线 run `41290936784` 四项必需检查 PASS；见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md)） |
 | N-105 | P0 | N-104 | SQLite metadata | 表/视图/列/permission/refresh |
 | N-106 | P0 | N-104 | SELECT 1 / errors / query states | 终态、耗时、错误测试 |

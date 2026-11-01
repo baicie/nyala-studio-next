@@ -5,7 +5,7 @@
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；截至 2026-11-01，PR #21–#33 已全部合入 `nyala/main`。**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误，PR #25）与 N-104 SQLite Profile/Session（PR #33，squash `195475b84b3`）已合入**；N-103 Supervisor 已在 Draft PR #35 完成实现并提交审核修复；最终复核新增 staging 缓存身份/权限 P2，正在修复，尚未合入。N-105–N-110 未交付，不能把连接能力视为查询执行、结果分页或 P1 阶段验收完成。合同 v1.0 有一处勘误：`failure.id` 允许 `null`（PR #27）。Windows 11 `1.143.0` 原生冒烟与 Reload/Dispose 单元测试已合入（PR #23）；内置语言功能激活修复（PR #24，ADR 0003）后为 **PASS 12/12**。运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证已关闭（PR #26），冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，这是 PR #26 的历史结果；两条出站路径已在 Ready PR #34 修复并记录 Windows 原生冒烟 **PASS 17/17**（含直接 restart IPC 检查），但修复尚未合入主线。CI 已能真实执行，`nyala/main` 的分支保护要求 4 个 checks。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；截至 2026-11-01，PR #21–#33 已全部合入 `nyala/main`。**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误，PR #25）与 N-104 SQLite Profile/Session（PR #33，squash `195475b84b3`）已合入**；N-103 Supervisor 已在 Draft PR #35 完成实现并提交审核修复；最终复核发现的 staging 缓存身份/权限 P2 已修复并推送（`58a30bf4349`，本机红绿对照与 70 passing），等待该 head 的四项必需 CI 复验，尚未合入。N-105–N-110 未交付，不能把连接能力视为查询执行、结果分页或 P1 阶段验收完成。合同 v1.0 有一处勘误：`failure.id` 允许 `null`（PR #27）。Windows 11 `1.143.0` 原生冒烟与 Reload/Dispose 单元测试已合入（PR #23）；内置语言功能激活修复（PR #24，ADR 0003）后为 **PASS 12/12**。运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证已关闭（PR #26），冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，这是 PR #26 的历史结果；两条出站路径已在 Ready PR #34 修复并记录 Windows 原生冒烟 **PASS 17/17**（含直接 restart IPC 检查），但修复尚未合入主线。CI 已能真实执行，`nyala/main` 的分支保护要求 4 个 checks。
 
 ## 分支与 PR
 
@@ -14,7 +14,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | `nyala/main` | `195475b84b3`（2026-11-01 核对） | 稳定主线 | 已合入 #8、#11、#13–#18、#21–#33；该 HEAD 的主线 CI 四项必需检查 PASS |
 | `feat/p1-sqlite-session` | `f04316fcb2a` | → `nyala/main`（PR #33） | **MERGED**（squash `195475b84b3`）：SQLite 连接、会话与审核补测 |
 | `fix/close-runtime-egress` | `a334073f505` | → `nyala/main`（PR #34） | **Ready / 未合入**；四项必需检查 PASS，Windows 原生冒烟 17/17 PASS |
-| `feat/p1-runtime-supervisor` | `8938b6e22c4` | → `nyala/main`（PR #35） | **Draft / 需修 P2 / 未合入**；已包含 N-104，集成 head 四项必需检查 PASS 但未覆盖 staging 缓存缺陷；Windows 5/5 是先前分支 smoke 证据 |
+| `feat/p1-runtime-supervisor` | `58a30bf4349` | → `nyala/main`（PR #35） | **Draft / P2 已修待 CI 复验 / 未合入**；基于含 N-104 的集成 head `8938b6e22c4`，staging 缓存身份改为内容 SHA-256 + 执行位；Windows 5/5 是先前分支 smoke 证据 |
 | `sync/code-oss-1.143.0` | 合并 `1.143.0` | → `nyala/main` | 同步分支：真正的 merge commit，上游 731 个提交保持为祖先 |
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
@@ -73,9 +73,12 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | #32 | squash `01c953e2c70` | **MERGED**；主线 run `41270714546` 四项必需检查 PASS |
 | #33 | `f04316fcb2a` → squash `195475b84b3` | **MERGED**；合并树与已审 head 一致，主线 run `41290936784` 四项必需检查 PASS |
 | #34 | `a334073f505` | **未合入**；run `41300628923` 四项必需检查 PASS；Windows 原生 17/17 PASS，含直接 `vscode:restartAgentHost` 被主进程拒绝；Quick Open 曾发生一次不稳定，详见 PR 与分支兼容性报告 |
-| #35 | `8938b6e22c4` | **未合入 / 需修 P2**；已包含 N-104 主线，run `41307225775` 四项必需检查 PASS、Node 67 passing；最终复核发现 staging 缓存身份与权限缺陷，旧绿灯不覆盖该缺陷，待修复重验；Windows 5/5 为此前审核修复工作树证据 |
+| #35 | `58a30bf4349`（P2 修复，待 CI） | **未合入 / P2 已修待重验**；P2 修复提交 `58a30bf4349` 已推送到原集成 head `8938b6e22c4` 之上（run `41307225775` 为修复前绿灯，不覆盖修复）；修复把 staging 身份改为内容 SHA-256 + 执行位，补齐四类内容/来源/污染回归与 POSIX 执行位回归；Windows 5/5 仍为此前审核修复工作树证据 |
 
-- **FAIL — PR #35 最终代码复核（P2）**：`stageNyalaRuntimeExecutable` 仅用文件大小、取整毫秒修改时间和 basename 生成缓存位置，命中只核对大小。两个同名、同大小、同时间戳的不同来源会复用同一副本；同源等长内容变化或缓存等长污染也可能启动旧/错误内容；POSIX 仅补 execute 位时旧缓存权限不更新。父会话已核对集成 head `8938b6e22c4` 仍保留该逻辑及原测试的等长污染复用断言，未将代理结论直接当作复现结果。已交回原 N-103 子会话修复缓存身份/内容/权限校验并补红绿回归；目前未修复，不能依据现有 CI PASS 判定可合。
+- **P2 FAIL → 已修复（待 CI 复验）— PR #35 staging 缓存**：原 `stageNyalaRuntimeExecutable` 仅用文件大小、取整毫秒修改时间和 basename 生成缓存位置，命中只核对大小。两个同名、同大小、同时间戳的不同来源会复用同一副本；同源等长内容变化或缓存等长污染也可能启动旧/错误内容；POSIX 仅补 execute 位时旧缓存权限不更新。
+  - 修复（父会话接手，commit `58a30bf4349`）：目录名改为 `<size>-<sha256>`，POSIX 带执行位时追加 `-x`；命中前重算副本 SHA-256 并比较执行位（只比执行位，避免 umask 导致每次重写）；副本从已哈希的字节写出。ADR 0004 §8 同步更新，并补实测耗时（2.37 MB 调试构建：读约 1 ms、SHA-256 约 5 ms、写出约 2 ms）。
+  - 红绿对照 **PASS**：退回旧实现时 4 个新增内容回归全部失败；新实现下 CI 单测文件列表 **70 passing / 1 pending**（`NYALA_RUNTIME_REQUIRED=1`，真实 cargo 产物）。`typecheck-client`、定向 ESLint、`nyala:validate-product`、`nyala:validate-rpc`、`git diff --check` **PASS**。
+  - **NOT RUN**：POSIX 执行位用例在本机 Windows 被跳过（无 WSL 发行版、Docker daemon 未运行），需由 CI 的 Linux `Unit tests (node)` 覆盖；修复后 head 的四项必需检查尚在运行。hygiene 在本机因 `build/gulpfile.hygiene.ts` 的 Windows 盘符路径问题 `ENOENT` 失败，属环境问题，需以 CI 的 `Client typecheck and hygiene` 为准。
 - **BLOCKED — 合并权限**：用户已明确允许继续合并；PR #34 已成功标记 Ready，但随后 squash 合并仍被客户端权限策略以 `Merge Without Review` 拒绝，未合入。PR #34/#35 都不得登记为已合入，也未改分支保护或通过其他会话绕过拒绝。
 - 正式 `patchCount` 仍为 **50**，因为 PR #33 不改计数范围内文件。待 PR #34/#35 实际合入后，重新逐文件核算；当前候选增量为 #34 的 2 个上游文件，以及 #35 的 1 个上游文件 + 4 个 Nyala 源文件，合计预测 **57 = 51 + 6**，不是原先的 56。正式计数只在合并后更新。
 - PR #35 已推送集成 head `8938b6e22c4c324ac725954bab689918f8ec6d3d`：两个父提交为原审核修复 `4eb0326e2e22d620029d70db8044e2e5e8c8ce8f` 与 N-104 主线 `195475b84b38f47fb2129a5b02d624141a873e38`。祖先检查与差异核对确认 SQLite 原样带入、Supervisor 源码和既有修复未变。原子会话报告 Windows Runtime 重建、client build、67 项定向测试与 diff 检查 PASS；本会话另核对新 head 的 CI run `41307225775`：四项必需检查 PASS，日志含 `NYALA_RUNTIME_REQUIRED=1`、真实 Runtime/staging 套件和 `67 passing`。这补齐的是 N-103 与 N-104 的集成，不是与 PR #34 的组合验证；后者仍 **NOT RUN**。此前两个候选分支的 ledger 冲突尚待 PR #34 合入后解决。PR 描述更新被子会话客户端权限策略拒绝，未绕过；当前以 Git 提交、CI 与本文记录为准。
