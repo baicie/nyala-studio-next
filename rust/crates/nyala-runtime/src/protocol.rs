@@ -37,9 +37,10 @@ pub const V1_REQUEST_METHODS: &[&str] = &[
 	"result.release",
 ];
 
-/// v1 features this build implements. Empty until a driver lands (N-104): the runtime must not
-/// advertise capabilities it cannot serve.
-pub const RUNTIME_FEATURES: &[&str] = &[];
+/// v1 features this build implements. The runtime must not advertise capabilities it cannot
+/// serve: `sqlite` unlocks the `connection.*` methods (N-104), and the metadata, query and result
+/// features arrive with N-105..N-107.
+pub const RUNTIME_FEATURES: &[&str] = &["sqlite"];
 
 /// Resource limits advertised in the `runtime.hello` result (README §7 defaults).
 pub const MAX_INITIAL_ROWS: u32 = 200;

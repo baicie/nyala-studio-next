@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
+use crate::connection::{self, Sessions};
 use crate::error::{ErrorKind, RpcError};
 use crate::framing::{
 	encode_frame, FrameDecoder, FrameError, DEFAULT_FRAME_MAX_BYTES, PRE_HELLO_FRAME_MAX_BYTES,
@@ -84,11 +85,14 @@ pub fn frame_error_reply(error: &FrameError) -> Value {
 	failure(None, &RpcError::with_detail(kind, error.to_string()))
 }
 
-/// Connection state for one client.
+/// Connection state for one client. Dropping it closes every open session.
 #[derive(Debug)]
 pub struct Server {
 	started: Instant,
 	hello_completed: bool,
+	/// Features both sides support, fixed by `runtime.hello`.
+	features: HashSet<&'static str>,
+	sessions: Sessions,
 }
 
 impl Default for Server {
@@ -102,6 +106,8 @@ impl Server {
 		Server {
 			started: Instant::now(),
 			hello_completed: false,
+			features: HashSet::new(),
+			sessions: Sessions::new(),
 		}
 	}
 
@@ -139,10 +145,24 @@ impl Server {
 				ErrorKind::ProtocolMismatch,
 				"runtime.hello must complete before this method",
 			)),
-			// Every other v1 method sits behind a feature, and this build advertises none yet.
+			method
+				if !required_feature(method)
+					.is_some_and(|feature| self.features.contains(&feature)) =>
+			{
+				Err(RpcError::with_detail(
+					ErrorKind::ProtocolMismatch,
+					"method needs a feature this runtime did not negotiate",
+				))
+			}
+			"connection.test" => connection::test(&request.params),
+			"connection.open" => self.sessions.open(&request.params),
+			"connection.close" => self.sessions.close(&request.params),
+			"connection.listSessions" => self.sessions.list(&request.params),
+			// required_feature names only methods with a handler above; this arm keeps a future
+			// mismatch between the two from panicking.
 			_ => Err(RpcError::with_detail(
-				ErrorKind::ProtocolMismatch,
-				"method needs a feature this runtime did not negotiate",
+				ErrorKind::Internal,
+				"negotiated method has no handler",
 			)),
 		};
 		Reply::send(match result {
@@ -179,13 +199,14 @@ impl Server {
 			Err(error) => return fail(error),
 		};
 		// A newer minor may list features this build does not know; they are not echoed back.
-		let features: Vec<&str> = RUNTIME_FEATURES
+		let features: Vec<&'static str> = RUNTIME_FEATURES
 			.iter()
 			.copied()
 			.filter(|feature| client_features.contains(feature))
 			.collect();
 
 		self.hello_completed = true;
+		self.features = features.iter().copied().collect();
 		Reply::send(success(
 			&request.id,
 			json!({
@@ -215,11 +236,22 @@ impl Server {
 		Ok(json!({
 			"status": "ok",
 			"uptimeMs": uptime_ms,
-			// Sessions, executions and result handles arrive with N-104..N-107.
-			"activeSessions": 0,
+			"activeSessions": self.sessions.open_count(),
+			// Executions and result handles arrive with N-106/N-107.
 			"activeExecutions": 0,
 			"pendingResults": 0,
 		}))
+	}
+}
+
+/// The feature a v1 method needs, for the methods this build implements. `None` means no
+/// negotiation unlocks the method yet, so it is always refused with `PROTOCOL_MISMATCH`.
+fn required_feature(method: &str) -> Option<&'static str> {
+	match method {
+		"connection.test" | "connection.open" | "connection.close" | "connection.listSessions" => {
+			Some("sqlite")
+		}
+		_ => None,
 	}
 }
 
@@ -543,16 +575,85 @@ mod tests {
 			);
 			assert_eq!(reply.exit, None, "{method} must not end the connection");
 		}
-		call(&mut server, "runtime.hello", hello_params(1, 0));
+
+		// A client that offers no features unlocks nothing.
+		let mut params = hello_params(1, 0);
+		params["supportedFeatures"] = json!([]);
+		call(&mut server, "runtime.hello", params);
 		for method in &V1_REQUEST_METHODS[2..] {
 			let reply = call(&mut server, method, json!({}));
 			assert_eq!(
 				error_kind(&reply),
 				"PROTOCOL_MISMATCH",
-				"{method} after hello"
+				"{method} without features"
 			);
 			assert_eq!(reply.exit, None);
 		}
+	}
+
+	#[test]
+	fn sqlite_unlocks_the_connection_methods_only() {
+		let mut server = Server::new();
+		call(&mut server, "runtime.hello", hello_params(1, 0));
+		for method in &V1_REQUEST_METHODS[2..] {
+			let reply = call(&mut server, method, json!({}));
+			// The connection methods reach their handlers, which reject the empty params; every
+			// other method needs a feature this build does not implement yet.
+			let expected = match *method {
+				"connection.listSessions" => "result",
+				"connection.test" | "connection.open" | "connection.close" => "INVALID_PARAMS",
+				_ => "PROTOCOL_MISMATCH",
+			};
+			let outcome = message(&reply)["error"]["data"]["kind"]
+				.as_str()
+				.unwrap_or("result");
+			assert_eq!(outcome, expected, "{method}");
+			assert_eq!(reply.exit, None);
+		}
+	}
+
+	#[test]
+	fn health_counts_open_sessions() {
+		let directory = std::env::temp_dir().join(format!(
+			"nyala-server-health-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir_all(&directory).unwrap();
+		let path = directory.join("health.sqlite");
+		rusqlite::Connection::open(&path)
+			.unwrap()
+			.execute_batch("CREATE TABLE t(x)")
+			.unwrap();
+
+		let mut server = Server::new();
+		call(&mut server, "runtime.hello", hello_params(1, 0));
+		let open = |server: &mut Server| {
+			call(
+				server,
+				"connection.open",
+				json!({"driver": "sqlite", "path": path.to_str().unwrap(), "readOnly": true}),
+			)
+		};
+		let first = open(&mut server);
+		open(&mut server);
+		let health = call(&mut server, "runtime.health", json!({}));
+		assert_eq!(message(&health)["result"]["activeSessions"], 2);
+
+		let session = &message(&first)["result"];
+		call(
+			&mut server,
+			"connection.close",
+			json!({"sessionId": session["sessionId"], "sessionGeneration": session["sessionGeneration"]}),
+		);
+		let health = call(&mut server, "runtime.health", json!({}));
+		assert_eq!(message(&health)["result"]["activeSessions"], 1);
+
+		drop(server);
+		std::fs::remove_dir_all(&directory).unwrap();
 	}
 
 	#[test]
