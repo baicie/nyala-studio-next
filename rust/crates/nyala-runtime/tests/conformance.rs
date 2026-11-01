@@ -9,7 +9,8 @@
 
 mod support;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 
 use nyala_runtime::error::{ErrorKind, RpcError};
 use nyala_runtime::framing::{
@@ -18,7 +19,9 @@ use nyala_runtime::framing::{
 use nyala_runtime::protocol::V1_REQUEST_METHODS;
 use nyala_runtime::server::{failure, frame_error_reply, Server};
 use serde_json::{json, Value};
-use support::{conformance_samples, read_json, Schema, CONFORMANCE_PATH, ERROR_CODES_PATH};
+use support::{
+	conformance_samples, path_param, read_json, Schema, TempDir, CONFORMANCE_PATH, ERROR_CODES_PATH,
+};
 
 /// Conformance lines paired with their parsed value.
 fn samples() -> Vec<(String, Value)> {
@@ -229,9 +232,14 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 	let schema = Schema::load();
 	let registry = read_json(ERROR_CODES_PATH);
 	let samples = samples();
+	let dir = TempDir::new("conformance");
+	let database = dir.database("demo.sqlite");
+	// The sample session's sessionId, mapped to the sessionId and generation this runtime issued
+	// for the sample's connection.open.
+	let mut issued: HashMap<String, (Value, Value)> = HashMap::new();
 	let mut server = Server::new();
 	let mut answered = 0;
-	for (line, sample) in &samples {
+	for (index, (line, sample)) in samples.iter().enumerate() {
 		if is_notification(sample) {
 			let reply = server.handle_payload(line.as_bytes());
 			assert_eq!(reply.message, None, "notifications get no reply: {line}");
@@ -241,15 +249,63 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 		if !is_request(sample) {
 			continue;
 		}
-		let reply = server.handle_payload(line.as_bytes());
+
+		// The sample path does not exist here, and sample session ids were never issued by this
+		// process; both are replaced so that the connection methods can succeed.
+		let mut request = sample.clone();
+		if request["params"].get("path").is_some() {
+			request["params"]["path"] = json!(path_param(&database));
+		}
+		let sample_session = request["params"]["sessionId"].as_str().map(str::to_owned);
+		if let Some((id, generation)) = sample_session.and_then(|id| issued.get(&id).cloned()) {
+			request["params"]["sessionId"] = id;
+			request["params"]["sessionGeneration"] = generation;
+		}
+
+		let reply = server.handle_payload(request.to_string().as_bytes());
 		assert_eq!(reply.exit, None, "{line}");
 		let message = reply.message.expect("every request gets a response");
-		assert_conforms(&schema, &registry, sample, &message);
-		match sample["method"].as_str().unwrap() {
-			"runtime.hello" | "runtime.health" => {
-				assert!(message.get("result").is_some(), "{message}");
+		assert_conforms(&schema, &registry, &request, &message);
+		let method = request["method"].as_str().unwrap();
+		match method {
+			"runtime.hello" | "runtime.health" | "connection.test" | "connection.open"
+			| "connection.close" => {
+				let result = message
+					.get("result")
+					.unwrap_or_else(|| panic!("{method}: {message}"));
+				let (_, expected) = samples[index..]
+					.iter()
+					.find(|(_, later)| later["id"] == sample["id"] && !is_request(later))
+					.expect("every request is followed by its response");
+				assert_eq!(
+					keys(result),
+					keys(&expected["result"]),
+					"{method} result fields"
+				);
+				if method == "connection.open" {
+					// The sample session advertises transactions and metadata; this build declares
+					// only what it implements.
+					assert_eq!(
+						result["capabilities"],
+						json!({
+							"driver": "sqlite",
+							"readOnly": request["params"]["readOnly"],
+							"cancel": "none",
+							"supportsTransactions": false,
+							"supportsMetadata": false,
+						}),
+						"connection.open capabilities"
+					);
+					issued.insert(
+						expected["result"]["sessionId"].as_str().unwrap().to_owned(),
+						(
+							result["sessionId"].clone(),
+							result["sessionGeneration"].clone(),
+						),
+					);
+				}
 			}
-			// No driver is wired up yet, so every feature-gated method is refused.
+			// The metadata, query and result features arrive with N-105..N-107.
 			method => assert_eq!(
 				message["error"]["data"]["kind"], "PROTOCOL_MISMATCH",
 				"{method}"
@@ -263,6 +319,92 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 		.count();
 	assert!(requests > 0);
 	assert_eq!(answered, requests);
+	assert_eq!(issued.len(), 1, "the sample session opens one session");
+
+	// conformance.ndjson has no connection.listSessions sample; its reply is checked here.
+	let request = json!({"jsonrpc": "2.0", "id": "rq_list", "method": "connection.listSessions", "params": {}});
+	let message = server
+		.handle_payload(request.to_string().as_bytes())
+		.message
+		.unwrap();
+	assert_conforms(&schema, &registry, &request, &message);
+	let states: Vec<&Value> = message["result"]["sessions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|session| &session["state"])
+		.collect();
+	assert_eq!(states, [&json!("closed")], "the sample session closes it");
+}
+
+fn keys(value: &Value) -> BTreeSet<&str> {
+	value
+		.as_object()
+		.expect("an object")
+		.keys()
+		.map(String::as_str)
+		.collect()
+}
+
+#[test]
+fn connection_failures_conform_to_the_contract_and_name_no_path() {
+	const MARKER: &str = "marker7f3a";
+	let schema = Schema::load();
+	let registry = read_json(ERROR_CODES_PATH);
+	let dir = TempDir::new(MARKER);
+	let database = dir.database("db.sqlite");
+	let mut server = Server::new();
+	let mut next = 0;
+	let mut call = |server: &mut Server, method: &str, params: Value| {
+		next += 1;
+		let request = json!({"jsonrpc": "2.0", "id": format!("rq_{next}"), "method": method, "params": params});
+		let message = server
+			.handle_payload(request.to_string().as_bytes())
+			.message
+			.unwrap();
+		assert_conforms(&schema, &registry, &request, &message);
+		assert!(!message.to_string().contains(MARKER), "{message}");
+		message
+	};
+	let target =
+		|path: &Path| json!({"driver": "sqlite", "path": path_param(path), "readOnly": true});
+
+	let hello = json!({"protocolMajor": 1, "protocolMinor": 0, "clientBuild": "test", "supportedFeatures": ["sqlite"]});
+	call(&mut server, "runtime.hello", hello);
+	let opened = call(&mut server, "connection.open", target(&database))["result"].clone();
+
+	let files = [
+		dir.join("missing.sqlite"),
+		dir.folder("folder"),
+		dir.file("empty.sqlite", b""),
+		dir.file("notes.txt", &b"plain text\n".repeat(64)),
+		dir.truncated_database("truncated.sqlite"),
+	];
+	for path in &files {
+		for method in ["connection.test", "connection.open"] {
+			let message = call(&mut server, method, target(path));
+			assert_eq!(
+				message["error"]["data"]["kind"], "INVALID_PARAMS",
+				"{path:?}"
+			);
+		}
+	}
+	let relative = json!({"driver": "sqlite", "path": "db.sqlite", "readOnly": true});
+	let message = call(&mut server, "connection.open", relative);
+	assert_eq!(message["error"]["data"]["kind"], "INVALID_PARAMS");
+
+	let mismatch = json!({"sessionId": opened["sessionId"], "sessionGeneration": 2});
+	let message = call(&mut server, "connection.close", mismatch);
+	assert_eq!(message["error"]["data"]["kind"], "INVALID_SESSION");
+	assert_eq!(message["error"]["data"]["sessionId"], opened["sessionId"]);
+	let unknown = json!({"sessionId": "s_001", "sessionGeneration": 1});
+	let message = call(&mut server, "connection.close", unknown);
+	assert_eq!(message["error"]["data"]["kind"], "INVALID_SESSION");
+
+	// metadata.* needs a feature this build does not implement, even for a valid session.
+	let session = json!({"sessionId": opened["sessionId"], "sessionGeneration": opened["sessionGeneration"], "limit": 50});
+	let message = call(&mut server, "metadata.listObjects", session);
+	assert_eq!(message["error"]["data"]["kind"], "PROTOCOL_MISMATCH");
 }
 
 #[test]
@@ -298,7 +440,11 @@ fn every_error_reply_uses_a_registered_kind_and_the_contract_shape() {
 	let schema = Schema::load();
 	let registry = read_json(ERROR_CODES_PATH);
 	for kind in ErrorKind::ALL {
-		for error in [RpcError::new(kind), RpcError::with_detail(kind, "detail")] {
+		for error in [
+			RpcError::new(kind),
+			RpcError::with_detail(kind, "detail"),
+			RpcError::with_detail(kind, "detail").for_session("s_0123456789abcdef1"),
+		] {
 			let reply = failure(Some("rq_1"), &error);
 			let errors = schema.envelope_errors(&reply);
 			assert!(errors.is_empty(), "{kind:?}: {errors:?}");
