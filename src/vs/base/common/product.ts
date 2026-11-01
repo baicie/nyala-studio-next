@@ -479,3 +479,11 @@ export interface IDefaultChatAgent {
 	readonly completionsEnablementSetting: string;
 	readonly nextEditSuggestionsSetting: string;
 }
+
+/**
+ * Whether the product configures a default chat agent. A product disables it by leaving the
+ * extension identifiers of its {@link IDefaultChatAgent} empty.
+ */
+export function hasDefaultChatAgent(product: Pick<IProductConfiguration, 'defaultChatAgent'>): boolean {
+	return !!product.defaultChatAgent?.extensionId && !!product.defaultChatAgent.chatExtensionId;
+}
