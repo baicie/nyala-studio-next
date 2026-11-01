@@ -120,6 +120,7 @@ import { IExtensionsProfileScannerService } from '../../platform/extensionManage
 import { IExtensionsScannerService } from '../../platform/extensionManagement/common/extensionsScannerService.js';
 import { ExtensionsScannerService } from '../../platform/extensionManagement/node/extensionsScannerService.js';
 import { UserDataProfilesHandler } from '../../platform/userDataProfile/electron-main/userDataProfilesHandler.js';
+import { NyalaRuntimeMainHandler } from '../../platform/nyalaRuntime/electron-main/nyalaRuntimeMainHandler.js';
 import { ProfileStorageChangesListenerChannel } from '../../platform/userDataProfile/electron-main/userDataProfileStorageIpc.js';
 import { Promises, RunOnceScheduler, runWhenGlobalIdle } from '../../base/common/async.js';
 import { CancellationToken } from '../../base/common/cancellation.js';
@@ -778,6 +779,9 @@ export class CodeApplication extends Disposable {
 
 		// Transient profiles handler
 		this._register(appInstantiationService.createInstance(UserDataProfilesHandler));
+
+		// Nyala runtime, one process per window. Not registered: it self-disposes after its lifecycle join.
+		appInstantiationService.createInstance(NyalaRuntimeMainHandler);
 
 		// Init Channels
 		mark('code/willInitChannels');
