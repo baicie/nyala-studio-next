@@ -12,11 +12,14 @@
 // Each test crate uses a different subset of these helpers.
 #![allow(dead_code)]
 
-use std::fs;
+use std::fs::{self, OpenOptions, Permissions};
 use std::path::{Path, PathBuf};
+use std::process;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use nyala_runtime::framing::{FrameDecoder, DEFAULT_FRAME_MAX_BYTES};
 use regex::Regex;
+use rusqlite::Connection;
 use serde_json::Value;
 
 pub const SCHEMA_PATH: &str = "nyala/rpc/v1/nyala-rpc.v1.schema.json";
@@ -64,6 +67,107 @@ pub fn decode_frames(bytes: &[u8]) -> Vec<Value> {
 		"output must hold nothing but whole frames"
 	);
 	messages
+}
+
+/// A directory under the system temporary directory, removed when dropped.
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+	/// `label` becomes part of the directory name.
+	pub fn new(label: &str) -> Self {
+		static NEXT: AtomicU32 = AtomicU32::new(0);
+		let name = format!(
+			"nyala-runtime-test-{}-{label}-{}",
+			process::id(),
+			NEXT.fetch_add(1, Ordering::Relaxed)
+		);
+		let path = std::env::temp_dir().join(name);
+		let _ = fs::remove_dir_all(&path);
+		fs::create_dir_all(&path).expect("create a temporary directory");
+		TempDir(path)
+	}
+
+	pub fn join(&self, name: &str) -> PathBuf {
+		self.0.join(name)
+	}
+
+	pub fn folder(&self, name: &str) -> PathBuf {
+		let path = self.join(name);
+		fs::create_dir(&path).expect("create a folder");
+		path
+	}
+
+	pub fn file(&self, name: &str, contents: &[u8]) -> PathBuf {
+		let path = self.join(name);
+		fs::write(&path, contents).expect("write a test file");
+		path
+	}
+
+	/// A SQLite database with a table, an index and a view, so that it spans several pages.
+	pub fn database(&self, name: &str) -> PathBuf {
+		let path = self.join(name);
+		let connection = Connection::open(&path).expect("create a test database");
+		connection
+			.execute_batch(
+				"CREATE TABLE customers(id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+				INSERT INTO customers(name) VALUES ('Ada'), ('Grace');
+				CREATE INDEX customers_by_name ON customers(name);
+				CREATE VIEW recent_customers AS SELECT name FROM customers;",
+			)
+			.expect("fill the test database");
+		path
+	}
+
+	/// A database cut to half its size, so that the page count in its header exceeds the file.
+	pub fn truncated_database(&self, name: &str) -> PathBuf {
+		let path = self.database(name);
+		let length = fs::metadata(&path).unwrap().len() / 2;
+		OpenOptions::new()
+			.write(true)
+			.open(&path)
+			.and_then(|file| file.set_len(length))
+			.expect("truncate the test database");
+		path
+	}
+}
+
+impl Drop for TempDir {
+	fn drop(&mut self) {
+		let _ = fs::remove_dir_all(&self.0);
+	}
+}
+
+/// Keeps a file read-only until dropped.
+pub struct ReadOnly {
+	path: PathBuf,
+	original: Permissions,
+}
+
+impl ReadOnly {
+	/// `None` when the file stays writable, as it does for root on Unix.
+	pub fn set(path: &Path) -> Option<ReadOnly> {
+		let original = fs::metadata(path).expect("read permissions").permissions();
+		let mut read_only = original.clone();
+		read_only.set_readonly(true);
+		fs::set_permissions(path, read_only).expect("make the file read-only");
+		let guard = ReadOnly {
+			path: path.to_owned(),
+			original,
+		};
+		let writable = OpenOptions::new().write(true).open(path).is_ok();
+		(!writable).then_some(guard)
+	}
+}
+
+impl Drop for ReadOnly {
+	fn drop(&mut self) {
+		let _ = fs::set_permissions(&self.path, self.original.clone());
+	}
+}
+
+/// The path as the `path` parameter of a request.
+pub fn path_param(path: &Path) -> &str {
+	path.to_str().expect("test paths are UTF-8")
 }
 
 const KEYWORDS: &[&str] = &[

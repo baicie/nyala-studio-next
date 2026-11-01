@@ -144,6 +144,8 @@ pub struct RpcError {
 	/// Sent as `safeDetail`. Must not contain secrets, connection strings, SQL text, row data or
 	/// user names inside paths.
 	pub safe_detail: Option<String>,
+	/// Sent as `sessionId`: the session the failed request named.
+	pub session_id: Option<String>,
 }
 
 impl RpcError {
@@ -151,6 +153,7 @@ impl RpcError {
 		RpcError {
 			kind,
 			safe_detail: None,
+			session_id: None,
 		}
 	}
 
@@ -158,7 +161,15 @@ impl RpcError {
 		RpcError {
 			kind,
 			safe_detail: Some(detail.into()),
+			session_id: None,
 		}
+	}
+
+	/// Attaches the session the request named. Callers pass only ids that match the contract's id
+	/// pattern, because `data.sessionId` is checked against it.
+	pub fn for_session(mut self, session_id: impl Into<String>) -> Self {
+		self.session_id = Some(session_id.into());
+		self
 	}
 
 	/// The `error` member of a failure envelope.
@@ -168,6 +179,9 @@ impl RpcError {
 		data.insert("retryable".into(), json!(self.kind.retryable()));
 		if let Some(detail) = &self.safe_detail {
 			data.insert("safeDetail".into(), json!(detail));
+		}
+		if let Some(session_id) = &self.session_id {
+			data.insert("sessionId".into(), json!(session_id));
 		}
 		json!({
 			"code": self.kind.code(),
