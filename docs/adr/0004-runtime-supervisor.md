@@ -1,6 +1,6 @@
 # ADR 0004 · Electron Main 的 Runtime Supervisor（N-103）
 
-- 状态：Proposed（随 `feat/p1-runtime-supervisor` 的 PR 审核）
+- 状态：Accepted（2026-11-01 随 PR #35 合入，squash `24c3cc7aa23`）
 - 日期：2026-11-01
 - 决策域：`nyala-runtime` sidecar 在 Electron Main 中的启动、握手、重启、关闭与二进制定位
 - 上位文档：[`nyala/rpc/README.md`](../../nyala/rpc/README.md)（可执行合同）、[ADR 0002](0002-rust-runtime-workspace.md)（Runtime 退出码与帧上限）、[07-sql-runtime](../nyala-kickoff/docs/07-sql-runtime.md)、[03-architecture-ownership](../nyala-governance/03-architecture-ownership.md)、[14-storage](../nyala-kickoff/docs/14-storage.md)
@@ -127,7 +127,7 @@ v1 的 Session 没有窗口或客户端归属字段。[14-storage](../nyala-kick
 
 ## 后果
 
-- 上游跟踪文件只改 `src/vs/code/electron-main/app.ts`：一行 import、一行 `createInstance`（及一行注释）。其余均为 Nyala 新文件。已在 [`nyala/patch-ledger.md`](../../nyala/patch-ledger.md) 登记；按现行口径合并后 `patchCount` 由 50 变为 55（`app.ts` +1，`src/vs/platform/nyalaRuntime/` 下 4 个非测试源文件 +4），`nyala/upstream-base.json` 在合并后更新。
+- 上游跟踪文件只改 `src/vs/code/electron-main/app.ts`：一行 import、一行 `createInstance`（及一行注释）。其余均为 Nyala 新文件。已在 [`nyala/patch-ledger.md`](../../nyala/patch-ledger.md) 登记；合入后 `patchCount` 已按实测更新为 57（`app.ts` +1，`src/vs/platform/nyalaRuntime/` 下 4 个非测试源文件 +4，其余为 #34 的 2 个上游文件），`nyala/upstream-base.json` 同步为 57。
 - CI：`Unit tests (node)` job 在跑单测前 `cargo build --locked -p nyala-runtime`，并设置 `NYALA_RUNTIME_REQUIRED=1`，让真实进程集成测试在没有产物时失败而不是跳过。4 个必需 job 的名字不变。
 - Windows 原生冒烟脚本 `scripts/nyala/smoke-runtime.ts` 检查：握手成功且运行的是 staging 副本、Runtime 运行时 `rust/target` 下的二进制可以打开写入、外部 kill 后换代重启、Reload 换代且旧进程自行退出、退出应用后没有残留 `nyala-runtime` 进程。
 - 开发态每个构建在 `<userData>/nyala-runtime-staging/` 下占一份副本（当前调试构建约 2.4 MB），旧副本在没有进程使用后删除。每次 staging 读取来源的完整字节：实测 2.37 MB 调试构建约 6 ms（读取加 SHA-256），可接受；安装包分发时不需要这一步（后续项 1）。

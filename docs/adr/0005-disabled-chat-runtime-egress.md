@@ -1,6 +1,6 @@
 # ADR 0005 · 产品禁用默认 Chat 时关闭 Agent Host 启动与拼写词典下载
 
-- 状态：Proposed（分支 `fix/close-runtime-egress`，Draft PR 待审）
+- 状态：Accepted（2026-11-01 随 PR #34 合入，squash `2b73f20285c`）
 - 日期：2026-11-01
 - 决策域：运行时出站边界（renderer 的 Agent Host 启用判断、主进程的 Agent Host 进程启动、Electron 主进程的 session 配置）
 - 上位文档：[`docs/nyala-kickoff/docs/25-engineering-rules.md`](../nyala-kickoff/docs/25-engineering-rules.md)（红线 13、15）、[`docs/nyala-governance/03-architecture-ownership.md`](../nyala-governance/03-architecture-ownership.md)、[`docs/nyala-governance/08-security-privacy.md`](../nyala-governance/08-security-privacy.md)

@@ -2,14 +2,12 @@
 
 更新时间：2026-11-01。基线是 Code OSS `1.143.0`，SHA
 `2d0b7506a36c1d6db9a466440131a8e01eab2289`（2026-10-29 由 `1.142.0` /
-`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime
-目前只有 `rust/` 下的 stdio 分帧与 hello/health（N-101/N-102，不改上游文件），连接驱动和结果网格
-尚未开始。
+`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime 已有 `rust/` 下的 stdio 分帧、hello/health（N-101/N-102）与 SQLite Profile/Session（N-104，PR #33，`195475b84b3`），均不改上游文件。N-103 Supervisor 已随 PR #35（`24c3cc7aa23`）合入；查询执行与结果网格未交付。
 
 ## 计数口径
 
-`nyala/upstream-base.json` 的 `patchCount` 为 `50`：48 个已跟踪的上游文件发生修改，另有 2
-个 Nyala Workbench 源文件新增。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
+`nyala/upstream-base.json` 的 `patchCount` 为 `57`：51 个已跟踪的上游文件发生修改，另有 6
+个 Nyala 源文件新增（2 个在 `src/vs/workbench/contrib/nyala/`，4 个在 `src/vs/platform/nyalaRuntime/`）。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
 `.github/workflows/nyala-ci.yml`、`scripts/nyala/`、`nyala/` 元数据和 Nyala 自有的 `rust/`
 Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runtime-workspace.md)）不计入
 该数字，但仍属于当前工作树，提交前应随变更审阅。
@@ -36,9 +34,11 @@ Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runt
 都已计入；新增的 `src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts` 是 Nyala 自有测试，
 `scripts/nyala/` 按口径不计入。两个 PR 均已合并，`patchCount` 为 `50`。
 
-`fix/close-runtime-egress`（PR #34）合并后 `patchCount` 应由 `50` 变为 `52`：新增修改 2 个此前与 `1.143.0` 一致的上游跟踪文件——`src/vs/platform/agentHost/browser/agentHostEnablementService.ts`（+5/−1，+1）与 `src/vs/platform/agentHost/electron-main/electronAgentHostStarter.ts`（+8/−0，+1）；`src/mainImpl.ts`、`src/vs/base/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` 已计入（+0）；没有新增 `src/` 下的非测试源文件（+0）；`nyalaDisabledChat.test.ts`、`src/vs/workbench/contrib/nyala/test/browser/nyalaAgentHostEnablement.test.ts`（测试）、`scripts/nyala/validate-product.ts`、`scripts/nyala/smoke-electron.ts`、`docs/adr/0005-disabled-chat-runtime-egress.md` 与 `nyala/` 元数据按口径不计入。修改的上游跟踪文件由 48 个变为 50 个，Nyala Workbench 新增源文件仍为 2 个。该 PR 已于 2026-11-01 以 squash `2b73f20285c` 合入 `nyala/main`；`upstream-base.json` 在 #35 合并后与之一并更新。
+`fix/close-runtime-egress`（PR #34）合并后 `patchCount` 由 `50` 变为 `52`：新增修改 2 个此前与 `1.143.0` 一致的上游跟踪文件——`src/vs/platform/agentHost/browser/agentHostEnablementService.ts`（+5/−1，+1）与 `src/vs/platform/agentHost/electron-main/electronAgentHostStarter.ts`（+8/−0，+1）；`src/mainImpl.ts`、`src/vs/base/common/product.ts`、`src/vs/workbench/services/chat/common/chatEntitlementService.ts` 已计入（+0）；没有新增 `src/` 下的非测试源文件（+0）；`nyalaDisabledChat.test.ts`、`src/vs/workbench/contrib/nyala/test/browser/nyalaAgentHostEnablement.test.ts`（测试）、`scripts/nyala/validate-product.ts`、`scripts/nyala/smoke-electron.ts`、`docs/adr/0005-disabled-chat-runtime-egress.md` 与 `nyala/` 元数据按口径不计入。修改的上游跟踪文件由 48 个变为 50 个。已以 squash `2b73f20285c` 合入 `nyala/main`（2026-11-01）。
 
-`feat/p1-runtime-supervisor`（N-103，PR #35）合并后该数字应由 `52` 变为 `57`：修改的上游跟踪文件 50 → 51，新增 1 个此前与 `1.143.0` 一致的 `src/vs/code/electron-main/app.ts`（1 行 import、1 行注释、1 行 `createInstance`）；新增的非测试 Nyala 源文件 2 → 6，新增的 4 个是 `src/vs/platform/nyalaRuntime/common/nyalaRuntimeProtocol.ts`、`src/vs/platform/nyalaRuntime/node/nyalaRuntimeProcess.ts`、`src/vs/platform/nyalaRuntime/node/nyalaRuntimeSupervisor.ts`、`src/vs/platform/nyalaRuntime/electron-main/nyalaRuntimeMainHandler.ts`。`src/vs/platform/nyalaRuntime/test/**`（含 `fixtures/`）是 Nyala 自有测试，`scripts/nyala/smoke-runtime.ts`、`docs/adr/0004-runtime-supervisor.md` 与 `.github/workflows/nyala-ci.yml` 按口径不计入。按规则在合并之后再改 `upstream-base.json`；届时 `patchCountBasis` 要改为 “Nyala source files”，因为这 4 个新文件不在 Workbench 下。
+`feat/p1-runtime-supervisor`（N-103，PR #35）合并后 `patchCount` 由 `52` 变为 `57`：修改的上游跟踪文件 50 → 51，新增 1 个此前与 `1.143.0` 一致的 `src/vs/code/electron-main/app.ts`（1 行 import、1 行注释、1 行 `createInstance`）；新增的非测试 Nyala 源文件 2 → 6，新增的 4 个是 `src/vs/platform/nyalaRuntime/common/nyalaRuntimeProtocol.ts`、`src/vs/platform/nyalaRuntime/node/nyalaRuntimeProcess.ts`、`src/vs/platform/nyalaRuntime/node/nyalaRuntimeSupervisor.ts`、`src/vs/platform/nyalaRuntime/electron-main/nyalaRuntimeMainHandler.ts`。`src/vs/platform/nyalaRuntime/test/**`（含 `fixtures/`）是 Nyala 自有测试，`scripts/nyala/smoke-runtime.ts`、`docs/adr/0004-runtime-supervisor.md` 与 `.github/workflows/nyala-ci.yml` 按口径不计入。已以 squash `24c3cc7aa23` 合入 `nyala/main`（2026-11-01）。
+
+`57` 是 PR #33/#34/#35 全部合入后在 `nyala/main` `24c3cc7aa23` 上的实测值（2026-11-01）：以基线 `2d0b7506a36c` 对比，修改的上游跟踪文件 51 个（`git diff --diff-filter=M` 共 51 项，等于此前 48 个加上 #34 的 2 个与 #35 的 `app.ts`），新增的非测试 Nyala 源文件 6 个（`nyala.contribution.ts`、`nyalaConnectionsView.ts` 与 4 个 `src/vs/platform/nyalaRuntime/` 源文件）。`upstream-base.json` 已同步为 `57` 并把 `patchCountBasis` 改为 “Nyala source files”。
 
 ## 改动清单
 

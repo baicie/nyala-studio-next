@@ -24,8 +24,8 @@
 |---|---|---|---|---|
 | N-101 | P0 | N-001 | Runtime crate + Stdio framing | half-frame/oversize/error 测试 · **Done**（PR #25，squash `7bfc4fc2a68`，`rust/crates/nyala-runtime`；证据见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md#证据)） |
 | N-102 | P0 | N-101 | Hello/version/error protocol | Major 不匹配拒绝 · **Done**（同 N-101） |
-| N-103 | P0 | N-102 | Electron Sidecar supervisor | 退出/重启/清理测试 |
-| N-104 | P0 | N-102 | SQLite Profile/Session connect | connect/close/invalid file 测试 |
+| N-103 | P0 | N-102 | Electron Sidecar supervisor | 退出/重启/清理测试 · **Done**（PR #35，squash `24c3cc7aa23`；spawn/kill/restart/backoff/shutdown/孤儿进程、同步 spawn 抛错、帧错误换代、每窗口一个 Runtime；staging 缓存按内容 SHA-256 + 执行位识别，红绿对照成立；Linux CI `71 passing` 含 POSIX 执行位用例；Windows 原生 Runtime smoke 5/5 为此前工作树证据，最终 head 未重跑；见 [ADR 0004](../../adr/0004-runtime-supervisor.md)） |
+| N-104 | P0 | N-102 | SQLite Profile/Session connect | connect/close/invalid file 测试 · **Done**（PR #33，squash `195475b84b3`；会话生命周期、无效文件、OS 拒绝、WAL 只读副作用与 capabilities 测试；主线 run `41290936784` 四项必需检查 PASS；见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md)） |
 | N-105 | P0 | N-104 | SQLite metadata | 表/视图/列/permission/refresh |
 | N-106 | P0 | N-104 | SELECT 1 / errors / query states | 终态、耗时、错误测试 |
 | N-107 | P0 | N-106 | ResultHandle + FetchPage/TTL/release | 大结果缓存限额与过期测试 |
