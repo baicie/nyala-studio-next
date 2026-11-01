@@ -83,6 +83,12 @@ const codeCachePath = getCodeCachePath();
 // Disable default menu (https://github.com/electron/electron/issues/35512)
 Menu.setApplicationMenu(null);
 
+// Keep Chromium from downloading Hunspell dictionaries from Google. Each session loads the
+// dictionaries of its `spellcheck.dictionaries` preference when it is created, independent of
+// `webPreferences.spellcheck`, and downloads the missing ones. Clearing the languages here, in
+// the same task that created the session, drops the pending load before it can download.
+app.on('session-created', session => session.setSpellCheckerLanguages([]));
+
 // Configure crash reporter
 perf.mark('code/willStartCrashReporter');
 // If a crash-reporter-directory is specified we store the crash reports

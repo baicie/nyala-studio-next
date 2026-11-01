@@ -15,10 +15,10 @@
 | 范围 | 状态 | 证据与未覆盖项 |
 |---|---|---|
 | N-104 SQLite Profile/Session | **PASS / 已合入** | PR #33，squash `195475b84b3`；生命周期、无效文件、只读模式、OS access denied、WAL 数据库内容不变、capabilities 精确值与锁等待时限；主线 run `41290936784` 四项必需检查 PASS。Windows 本机测试已跑，但 CI 仅 Linux，Windows 路径未形成平台 CI 门禁；详见 [ADR 0002](../adr/0002-rust-runtime-workspace.md) |
-| N-103 Supervisor | **P2 已修复 / 待 CI 复验，未合入** | Draft PR #35。原集成 head `8938b6e22c4`（run `41307225775` 四项必需检查 PASS、Node 67 passing，真实 Runtime 必跑）不覆盖 staging 缓存缺陷；修复提交 `58a30bf4349` 已推送：构建身份改为内容 SHA-256（POSIX 另加执行位后缀），命中前重算副本哈希并比较执行位，副本从已哈希字节写出。回归覆盖不同来源同名同大小同 mtime、同源等长换内容、缓存被改写、同内容改 mtime 复用，以及 POSIX 执行位 644→755→644。本机 Windows：CI 单测文件列表 **70 passing / 1 pending**（`NYALA_RUNTIME_REQUIRED=1`），旧实现下 4 个内容回归 **FAIL**（红绿对照成立）；`typecheck-client`、定向 ESLint、产品/RPC 校验 PASS。POSIX 执行位用例本机跳过（无 WSL/Docker），由 CI Linux 覆盖；修复后 head 的 CI 结果 **NOT RUN→进行中**。Windows 原生 Runtime smoke 5/5 仍是此前工作树证据；macOS 与 Linux 原生桌面 smoke **NOT RUN**；与 PR #34 的组合测试 **NOT RUN** |
-| 禁用 Chat 的 Agent Host / 词典出站 | **PASS / 分支验证，未合入** | Ready PR #34，head `a334073f505`；四项必需检查 PASS；Windows 原生 smoke 17/17 PASS，直接 restart IPC 被主进程门禁拒绝，真实 enablement 描述符测试与负向对照。一次 Quick Open 超时仍需保留记录；系统级抓包、Linux/macOS、旧 profile、打包版本 **NOT RUN** |
+| N-103 Supervisor | **PASS / 已合入** | PR #35，squash `24c3cc7aa23`；spawn/kill/restart/backoff/shutdown、同步 spawn 抛错、帧错误换代、每窗口一个 Runtime、staging 与不重放已测；staging 缓存身份为内容 SHA-256 + POSIX 执行位，红绿对照成立（旧实现 4 个内容回归 FAIL）；Linux CI run `41314270226` `71 passing`，含 `✔ staging follows the source execute bits on POSIX and ignores them on Windows`、真实 Runtime 必跑（`NYALA_RUNTIME_REQUIRED=1`）。Windows 原生 Runtime smoke 5/5 是合并前工作树证据，最终 head 未重跑；macOS 与 Linux 原生桌面 smoke **NOT RUN** |
+| 禁用 Chat 的 Agent Host / 词典出站 | **PASS / 已合入** | PR #34，squash `2b73f20285c`；head `a334073f505` 四项必需检查 PASS；Windows 原生 smoke 17/17 PASS，直接 `vscode:restartAgentHost` 被主进程门禁拒绝；真实 enablement 描述符测试 `nyalaAgentHostEnablement.test.ts` 与负向对照（组合树上 1 passing）。一次 Quick Open 超时仍需保留记录；系统级抓包、Linux/macOS 原生、旧 profile、打包版本 **NOT RUN** |
 
-这里的分支 PASS 不改变主线功能状态；PR #34/#35 未合入前，不把主线出站缺口标为关闭，不把 N-103 标为 Done。N-105–N-110 与完整 P1 headless 查询闭环仍未验收；N-104 的原生只读打开不等于 N-109 完成。
+PR #34 与 #35 已于 2026-11-01 合入，主线出站缺口与 N-103 相应关闭；但平台覆盖仍未补齐：N-105–N-110 与完整 P1 headless 查询闭环仍未验收；N-104 的原生只读打开不等于 N-109 完成。
 
 ## 必测失败场景
 

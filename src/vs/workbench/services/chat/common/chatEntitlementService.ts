@@ -27,6 +27,7 @@ import { URI } from '../../../../base/common/uri.js';
 import Severity from '../../../../base/common/severity.js';
 import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
 import { isWeb } from '../../../../base/common/platform.js';
+import { hasDefaultChatAgent } from '../../../../base/common/product.js';
 import { ILifecycleService } from '../../lifecycle/common/lifecycle.js';
 import { Mutable } from '../../../../base/common/types.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -452,7 +453,7 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 		);
 		this.sentimentObs = observableFromEvent(this.onDidChangeSentiment, () => this.sentiment);
 
-		if (!productService.defaultChatAgent?.extensionId || !productService.defaultChatAgent.chatExtensionId) {
+		if (!hasDefaultChatAgent(productService)) {
 			this.defaultChatAgentDisabled = true;
 			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true); // Nyala and other products can explicitly disable the default chat agent
 			return;
