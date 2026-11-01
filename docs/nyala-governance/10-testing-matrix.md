@@ -15,7 +15,7 @@
 | 范围 | 状态 | 证据与未覆盖项 |
 |---|---|---|
 | N-104 SQLite Profile/Session | **PASS / 已合入** | PR #33，squash `195475b84b3`；生命周期、无效文件、只读模式、OS access denied、WAL 数据库内容不变、capabilities 精确值与锁等待时限；主线 run `41290936784` 四项必需检查 PASS。Windows 本机测试已跑，但 CI 仅 Linux，Windows 路径未形成平台 CI 门禁；详见 [ADR 0002](../adr/0002-rust-runtime-workspace.md) |
-| N-103 Supervisor | **PASS / 分支验证，未合入** | Draft PR #35，集成 head `8938b6e22c4` 已包含 N-104；run `41307225775` 四项必需检查 PASS，Linux Node suite 67 passing（真实 Runtime 必跑）；Windows 集成定向测试 67 passing 为原子会话报告；Windows 原生 Runtime smoke 5/5 为此前审核修复工作树证据、集成 head 未重跑；同步 spawn 错误、restart/backoff、停止、临时可执行文件 staging 与不重放已补测。macOS 与 Linux 原生桌面 smoke **NOT RUN**；与 PR #34 的组合测试 **NOT RUN** |
+| N-103 Supervisor | **FAIL / 最终复核 P2，未合入** | Draft PR #35，集成 head `8938b6e22c4` 已包含 N-104；run `41307225775` 四项必需检查 PASS，Linux Node suite 67 passing（真实 Runtime 必跑）；Windows 集成定向测试 67 passing 为原子会话报告；Windows 原生 Runtime smoke 5/5 为此前审核修复工作树证据、集成 head 未重跑；同步 spawn 错误、restart/backoff、停止、临时可执行文件 staging 与不重放已补测。最终复核确认 staging 仅按 size/mtime/basename 缓存、只验目标大小，不能区分等长同时间戳来源或 POSIX chmod-only 更新，已交回原子会话修复并补回归；现有 CI PASS 不覆盖该缺陷。macOS 与 Linux 原生桌面 smoke **NOT RUN**；与 PR #34 的组合测试 **NOT RUN** |
 | 禁用 Chat 的 Agent Host / 词典出站 | **PASS / 分支验证，未合入** | Ready PR #34，head `a334073f505`；四项必需检查 PASS；Windows 原生 smoke 17/17 PASS，直接 restart IPC 被主进程门禁拒绝，真实 enablement 描述符测试与负向对照。一次 Quick Open 超时仍需保留记录；系统级抓包、Linux/macOS、旧 profile、打包版本 **NOT RUN** |
 
 这里的分支 PASS 不改变主线功能状态；PR #34/#35 未合入前，不把主线出站缺口标为关闭，不把 N-103 标为 Done。N-105–N-110 与完整 P1 headless 查询闭环仍未验收；N-104 的原生只读打开不等于 N-109 完成。
