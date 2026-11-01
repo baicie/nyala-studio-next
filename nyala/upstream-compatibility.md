@@ -313,26 +313,38 @@ npm run gulp hygiene（全仓）                                     NOT RUN（�
 
 审核指出 Restart 命令仍能拉起 Agent Host，且单测没有覆盖真正的门控。修复：`ElectronAgentHostStarter.start()` 开头用同一谓词拒绝所有 spawn（见 ADR 0005「决策」第 3 条），新增描述符测试，冒烟的「Agent Host stays stopped」在检查日志前先从页面发 `vscode:restartAgentHost`。
 
-已知限制必须写清楚：这一轮本机验证只覆盖了单元测试、`nyala:validate-product` 与静态检查；**更新后的原生冒烟尚未在本机重跑**（下面标 NOT RUN 的项），结论仍以待 CI 与下一次 Windows 冒烟为准。旧的 17/17 证据（`0ca317a6394`，表格与负向对照见上）不包含 restart 检查与 starter 门控，只代表 renderer 门控和拼写门控。
-
 ```text
-代码          fix/close-runtime-egress（本小节新增内容尚未提交时的快照；不含 restart 冒烟证据）
+代码          60af7d7d920d97c9aace9cd201e9d67bf7fef5b8（已推送，工作树干净；已合入 nyala/main 195475b84b3）
+构建          npm run build-fast -- --client-only
 单元测试      scripts\test.bat
                 --run src/vs/workbench/contrib/nyala/test/browser/nyalaAgentHostEnablement.test.ts
                 --run src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts
-                                                                 PASS（4 passing，Electron 运行器）
+                --run src/vs/platform/agentHost/test/browser/agentHostEnablementService.test.ts
+                --run src/vs/workbench/contrib/chat/test/common/chatEntitlementService.test.ts
+                                                                 PASS（34 passing，Electron 运行器）
               node test/unit/browser/index.js --browser chromium
                 --run src/vs/workbench/contrib/nyala/test/browser/nyalaAgentHostEnablement.test.ts
                                                                  PASS（1 passing，浏览器运行器）
-              负向对照：把 out/ 中 agentHostEnablementService.js 的 hasDefaultChatAgent 条件去掉后重跑
-                Electron 运行器                                     FAIL（disabledChat: true，预期 false），已还原 out/
-nyala:validate-product                                           PASS；新增的 starter 门控断言与另外两条同时生效
-原生冒烟（含 restart 检查）                                       NOT RUN（本机未重跑；提交后按原命令在 Windows 上补跑）
-starter 门控的冒烟负向对照（去掉 starter 判断、保留 renderer 门控，发 restart IPC）  NOT RUN
-typecheck-client / 定向 ESLint / hygiene / git diff --check（本轮新增文件）  NOT RUN（提交前在本机执行）
+              node test/unit/node/index.js
+                --run extensionsScannerService.test.ts --run nyalaDisabledChat.test.ts
+                                                                 PASS（40 passing）
+              负向对照：去掉 out/ 中 agentHostEnablementService.js 的 hasDefaultChatAgent 条件
+                                                                 FAIL（disabledChat: true，预期 false），已还原并重建
+npm run typecheck-client                                         PASS（exit 0）
+npm run nyala:validate-product                                   PASS；三条门控断言各自的负向对照都按预期 FAIL，之后已还原
+npm run eslint -- 4 个改动文件                                    PASS；node build/hygiene.ts 同上 PASS
+git diff --check                                                 PASS
 ```
 
-本轮未运行的项按项列出：原生冒烟（17 步，含新的 restart 检查）、starter 门控的冒烟负向对照、重启后的 NetLog 与 TCP 采样、macOS/Linux、打包版本、Agents 窗口、远程窗口、旧 profile 的词典行为。
+原生冒烟（Windows 11 开发态，`--reloads 2`）：
+
+| 运行 | 结果 | 观察 |
+|---|---|---|
+| `electron-20261101-review-60af7d7-rerun` | **PASS 17/17** | 「Agent Host stays stopped」先发 `vscode:restartAgentHost`，main.log 出现 `failed to restart agent host The Agent Host is disabled because the product does not configure a default chat agent.`，且 0 次 `agent host started`；NetLog 无非回环主机；27 个日志文件无外部主机名 |
+| `electron-20261101-review-60af7d7`（同代码首次运行） | FAIL 15/17 | 两条出口检查与 restart 检查都 PASS；两次 Reload 的 Quick Open 输入框 5 秒内未显示（元素存在但 `hidden`），chatImplicitContext 在同一时段报 `Cannot read properties of undefined`。复跑没有再出现，原因未查明，记为已知不稳定 |
+| `electron-20261101-review-no-starter-gate`（负向对照：去掉 out/ 中 starter 门控，保留 renderer 门控，`--reloads 0`） | FAIL | 「Agent Host stays stopped」FAIL，main.log 1 次启动——普通预启动即可拉起宿主，说明 starter 门控是必需的；之后已还原 out/ 并重建 |
+
+未验证的项逐条列出：重启后的 NetLog 与 TCP 采样（本轮只做了 NetLog 与日志扫描）NOT RUN；starter 门控的 restart IPC 负向对照（只做了预启动路径的负向对照）NOT RUN；macOS NOT RUN；Linux NOT RUN；打包版本 NOT RUN；Agents 窗口 NOT RUN；远程窗口 NOT RUN；旧 profile 的词典行为 NOT RUN。
 
 ### 发现
 

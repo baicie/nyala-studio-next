@@ -75,7 +75,7 @@ Agent Host：
 - 单元测试：`src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts` 覆盖 `hasDefaultChatAgent` 对已发布产品为 false、两个扩展 ID 都设置时才为 true；`src/vs/workbench/contrib/nyala/test/browser/nyalaAgentHostEnablement.test.ts` 从 `getSingletonServiceDescriptors()` 取出桌面工作台注册的 `IAgentHostEnablementService` 描述符，用空 ID 的产品服务实例化，断言 `enabled.get() === false`——覆盖的是真正的门控，而不是谓词本身。两个 Nyala 测试都在 Electron 运行器与浏览器运行器中通过；去掉 `agentHostEnablementService.ts` 的门控后，描述符测试按预期失败（负向对照）。上游自带的 `agentHostEnablementService.test.ts` 直接构造基类并传入 `runtimeAvailable`，不覆盖本产品的门控，不作为证据。
 - `npm run nyala:validate-product`，以及三个负向对照（分别去掉一处门控后断言失败）。
 - `npm run typecheck-client`、定向 ESLint 与 hygiene、`git diff --check`。
-- Windows 11 原生开发态 `smoke-electron.ts --reloads 2`：17/17 PASS。其中的「Agent Host stays stopped」在检查日志前先从页面发送 `vscode:restartAgentHost`，并等待 main.log 出现 `failed to restart agent host`，因此覆盖了「Restart Local Agent Host 拉起 Agent Host」这条路径。负向对照分别去掉一处 renderer 或拼写门控，各自对应的出口检查 FAIL；去掉 starter 门控但保留 renderer 门控时，同一 IPC 会记录 `agent host started` 并使该步 FAIL。结果记录在 `nyala/upstream-compatibility.md`「关闭 Agent Host 启动与拼写词典下载」。
+- Windows 11 原生开发态 `smoke-electron.ts --reloads 2`：17/17 PASS。其中的「Agent Host stays stopped」在检查日志前先从页面发送 `vscode:restartAgentHost`，并等待 main.log 出现 `failed to restart agent host`，因此覆盖了「Restart Local Agent Host 拉起 Agent Host」这条路径。负向对照分别去掉一处 renderer 或拼写门控，各自对应的出口检查 FAIL；去掉 starter 门控但保留 renderer 门控时，普通预启动就会记录 `agent host started` 并使该步 FAIL。一次同代码的复跑中两次 Reload 的 Quick Open 超时（第二次复跑未出现），原因未查明，记为已知不稳定。结果记录在 `nyala/upstream-compatibility.md`「关闭 Agent Host 启动与拼写词典下载」。
 
 ## 链接
 
