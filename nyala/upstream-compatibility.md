@@ -1,6 +1,6 @@
 # Nyala P0 Upstream Compatibility Report
 
-更新时间：2026-10-30。报告覆盖 macOS（`1.142.0`）与 Windows 11（`1.143.0`）原生开发环境。初始化基线为 Code OSS `1.142.0` /
+更新时间：2026-11-01。报告覆盖 macOS（`1.142.0`）与 Windows 11（`1.143.0`）原生开发环境。初始化基线为 Code OSS `1.142.0` /
 `d956e8a6ac5d904486557eea07e1d6bd62a4d36f`，当前同步基线为 `1.143.0` /
 `2d0b7506a36c1d6db9a466440131a8e01eab2289`，开发版本为 `0.0.1-dev.0`；报告给扩展的 Extension API 版本为 `1.143.0`
 （`product.json` 的 `extensionApiVersion`，见 [ADR 0003](../docs/adr/0003-extension-api-version.md)）。
@@ -218,11 +218,11 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 整体结果：**FAIL（14/17）**。本任务的验收项（无 Chat 视图；`GitHub.copilot-chat`、`vscode.microsoft-authentication`
 不激活）全部 PASS。3 个 FAIL 是新增的出口检查发现的其他路径，本分支没有处理，脚本保留这些检查让问题保持可见：
 
-- **Agent Host 仍会启动（FAIL，未修复）。** renderer 的 `AgentHostPrewarmContribution` 在
+- **Agent Host 仍会启动（FAIL；2026-11-01 已修复，见下一小节）。** renderer 的 `AgentHostPrewarmContribution` 在
   `IAgentHostEnablementService.enabled`（运行时可用且 `chat.disableAIFeatures` 不为 true）时连接 agent host，主进程随即
   启动 utility 进程；agenthost.log 显示它加载 Copilot SDK、Claude、Codex provider。它不受 `defaultChatAgent` 或
   `skipBuiltinExtensions` 控制。`api.github.com` 只出现在认证解析日志里，不能证明发出了请求。
-- **Chromium 拼写词典下载（FAIL，未修复）。** 主窗口 `webPreferences.spellcheck` 为 false，发起方尚未定位。Electron 在
+- **Chromium 拼写词典下载（FAIL；2026-11-01 已修复，见下一小节）。** 主窗口 `webPreferences.spellcheck` 为 false，发起方尚未定位。Electron 在
   Windows/Linux 上默认从 Google CDN 下载 Hunspell 词典；候选修复是为 session 设置词典下载地址或关闭 spellchecker（未验证）。
 - **出口检查的边界。** NetLog（`--log-net-log`）只覆盖 Chromium 网络栈；Extension Host、Agent Host 等 Node 进程的请求
   不经过它，只能用日志中的主机名作线索；Node inspector 的帮助链接已在脚本中过滤。没有做系统级抓包。
@@ -238,6 +238,74 @@ node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence <不�
 
 两个负向对照说明两项改动都必要：只隐藏 Chat 挡不住 copilot-chat 激活和 Microsoft 认证；只跳过内置扩展挡不住核心
 Chat 视图。没有可以删掉的部分。
+
+### 关闭 Agent Host 启动与拼写词典下载（2026-11-01）
+
+```text
+代码          fix/close-runtime-egress 0ca317a6394c495db160285cef24bc9984cf63b9（基于 nyala/main 01c953e2c70）；工作树干净
+构建          npm install（VCToolsVersion=14.42.34433，GITHUB_TOKEN 来自 gh）、npm run electron、npm run build-fast（冷构建），之后 npm run build-fast -- --client-only
+环境          Windows 11 Pro 10.0.26200 x64、Node 24.18.0（只在本会话命令的 PATH 前置；nvm 全局仍为 24.16.0）、npm 11.16.0、Electron 43.7.7
+命令          node --experimental-strip-types scripts/nyala/smoke-electron.ts --evidence %TEMP%\nyala-p0-smoke\electron-20261101-133607-commit --reloads 2
+```
+
+调用链（详见 [ADR 0005](../docs/adr/0005-disabled-chat-runtime-egress.md) 与 [patch ledger](patch-ledger.md)「Agent Host 关闭」「拼写词典下载关闭」）：
+
+1. **Agent Host。** renderer 的 `AgentHostPrewarmContribution` 在 `IAgentHostEnablementService.enabled` 为 true 时创建 `AgentHostPrewarmer`，后者调用 `startAgentHost()`，经 `vscode:createAgentHostMessageChannel` 让主进程 `AgentHostProcessManager` 启动 utility 进程。`enabled` 只看「不是 Web」与 `chat.disableAIFeatures`。`api.github.com` 来自连接建立后 renderer 的 Agent Host 认证解析。修复：`BrowserAgentHostEnablementService` 的运行时可用条件加上 `hasDefaultChatAgent(productService)`。
+2. **拼写词典。** 发起方是 Electron 的 session 本身：`Session` 构造函数调用 `SpellcheckService::InitializeDictionaries`，按 profile 偏好 `spellcheck.dictionaries`（为空时按系统 locale 填 `en-US`）加载 Hunspell 词典，本地没有就从 `redirector.gvt1.com/edgedl/chrome/dict/` 下载。这条路径不读 `webPreferences.spellcheck`。修复：`src/mainImpl.ts` 在 `ready` 之前注册 `app.on('session-created', session => session.setSpellCheckerLanguages([]))`。
+
+`smoke-electron.ts` 17 步全部 PASS，退出码 0。与修复前相比只有 3 项出口检查变化：
+
+| 检查 | 修复前（`electron-20261030-105353-head`，`edfde8418f2`） | 修复后（`electron-20261101-133607-commit`，`0ca317a6394`） |
+|---|---|---|
+| Agent Host 不启动 | FAIL：main.log 有 1 次 `AgentHostProcessManager: agent host started` | PASS：main.log 没有启动记录；user-data 下没有 `agent-host/`，logs 下没有 `agenthost.log` |
+| NetLog 无非回环主机 | FAIL：`redirector.gvt1.com` 重定向到 `*.gvt1-cn.com`，下载 `en-us-10-1.bdic`；NetLog 614 个事件 | PASS：NetLog 13 个事件，0 个 `URL_REQUEST_START_JOB`、0 个 `TCP_CONNECT`；`user-data/Dictionaries/` 不存在；`Preferences` 中 `spellcheck.dictionaries` 为 `[]` |
+| 日志未提到非回环主机 | FAIL：`api.github.com` | PASS：27 个日志文件中 0 处 |
+| 其余 14 步 | PASS | PASS |
+
+**整体结果：PASS（17/17）。** 同一代码在提交前的工作树上（`electron-20261101-131735-egress`）与带 TCP 采样的复跑（`electron-20261101-134456-fixed`）也都是 17/17。
+
+负向对照：每次只去掉一个门控，重建 `out/` 后复跑，结束后恢复源码（恢复前后 sha256 相同）并重建：
+
+| 运行 | 去掉的门控 | 结果 | 出口观察 |
+|---|---|---|---|
+| `electron-20261101-132616-no-spellcheck-gate` | `mainImpl.ts` 的 `session-created` 一行 | FAIL 16/17 | 只有「NetLog 无非回环主机」FAIL：`gvt1.com`、`redirector.gvt1.com`、`rr4---sn-ni5eln7l.gvt1-cn.com`（663 个事件、4 次 `TCP_CONNECT`）；`Dictionaries/en-US-10-1.bdic` 落盘；偏好为 `["en-US"]` |
+| `electron-20261101-132705-no-agenthost-gate` | `hasDefaultChatAgent(productService)` 条件 | FAIL 15/17 | 「Agent Host 不启动」FAIL（main.log 1 次启动）；「日志未提到非回环主机」FAIL（264 处 `api.github.com`）；NetLog 仍无外部主机，因为 Agent Host 是 Node utility 进程，不经过 Chromium 网络栈 |
+| `electron-20261101-134650-no-spellcheck-gate`（带 TCP 采样） | 同第一行 | FAIL 14/17 | NetLog 结果同第一行；另有 2 次 Reload 的 Quick Open 输入框 5 秒内未显示，原因未查明，第一次同配置对照没有出现 |
+
+两个对照说明两处门控各自必要，且各自只关闭自己那条路径。
+
+**Node 进程的出站（NetLog 之外）。** 另用 PowerShell 每 250 ms 采样一次 `Get-NetTCPConnection`，范围是所有 `Nyala Studio.exe` 进程（修复后一次运行共 16 个，含 NetworkService 与多个 NodeService utility 进程，即 Extension Host、共享进程等）：
+
+- 修复后（`electron-20261101-134456-fixed`）：只看到 2 条连接，都是 Playwright 到 CDP 端口 `127.0.0.1:9333`。
+- 正向对照（`electron-20261101-134650-no-spellcheck-gate`）：除 CDP 外，NetworkService 有 2 条到 `127.0.0.1:7890` 的连接。本机配置了本地代理 `127.0.0.1:7890`（NetLog 的 `proxy_chain` 也是它），所以 Chromium 的外部请求在 TCP 层表现为到回环代理的连接。采样能看到这类连接，修复后的运行中没有。
+
+**边界。** NetLog 只覆盖 Chromium 网络栈。Node 进程的请求只由两项线索覆盖：日志中的主机名，以及 250 ms 一次的 TCP 采样；采样会漏掉短于采样间隔的连接，看不到 UDP/DNS，也看不到不叫 `Nyala Studio.exe` 的子进程（例如 `git.exe`）。没有做系统级抓包。开发启动器 `scripts\code.bat` 在 Electron 启动前运行 `build/lib/preLaunch.ts`，会从 GitHub 同步 3 个内置扩展（本次运行均为本地已是最新，未下载）；它是 `node.exe` 进程，不属于产品，也不在上述观察范围内。每次冒烟都用全新的 `--user-data-dir`；已经下载过词典的旧 profile 中，`Dictionaries/*.bdic` 会留在磁盘上；按源码，偏好清空后不再加载它们（未用旧 profile 验证）。打包版本、macOS、Linux、Agents 窗口与远程窗口均未验证。
+
+两次运行都出现、与本修复无关的日志错误（未处理）：renderer.log 的 `agentSessionsOutput.log ... already exists`，main.log 的 `vscode-regexp-languagedetection/dist/index.js` `ERR_FILE_NOT_FOUND`。修复前的 `electron-20261030-105353-head` 中各有 1 条，修复后各 1 条。
+
+静态检查与单元测试（同一提交）：
+
+```text
+npm run typecheck-client                                         PASS（exit 0）
+node test/unit/node/index.js
+  --run src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts
+  --run src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts
+                                                                 PASS（40 passing，含新增的 hasDefaultChatAgent 用例）
+node test/unit/node/index.js
+  --run src/vs/workbench/contrib/chat/test/common/chatEntitlementService.test.ts
+                                                                 PASS（25 passing）
+scripts\test.bat
+  --run src/vs/platform/agentHost/test/browser/agentHostEnablementService.test.ts
+  --run src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts
+                                                                 PASS（14 passing，Electron 单测运行器）
+npm run eslint -- <改动的 6 个 TS 文件>                           PASS
+node build/hygiene.ts <改动的文件>                                PASS
+npm run nyala:validate-product                                   PASS；两个负向对照（各去掉一行门控）按预期 FAIL
+git diff --check                                                 PASS
+npm run compile（gulp 全量）                                     NOT RUN（build-fast 转译 + typecheck-client 已覆盖改动；compile 不额外验证本补丁）
+npm run gulp hygiene（全仓）                                     NOT RUN（只做改动文件的定向 hygiene）
+全量单元测试、上游 smoketest                                      NOT RUN（范围外，见 CI 的 Unit tests (node) 与手动 browser-test job）
+```
 
 ### 发现
 
@@ -258,7 +326,8 @@ Chat 视图。没有可以删掉的部分。
    `onAuthenticationRequest:microsoft` 激活，MSAL 原生 broker 读取了本机 Windows 账户缓存中的已有账户（所请求
    scope 返回 0 个 session）；renderer.log 有 `copilot-cloud-agent` 的 "Sign in to GitHub" 错误。原因与修复见
    「关闭运行时 Chat 与 Microsoft 认证」一节：修复后 Chat 视图不显示，两个扩展都不激活。同一节新增的出口检查发现
-   Agent Host 启动和 Chromium 拼写词典下载两条出站路径（FAIL，未修复）。该日志含个人账户信息，只留在本机证据目录，
+   Agent Host 启动和 Chromium 拼写词典下载两条出站路径（当时 FAIL；2026-11-01 由 `fix/close-runtime-egress` `0ca317a6394`
+   修复，见「关闭 Agent Host 启动与拼写词典下载」）。该日志含个人账户信息，只留在本机证据目录，
    不入库、不引用。
 3. **Windows 构建前置条件。** 所用 MSVC 版本必须装有 Spectre 缓解库（VS Installer → 单个组件），或用
    `VCToolsVersion` 指向已装有该库的版本；GitHub 匿名 API 额度用完时，ripgrep 与 Electron 下载需要
@@ -282,6 +351,7 @@ Chat 视图。没有可以删掉的部分。
   `GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 不激活。它们**不**证明 Nyala 没有出站连接：Agent Host
   仍会启动、Chromium 会下载拼写词典（均为 FAIL，见「关闭运行时 Chat 与 Microsoft 认证」）；Node 进程的请求不经过
   NetLog，也没有做系统级抓包；打包版本与 macOS / Linux 未验证。
+- 开发态启动期的出站（2026-11-01 更新）：`fix/close-runtime-egress` `0ca317a6394` 的 Windows 原生冒烟 17/17 PASS，Agent Host 不启动、NetLog 没有外部请求、日志不提到非回环主机，TCP 采样只看到回环连接（见「关闭 Agent Host 启动与拼写词典下载」）。这只覆盖冒烟脚本走过的操作：没有打开文件夹、没有使用 Git/终端/扩展安装/集成浏览器；Node 进程只有日志与 250 ms TCP 采样两项线索，没有系统级抓包；打包版本、macOS、Linux、Agents 窗口与远程窗口未验证。
 
 ## 下一步验收
 
@@ -289,8 +359,8 @@ Chat 视图。没有可以删掉的部分。
 2. ~~在目标 Windows 环境完成 `scripts/code.bat`、数据目录隔离和原生启动记录。~~ 已完成开发态启动，见 Windows 1.143.0 节。
 3. ~~修复开发版本号导致的内置语言服务激活失败，之后让 `smoke-electron.ts` 的「内置扩展激活无错误」通过。~~ 已完成：`fix/extension-api-version` `6d35da69627`，Windows 原生冒烟 PASS 12/12。
 4. ~~审计并关闭运行时 Chat/Copilot 与 Microsoft 认证入口，补网络出口检查。~~ 已完成：`fix/disabled-chat-runtime`
-   `f6f1e2489bb`（修复）与 `edfde8418f2`（冒烟检查）。下一步关闭 Agent Host 启动与 Chromium 拼写词典下载，让
-   `smoke-electron.ts` 的 3 项出口检查通过。
+   `f6f1e2489bb`（修复）与 `edfde8418f2`（冒烟检查）。~~下一步关闭 Agent Host 启动与 Chromium 拼写词典下载，让
+   `smoke-electron.ts` 的 3 项出口检查通过。~~ 已完成：`fix/close-runtime-egress` `0ca317a6394`，Windows 原生冒烟 PASS 17/17（[ADR 0005](../docs/adr/0005-disabled-chat-runtime-egress.md)）。
 5. 在 Linux 与 macOS 上用 `smoke-electron.ts` 复跑 1.143.0 原生冒烟。
 6. 在进入 P1 前实现 Rust RPC 合同的半帧、超限、错误和版本不匹配测试。
 7. 每次上游升级重新运行本报告中的基础命令与原生冒烟，并更新 [patch ledger](patch-ledger.md)。
