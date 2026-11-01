@@ -81,7 +81,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 1. ~~**CI 仍然跑不出结果（GitHub 账单阻断 + workflow 缺 build/ 依赖）**~~：账单阻断已随仓库转为公开解除；`Hygiene` 因 `nyala-ci.yml` 未安装 `build/` 依赖而失败的缺陷已由 **PR #22** 修复并合入（`b48a859214a`）。
 2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，已随 PR #24 合入 `nyala/main`）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；`patchCount` 已于 2026-11-01 由 46 改为 50（见 patch ledger）。
-3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，已随 PR #26 合入 `nyala/main`）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**仍有出站路径**：Agent Host 照常启动（加载 Copilot SDK / Claude / Codex provider），Chromium 从 `redirector.gvt1.com` 下载拼写词典；两者都未修复，冒烟中为 FAIL。
+3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，已随 PR #26 合入 `nyala/main`）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**仍有出站路径**：Agent Host 照常启动（加载 Copilot SDK / Claude / Codex provider），Chromium 从 `redirector.gvt1.com` 下载拼写词典；两者在 `nyala/main` 上仍未修复，冒烟中为 FAIL。修复见 PR #34（`fix/close-runtime-egress`，Draft，未合并）：Windows 原生冒烟 17/17 PASS，见 [ADR 0005](../adr/0005-disabled-chat-runtime-egress.md)。审核后补了主进程第二层门禁（`ElectronAgentHostStarter.start()`），Restart Local Agent Host 在禁用 Chat 的产品下也不会 spawn；新增测试 `nyalaAgentHostEnablement.test.ts` 从注册的描述符实例化并断言关闭，原生冒烟提交后重跑。合并后再关闭本条。
 4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
 5. Rust Runtime：N-101/N-102 已随 PR #25 合入 `nyala/main`（squash `7bfc4fc2a68`）；N-103 Supervisor 与 N-104 SQLite Session 于 2026-11-01 开工、尚无 PR，P1.3–P1.4 未开始；`nyala/rpc` 合同已冻结（PR #11）。CI 的 `Rust runtime` job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)）。
 6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）的 `node_modules` / `out` / `.build` / `build/node_modules` 均不存在（2026-10-30 实测）；其他机器恢复需要重新安装与编译（见下）。
@@ -125,7 +125,7 @@ gh api -X DELETE repos/baicie/nyala-studio-next/branches/nyala/main/protection
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
 2. ~~解决 CI 账单~~ 已解除（2026-10-30 仓库转为公开）；`nyala:validate-rpc` 早已在 `nyala-ci.yml` 中，Hygiene 依赖缺口由 PR #22 修复。
-3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；Agent Host 启动与 Chromium 拼写词典下载两条出站路径于 2026-11-01 开工修复（尚无 PR），之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
+3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；Agent Host 启动与 Chromium 拼写词典下载两条出站路径于 2026-11-01 开工修复，修复见 PR #34（Draft，未合并），之后在 Linux / macOS 复跑 `scripts/nyala/smoke-electron.ts`。
 4. P1.1：~~Rust crate + stdio framing + hello / health / error~~ 已随 PR #25 合入。接下来是 N-103 Electron Main Supervisor 与 N-104 SQLite Profile/Session（2026-11-01 开工），然后是 N-105–N-110。
 
 ## 新机器恢复步骤（macOS / Linux）
