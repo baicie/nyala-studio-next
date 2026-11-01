@@ -2,9 +2,7 @@
 
 更新时间：2026-11-01。基线是 Code OSS `1.143.0`，SHA
 `2d0b7506a36c1d6db9a466440131a8e01eab2289`（2026-10-29 由 `1.142.0` /
-`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime
-目前只有 `rust/` 下的 stdio 分帧与 hello/health（N-101/N-102，不改上游文件），连接驱动和结果网格
-尚未开始。
+`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime 已有 `rust/` 下的 stdio 分帧、hello/health（N-101/N-102）与 SQLite Profile/Session（N-104，PR #33，`195475b84b3`），均不改上游文件。N-103 Supervisor 在 Draft PR #35，尚未合入；查询执行与结果网格未交付。
 
 ## 计数口径
 
@@ -35,6 +33,12 @@ Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runt
 `product.json`、`src/vs/base/common/product.ts`、`extensionsScannerService.ts` 及其测试、`chatEntitlementService.ts`
 都已计入；新增的 `src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts` 是 Nyala 自有测试，
 `scripts/nyala/` 按口径不计入。两个 PR 均已合并，`patchCount` 为 `50`。
+
+## 待合入增量（2026-11-01 核对）
+
+PR #33 的 SQLite 实现在 `rust/` 与 ADR 中，已合入但不增加 `patchCount`，主线 `195475b84b3` 的正式计数仍为 **50**。
+
+Draft PR #34（`a334073f505`）新增修改 2 个上游文件：`src/vs/platform/agentHost/browser/agentHostEnablementService.ts` 与 `src/vs/platform/agentHost/electron-main/electronAgentHostStarter.ts`；Draft PR #35（`4eb0326e2e2`）新增修改 `src/vs/code/electron-main/app.ts`，并新增 4 个 `src/vs/platform/nyalaRuntime/` 非测试源文件。两者均未合入，正式计数不提前增加。当前合并后预测为 **57**（51 个修改的上游跟踪文件 + 6 个新增 Nyala 非测试源文件），而不是审核前的 56；合入后仍须按实际树重算。`patchCountBasis` 届时应使用“Nyala source files”，因为新增文件不全位于 Workbench。
 
 ## 改动清单
 
