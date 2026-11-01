@@ -114,7 +114,7 @@ v1 的 Session 没有窗口或客户端归属字段。[14-storage](../nyala-kick
 
 ## 后果
 
-- 上游跟踪文件只改 `src/vs/code/electron-main/app.ts`：一行 import、一行 `createInstance`（及一行注释）。其余均为 Nyala 新文件。已在 [`nyala/patch-ledger.md`](../../nyala/patch-ledger.md) 登记；按现行口径合并后 `patchCount` 由 50 变为 55（只计上游跟踪文件为 51），`nyala/upstream-base.json` 在合并后更新。
+- 上游跟踪文件只改 `src/vs/code/electron-main/app.ts`：一行 import、一行 `createInstance`（及一行注释）。其余均为 Nyala 新文件。已在 [`nyala/patch-ledger.md`](../../nyala/patch-ledger.md) 登记；按现行口径合并后 `patchCount` 由 50 变为 55（`app.ts` +1，`src/vs/platform/nyalaRuntime/` 下 4 个非测试源文件 +4），`nyala/upstream-base.json` 在合并后更新。
 - CI：`Unit tests (node)` job 在跑单测前 `cargo build --locked -p nyala-runtime`，并设置 `NYALA_RUNTIME_REQUIRED=1`，让真实进程集成测试在没有产物时失败而不是跳过。4 个必需 job 的名字不变。
 - Windows 原生冒烟脚本 `scripts/nyala/smoke-runtime.ts` 检查：握手成功、外部 kill 后换代重启、Reload 换代且旧进程自行退出、退出应用后没有残留 `nyala-runtime` 进程。
 
