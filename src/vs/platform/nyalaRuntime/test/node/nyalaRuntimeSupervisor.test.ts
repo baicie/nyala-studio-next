@@ -384,7 +384,7 @@ suite('Nyala runtime executable', () => {
 		}
 	});
 
-	test('staging copies each build once into its own folder and removes the folders of other builds', async () => {
+	test('staging reuses an intact copy of the same content and drops copies of other content', async () => {
 		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeStaging');
 		const name = process.platform === 'win32' ? 'nyala-runtime.exe' : 'nyala-runtime';
 		const source = join(dir, 'target', name);
@@ -393,37 +393,173 @@ suite('Nyala runtime executable', () => {
 			await fs.writeFile(source, content);
 			await fs.utimes(source, new Date(Date.UTC(year, 0, 1)), new Date(Date.UTC(year, 0, 1)));
 		};
+		const folder = (path: string) => path.substring(stagingDir.length + 1, path.length - name.length - 1);
+		const listed = async () => (await fs.readdir(stagingDir)).map(entry => (/^[0-9a-f]+-[0-9a-f]{64}$/.test(entry) ? 'folder named by size and digest' : entry));
 		try {
 			await fs.mkdir(dirname(source), { recursive: true });
 			await build('build 1', 2000);
 			const first = await stageNyalaRuntimeExecutable(source, stagingDir);
 			const firstContent = await fs.readFile(first, 'utf8');
-			// Same size, other content: a second call for the same build must not copy again.
-			await fs.writeFile(first, 'BUILD 1');
-			const reused = await stageNyalaRuntimeExecutable(source, stagingDir);
-			const reusedContent = await fs.readFile(reused, 'utf8');
+			// The same content with another modification time is the same build: no second copy.
+			await fs.utimes(source, new Date(Date.UTC(2002, 0, 1)), new Date(Date.UTC(2002, 0, 1)));
+			const sameAgain = await stageNyalaRuntimeExecutable(source, stagingDir);
 			await build('build 2', 2001);
 			const second = await stageNyalaRuntimeExecutable(source, stagingDir);
 
 			assert.deepStrictEqual({
-				first,
 				firstContent,
-				reused: reused === first,
-				reusedContent,
-				second,
+				sameAgain: sameAgain === first,
+				differentFolder: folder(second) !== folder(first),
 				secondContent: await fs.readFile(second, 'utf8'),
-				folders: await fs.readdir(stagingDir),
+				folders: await listed(),
 				files: await fs.readdir(dirname(second)),
 			}, {
-				// Folder names are the size and the modification time in hex.
-				first: join(stagingDir, '7-dc6acfac00', name),
 				firstContent: 'build 1',
-				reused: true,
-				reusedContent: 'BUILD 1',
-				second: join(stagingDir, '7-e3c7a73400', name),
+				sameAgain: true,
+				differentFolder: true,
 				secondContent: 'build 2',
-				folders: ['7-e3c7a73400'],
+				folders: ['folder named by size and digest'],
 				files: [name],
+			});
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('staging never runs content from another source with the same name, size and modification time', async () => {
+		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeStagingIdentity');
+		const name = process.platform === 'win32' ? 'nyala-runtime.exe' : 'nyala-runtime';
+		const stagingDir = join(dir, 'staging');
+		const time = new Date(Date.UTC(2000, 0, 1));
+		const build = async (content: string) => {
+			// Two locations, as with two NYALA_RUNTIME_PATH values: the same name, size and mtime.
+			const source = join(dir, content === 'target A' ? 'a' : 'b', name);
+			await fs.mkdir(dirname(source), { recursive: true });
+			await fs.writeFile(source, content);
+			await fs.utimes(source, time, time);
+			return source;
+		};
+		try {
+			const first = await stageNyalaRuntimeExecutable(await build('target A'), stagingDir);
+			const firstContent = await fs.readFile(first, 'utf8');
+			const second = await stageNyalaRuntimeExecutable(await build('target B'), stagingDir);
+
+			assert.deepStrictEqual({
+				firstContent,
+				secondContent: await fs.readFile(second, 'utf8'),
+				distinctCopies: first !== second,
+				folders: (await fs.readdir(stagingDir)).length,
+			}, {
+				firstContent: 'target A',
+				secondContent: 'target B',
+				distinctCopies: true,
+				folders: 1,
+			});
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('staging replaces a copy of the same source when its content changed but size and mtime did not', async () => {
+		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeStagingContent');
+		const name = process.platform === 'win32' ? 'nyala-runtime.exe' : 'nyala-runtime';
+		const source = join(dir, 'target', name);
+		const stagingDir = join(dir, 'staging');
+		const time = new Date(Date.UTC(2000, 0, 1));
+		try {
+			await fs.mkdir(dirname(source), { recursive: true });
+			await fs.writeFile(source, 'build A');
+			await fs.utimes(source, time, time);
+			const first = await stageNyalaRuntimeExecutable(source, stagingDir);
+			const firstContent = await fs.readFile(first, 'utf8');
+			// Same source, same size and modification time, other bytes: a rebuild that preserved mtime.
+			await fs.writeFile(source, 'build B');
+			await fs.utimes(source, time, time);
+			const again = await stageNyalaRuntimeExecutable(source, stagingDir);
+			const firstStillThere = await fs.readdir(stagingDir).then(entries => entries.length);
+
+			assert.deepStrictEqual({
+				firstContent,
+				againContent: await fs.readFile(again, 'utf8'),
+				folders: firstStillThere,
+			}, {
+				firstContent: 'build A',
+				againContent: 'build B',
+				folders: 1,
+			});
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('staging does not reuse a copy that was changed on disk', async () => {
+		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeStagingCorrupt');
+		const name = process.platform === 'win32' ? 'nyala-runtime.exe' : 'nyala-runtime';
+		const source = join(dir, 'target', name);
+		const stagingDir = join(dir, 'staging');
+		const time = new Date(Date.UTC(2000, 0, 1));
+		try {
+			await fs.mkdir(join(dir, 'target'), { recursive: true });
+			await fs.writeFile(source, 'build 1');
+			await fs.utimes(source, time, time);
+			const first = await stageNyalaRuntimeExecutable(source, stagingDir);
+			// Same size, other content: the copy must not be started.
+			await fs.writeFile(first, 'BUILD 1');
+			const repaired = await stageNyalaRuntimeExecutable(source, stagingDir);
+
+			assert.deepStrictEqual({
+				repairedContent: await fs.readFile(repaired, 'utf8'),
+				// The folder is named by the source digest, so the copy is rewritten in place.
+				repairedIsFirst: repaired === first,
+				folders: (await fs.readdir(stagingDir)).length,
+			}, {
+				repairedContent: 'build 1',
+				repairedIsFirst: true,
+				folders: 1,
+			});
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('staging follows the source execute bits on POSIX and ignores them on Windows', async function () {
+		if (process.platform === 'win32') {
+			this.skip(); // Windows runs a file by name, so its mode does not decide whether it runs.
+		}
+		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeStagingSourceMode');
+		const source = join(dir, 'target', 'nyala-runtime');
+		const stagingDir = join(dir, 'staging');
+		const time = new Date(Date.UTC(2000, 0, 1));
+		const staged = async () => {
+			const path = await stageNyalaRuntimeExecutable(source, stagingDir);
+			return { path, folder: dirname(path), executable: ((await fs.stat(path)).mode & 0o111) !== 0 };
+		};
+		try {
+			await fs.mkdir(join(dir, 'target'), { recursive: true });
+			await fs.writeFile(source, 'build 1');
+			await fs.utimes(source, time, time);
+			// Without execute bits: no POSIX execute permission to carry over.
+			await fs.chmod(source, 0o644);
+			const plain = await staged();
+			// The same bytes and modification time, now executable: a new build, with a copy that runs.
+			await fs.chmod(source, 0o755);
+			const executable = await staged();
+			// The same source again: the copy that runs is reused, not written again.
+			const executableAgain = await staged();
+			// Back to no execute bits: the executable copy must not be reused.
+			await fs.chmod(source, 0o644);
+			const plainAgain = await staged();
+
+			assert.deepStrictEqual({
+				plain: { executable: plain.executable, inExecutableFolder: plain.folder === executable.folder },
+				executable: { distinctFolder: executable.folder !== plain.folder, executable: executable.executable },
+				executableAgain: { reused: executableAgain.path === executable.path },
+				plainAgain: { sameFolderAsPlain: plainAgain.folder === plain.folder, executable: plainAgain.executable },
+			}, {
+				plain: { executable: false, inExecutableFolder: false },
+				executable: { distinctFolder: true, executable: true },
+				executableAgain: { reused: true },
+				plainAgain: { sameFolderAsPlain: true, executable: false },
 			});
 		} finally {
 			await fs.rm(dir, { recursive: true, force: true });

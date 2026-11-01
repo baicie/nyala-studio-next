@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as cp from 'child_process';
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { DeferredPromise, raceTimeout } from '../../../base/common/async.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
@@ -58,10 +59,44 @@ async function fileModifiedTime(path: string): Promise<number | undefined> {
 	}
 }
 
-async function fileSize(path: string): Promise<number | undefined> {
+async function fileMode(path: string): Promise<number | undefined> {
 	try {
 		const stat = await fs.stat(path);
-		return stat.isFile() ? stat.size : undefined;
+		return stat.isFile() ? stat.mode : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The execute bits of owner, group and other. */
+const EXECUTE_BITS = 0o111;
+
+/** Whether a file with this mode carries execute bits. */
+function hasExecuteBits(mode: number): boolean {
+	return (mode & EXECUTE_BITS) !== 0;
+}
+
+/**
+ * Whether a staged copy with `copyMode` carries the same execute bits as its source. POSIX starts
+ * the staged file as itself, so a source that gained execute bits must not reuse a copy written
+ * before that, and a source that lost them must not reuse an executable copy. Only the execute
+ * bits are compared: a umask that clears a write bit of the copy is harmless and must not make
+ * every start rewrite it. Windows starts a file by name, where the mode does not decide.
+ */
+function reproducesExecuteBits(sourceMode: number, copyMode: number | undefined): boolean {
+	return process.platform === 'win32' || (copyMode !== undefined && hasExecuteBits(copyMode) === hasExecuteBits(sourceMode));
+}
+
+/** SHA-256 of some bytes, as lowercase hex. */
+function sha256(bytes: Uint8Array): string {
+	return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** SHA-256 of a file's bytes, or `undefined` when it cannot be read. */
+async function fileDigest(path: string): Promise<string | undefined> {
+	try {
+		const stat = await fs.stat(path);
+		return stat.isFile() ? sha256(await fs.readFile(path)) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -71,21 +106,35 @@ async function fileSize(path: string): Promise<number | undefined> {
  * Copies a development build of the runtime into `stagingDir` and returns the path of the copy.
  * Windows does not let a running executable be removed or replaced, so running
  * `rust/target/.../nyala-runtime.exe` itself would make `cargo build` fail while a window is open.
- * Each build gets its own folder, named after its size and modification time, and is copied once.
- * Folders of other builds are removed when no process runs from them any more: a running copy
- * cannot be deleted on Windows, so its folder goes on a later call. Calls must not overlap.
+ *
+ * A build is identified by the SHA-256 of its bytes and, on POSIX, by whether it has execute
+ * bits. Its folder is named `<size>-<digest>[-x]`: the size lets a same-content build reuse its
+ * copy instead of adding a second one, and the mode suffix keeps a build whose execute bits were
+ * removed from reusing an executable copy. A cached copy is reused only after its bytes still
+ * match the digest and its execute bits still match the source's: a source at another path with
+ * the same name, size and modification time is never mistaken for this one, and a copy changed on
+ * disk, or one whose execute bits the source no longer has, is written again instead of started.
+ *
+ * The copy is written under another name and renamed into place. Folders of other builds are
+ * removed when no process runs from them any more; a running copy cannot be deleted on Windows,
+ * so its folder goes on a later call. Calls must not overlap.
  */
 export async function stageNyalaRuntimeExecutable(source: string, stagingDir: string): Promise<string> {
 	const stat = await fs.stat(source);
-	const build = `${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}`;
+	if (!stat.isFile()) {
+		throw new Error(`${source} is not a file`);
+	}
+	const bytes = await fs.readFile(source);
+	const digest = sha256(bytes);
+	const modeSuffix = process.platform === 'win32' || !hasExecuteBits(stat.mode) ? '' : '-x';
+	const build = `${stat.size.toString(16)}-${digest}${modeSuffix}`;
 	const target = join(stagingDir, build, basename(source));
-	if (await fileSize(target) !== stat.size) {
+	const copyIsCurrent = async () => await fileDigest(target) === digest && reproducesExecuteBits(stat.mode, await fileMode(target));
+	if (!await copyIsCurrent()) {
 		await fs.mkdir(dirname(target), { recursive: true });
-		// Copy under another name and rename, so that the target is never a half-written file,
-		// even after a crash during the copy.
 		const partial = `${target}.${generateUuid()}.partial`;
 		try {
-			await fs.copyFile(source, partial);
+			await fs.writeFile(partial, bytes, { mode: stat.mode });
 			await fs.rename(partial, target);
 		} catch (error) {
 			await fs.rm(partial, { force: true });

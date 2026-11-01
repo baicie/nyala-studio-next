@@ -135,10 +135,10 @@ suite('Nyala runtime supervisor with the real runtime', function () {
 			supervisor = createSupervisor({ ...launch, executable: staged });
 			await supervisor.start();
 
-			// What `cargo build` does with the original; then mark it as a new build.
+			// What `cargo build` does with the original: another build, so other bytes.
+			const rebuilt = await fs.readFile(launch.executable);
 			await fs.rm(source);
-			await fs.copyFile(launch.executable, source);
-			await fs.utimes(source, new Date(Date.UTC(2001, 0, 1)), new Date(Date.UTC(2001, 0, 1)));
+			await fs.writeFile(source, Buffer.concat([rebuilt, Buffer.from('rebuilt')]));
 			// The reason for staging: on Windows the running copy itself cannot be removed.
 			const stagedLocked = process.platform === 'win32' ? await fs.rm(staged).then(() => false, () => true) : undefined;
 			const health = await supervisor.request('runtime.health', {});
