@@ -54,7 +54,7 @@
 
 - 当前同步基线为 Code OSS **1.143.0**（SHA 见 [`nyala/upstream-base.json`](../../nyala/upstream-base.json)）；上方 1.142.0 内容是初始化历史，保留不改。
 - 新增 Agent 设计 [27](docs/27-agent-platform.md)–[30](docs/30-agent-security-evaluation.md)、SQL 工作台交互 [31](docs/31-sql-workspace-product.md)，以及 Proposed 的 [ADR-0007](docs/adr/0007-sql-first-task-first-workspace.md)、[ADR-0008](docs/adr/0008-optional-codex-app-server-adapter.md)。这些都是设计提案，**没有对应实现**；[ADR-0006](docs/adr/0006-no-default-ai.md)（Agent 不属于 SQL MVP）继续有效。
-- 下一步实施路径：先补 1.143.0 Electron Smoke 与 Reload/Dispose 回归（N-R01），再按 `nyala/rpc/v1` 合同实现 N-101/102/103。见 [路线图](docs/19-roadmap.md)与 [Backlog](docs/20-backlog.md)。
+- 下一步实施路径（2026-11-01 更新）：N-R01 的 Windows 部分与 N-101/102 已合入；接下来是 N-103 Supervisor、N-104 SQLite Session，以及关闭 Agent Host / 拼写词典两条出站路径。见 [路线图](docs/19-roadmap.md)与 [Backlog](docs/20-backlog.md)。
 - 逐文件修订说明：[DESIGN-CHANGELOG-v1.1](DESIGN-CHANGELOG-v1.1.md)。
 
 ## 文档权威度

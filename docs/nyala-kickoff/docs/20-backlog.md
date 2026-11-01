@@ -22,8 +22,8 @@
 
 | ID | Priority | Depends | 任务 | 验收/证据 |
 |---|---|---|---|---|
-| N-101 | P0 | N-001 | Runtime crate + Stdio framing | half-frame/oversize/error 测试 · **In Review**（`feat/p1-rust-runtime`，`rust/crates/nyala-runtime`；证据见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md#证据)） |
-| N-102 | P0 | N-101 | Hello/version/error protocol | Major 不匹配拒绝 · **In Review**（同 N-101） |
+| N-101 | P0 | N-001 | Runtime crate + Stdio framing | half-frame/oversize/error 测试 · **Done**（PR #25，squash `7bfc4fc2a68`，`rust/crates/nyala-runtime`；证据见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md#证据)） |
+| N-102 | P0 | N-101 | Hello/version/error protocol | Major 不匹配拒绝 · **Done**（同 N-101） |
 | N-103 | P0 | N-102 | Electron Sidecar supervisor | 退出/重启/清理测试 |
 | N-104 | P0 | N-102 | SQLite Profile/Session connect | connect/close/invalid file 测试 |
 | N-105 | P0 | N-104 | SQLite metadata | 表/视图/列/permission/refresh |
@@ -86,8 +86,8 @@ v1.1 起，`N-X05` 细化为下方 `N-A*` 研究轨道。
 
 | ID | Priority | Depends | 任务 | 验收/证据 |
 |---|---|---|---|---|
-| N-R01 | P0 | N-005, Code OSS 1.143.0 | 1.143.0 原生 Electron Smoke + Reload/Dispose 自动化 | 启动、View、Extension Host、Webview、Reload 的真实日志；环境不允许则记 BLOCKED |
-| N-R02 | P0 | 计费或 Runner | `nyala-ci.yml` 真正执行 | `Product baseline` 与 `Client typecheck and hygiene` Job 有实际 step 和结论 |
+| N-R01 | P0 | N-005, Code OSS 1.143.0 | 1.143.0 原生 Electron Smoke + Reload/Dispose 自动化 | 启动、View、Extension Host、Webview、Reload 的真实日志；环境不允许则记 BLOCKED · **Windows Done**（PR #23/#24：冒烟 PASS 12/12，Reload/Dispose 单测 8 passing）；Linux/macOS 未复跑 |
+| N-R02 | P0 | 计费或 Runner | `nyala-ci.yml` 真正执行 | `Product baseline` 与 `Client typecheck and hygiene` Job 有实际 step 和结论 · **Done**（2026-10-30 仓库公开后解除；分支保护要求 4 个 checks） |
 | N-R03 | P1 | N-R02 | 复核已停用上游 workflow 的恢复路径 | 普通 PR、上游同步 PR、Release、安全扫描的场景矩阵 |
 | N-R04 | P1 | 治理 v1.0 | 维护 `PROGRESS.md` 状态快照 | 反映主线 HEAD 与已合并 PR，不重复登记已存在的 CI 校验 |
 
