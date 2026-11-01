@@ -106,13 +106,27 @@ jobs:
       - name: Build client (transpile)
         run: npm run build-fast -- --client-only
 
+      # The supervisor integration suite runs against the real runtime binary in rust/target/debug.
+      # Uses the stable toolchain that rustup preinstalls on the runner.
+      - name: Build Nyala runtime
+        run: |
+          cargo --version
+          cargo build --locked -p nyala-runtime
+        working-directory: rust
+
       # Browser-only suites (src/vs/workbench/contrib/nyala/test/browser) cannot load in this
-      # runner; PROGRESS.md gap 7 tracks them separately.
+      # runner; PROGRESS.md gap 7 tracks them separately. NYALA_RUNTIME_REQUIRED=1 makes the
+      # real-runtime suite fail instead of skip when the build above produced no binary.
       - name: Unit tests (node)
+        env:
+          NYALA_RUNTIME_REQUIRED: '1'
         run: >
           node test/unit/node/index.js
           --run src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts
           --run src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts
+          --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeProtocol.test.ts
+          --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeSupervisor.test.ts
+          --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeRealProcess.test.ts
 
   rust:
     name: Rust runtime
