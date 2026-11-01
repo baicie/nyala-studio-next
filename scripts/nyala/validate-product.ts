@@ -43,9 +43,10 @@ for (const field of [
 assert.equal(productJson.extensionApiVersion, upstreamBase.tag, 'extensionApiVersion must equal the Code OSS baseline tag in nyala/upstream-base.json');
 assert.match(readFileSync('src/vs/platform/product/common/product.ts', 'utf8'), new RegExp(`extensionApiVersion: '${upstreamBase.tag.replace(/\./g, '\\.')}'`), 'the out-of-sources product fallback must report the same extensionApiVersion');
 
-// Runtime egress gates that live in upstream files. An upstream sync that drops either one brings
+// Runtime egress gates that live in upstream files. An upstream sync that drops any one brings
 // the outbound connection back, and only the native smoke would notice.
 assert.match(readFileSync('src/vs/platform/agentHost/browser/agentHostEnablementService.ts', 'utf8'), /super\(!isWeb && hasDefaultChatAgent\(productService\),/, 'the desktop Agent Host enablement must stay off when the product disables the default chat agent');
+assert.match(readFileSync('src/vs/platform/agentHost/electron-main/electronAgentHostStarter.ts', 'utf8'), /async start\(\): Promise<IAgentHostConnection> \{\r?\n(?:\t\t\/\/.*\r?\n)*\t\tif \(!hasDefaultChatAgent\(this\._productService\)\) \{\r?\n\t\t\tthrow new AgentHostStartError\(/, 'the main-process Agent Host starter must refuse to spawn when the product disables the default chat agent');
 assert.match(readFileSync('src/mainImpl.ts', 'utf8'), /app\.on\('session-created', session => session\.setSpellCheckerLanguages\(\[\]\)\);/, 'src/mainImpl.ts must clear the spellchecker languages of every session so Chromium does not download Hunspell dictionaries');
 
 // Blank defaultChatAgent IDs do not stop a bundled chat extension from loading: every folder under

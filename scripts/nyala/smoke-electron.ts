@@ -7,8 +7,9 @@
 // scripts/code.bat (scripts/code.sh elsewhere) with an isolated user data, extensions
 // and logs folder, drives the window over a local CDP port and checks the P0 entry
 // points, including repeated Reload Window. It also checks that the disabled Chat stays
-// hidden, that neither the bundled Copilot Chat nor Microsoft authentication activates, and
-// that no non-loopback host shows up in the Chromium NetLog or is named in the logs. Requires
+// hidden, that neither the bundled Copilot Chat nor Microsoft authentication activates, that
+// the Agent Host stays stopped even when asked to restart, and that no non-loopback host
+// shows up in the Chromium NetLog or is named in the logs. Requires
 // `npm install`, `npm run compile` and a downloaded Electron (`npm run electron`).
 //
 // Usage: node --experimental-strip-types scripts/nyala/smoke-electron.ts [--evidence <dir>] [--reloads <n>] [--port <n>]
@@ -415,10 +416,14 @@ async function main(): Promise<void> {
 			check(microsoftLogs === 0, `${microsoftLogs} Microsoft Authentication.log file(s)`);
 			return `${findLogs('exthost.log').length} exthost.log file(s): no activation of ${BLOCKED_EXTENSIONS.join(' or ')}; no Microsoft Authentication.log`;
 		});
-		await step('Agent Host stays stopped', async () => {
+		await step('Agent Host stays stopped', async page => {
+			// Restart Local Agent Host sends this IPC to main. Its precondition hides the command while
+			// Chat is disabled, so send the IPC directly: main must still refuse to spawn the host.
+			await page.evaluate(() => (globalThis as unknown as { vscode: { ipcRenderer: { send(channel: string): void } } }).vscode.ipcRenderer.send('vscode:restartAgentHost'));
+			const handled = await until('main to handle the restart request', async () => logLines('main.log', /AgentHostProcessManager: (failed to restart agent host|agent host started)/)[0], 15_000);
 			const started = logLines('main.log', /AgentHostProcessManager: agent host started/);
 			check(started.length === 0, `${started.length} agent host start(s) in main.log`);
-			return 'main.log has no agent host start';
+			return `main.log has no agent host start; restart request: '${handled.replace(/^.*AgentHostProcessManager: /, '')}'`;
 		});
 
 		await step('renderer log has no Nyala errors', async () => {

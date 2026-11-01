@@ -279,7 +279,9 @@ Chat 视图。没有可以删掉的部分。
 - 修复后（`electron-20261101-134456-fixed`）：只看到 2 条连接，都是 Playwright 到 CDP 端口 `127.0.0.1:9333`。
 - 正向对照（`electron-20261101-134650-no-spellcheck-gate`）：除 CDP 外，NetworkService 有 2 条到 `127.0.0.1:7890` 的连接。本机配置了本地代理 `127.0.0.1:7890`（NetLog 的 `proxy_chain` 也是它），所以 Chromium 的外部请求在 TCP 层表现为到回环代理的连接。采样能看到这类连接，修复后的运行中没有。
 
-**边界。** NetLog 只覆盖 Chromium 网络栈。Node 进程的请求只由两项线索覆盖：日志中的主机名，以及 250 ms 一次的 TCP 采样；采样会漏掉短于采样间隔的连接，看不到 UDP/DNS，也看不到不叫 `Nyala Studio.exe` 的子进程（例如 `git.exe`）。没有做系统级抓包。开发启动器 `scripts\code.bat` 在 Electron 启动前运行 `build/lib/preLaunch.ts`，会从 GitHub 同步 3 个内置扩展（本次运行均为本地已是最新，未下载）；它是 `node.exe` 进程，不属于产品，也不在上述观察范围内。每次冒烟都用全新的 `--user-data-dir`；已经下载过词典的旧 profile 中，`Dictionaries/*.bdic` 会留在磁盘上；按源码，偏好清空后不再加载它们（未用旧 profile 验证）。打包版本、macOS、Linux、Agents 窗口与远程窗口均未验证。
+**边界。** NetLog 只覆盖 Chromium 网络栈。Node 进程的请求只由两项线索覆盖：日志中的主机名，以及 250 ms 一次的 TCP 采样；采样会漏掉短于采样间隔的连接，看不到 UDP/DNS，也看不到不叫 `Nyala Studio.exe` 的子进程（例如 `git.exe`）。没有做系统级抓包。开发启动器 `scripts\code.bat` 在 Electron 启动前运行 `build/lib/preLaunch.ts`，会从 GitHub 同步 3 个内置扩展（本次运行均为本地已是最新，未下载）；它是 `node.exe` 进程，不属于产品，也不在上述观察范围内。每次冒烟都用全新的 `--user-data-dir`。
+
+未验证的项逐条列出：打包版本 NOT RUN；macOS NOT RUN；Linux NOT RUN；Agents 窗口 NOT RUN（注册的是同一个 enablement 服务，按代码推断同样关闭）；远程窗口 NOT RUN；已经下载过词典的旧 profile NOT RUN（按源码推断 `Dictionaries/*.bdic` 留在磁盘上但不再加载）；系统级抓包 NOT RUN；集成浏览器窗口内的拼写与词典行为 NOT RUN（冒烟没有打开集成浏览器）。
 
 两次运行都出现、与本修复无关的日志错误（未处理）：renderer.log 的 `agentSessionsOutput.log ... already exists`，main.log 的 `vscode-regexp-languagedetection/dist/index.js` `ERR_FILE_NOT_FOUND`。修复前的 `electron-20261030-105353-head` 中各有 1 条，修复后各 1 条。
 
@@ -306,6 +308,31 @@ npm run compile（gulp 全量）                                     NOT RUN（b
 npm run gulp hygiene（全仓）                                     NOT RUN（只做改动文件的定向 hygiene）
 全量单元测试、上游 smoketest                                      NOT RUN（范围外，见 CI 的 Unit tests (node) 与手动 browser-test job）
 ```
+
+#### 复审修复（PR #34 审核，2026-11-01）
+
+审核指出 Restart 命令仍能拉起 Agent Host，且单测没有覆盖真正的门控。修复：`ElectronAgentHostStarter.start()` 开头用同一谓词拒绝所有 spawn（见 ADR 0005「决策」第 3 条），新增描述符测试，冒烟的「Agent Host stays stopped」在检查日志前先从页面发 `vscode:restartAgentHost`。
+
+已知限制必须写清楚：这一轮本机验证只覆盖了单元测试、`nyala:validate-product` 与静态检查；**更新后的原生冒烟尚未在本机重跑**（下面标 NOT RUN 的项），结论仍以待 CI 与下一次 Windows 冒烟为准。旧的 17/17 证据（`0ca317a6394`，表格与负向对照见上）不包含 restart 检查与 starter 门控，只代表 renderer 门控和拼写门控。
+
+```text
+代码          fix/close-runtime-egress（本小节新增内容尚未提交时的快照；不含 restart 冒烟证据）
+单元测试      scripts\test.bat
+                --run src/vs/workbench/contrib/nyala/test/browser/nyalaAgentHostEnablement.test.ts
+                --run src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts
+                                                                 PASS（4 passing，Electron 运行器）
+              node test/unit/browser/index.js --browser chromium
+                --run src/vs/workbench/contrib/nyala/test/browser/nyalaAgentHostEnablement.test.ts
+                                                                 PASS（1 passing，浏览器运行器）
+              负向对照：把 out/ 中 agentHostEnablementService.js 的 hasDefaultChatAgent 条件去掉后重跑
+                Electron 运行器                                     FAIL（disabledChat: true，预期 false），已还原 out/
+nyala:validate-product                                           PASS；新增的 starter 门控断言与另外两条同时生效
+原生冒烟（含 restart 检查）                                       NOT RUN（本机未重跑；提交后按原命令在 Windows 上补跑）
+starter 门控的冒烟负向对照（去掉 starter 判断、保留 renderer 门控，发 restart IPC）  NOT RUN
+typecheck-client / 定向 ESLint / hygiene / git diff --check（本轮新增文件）  NOT RUN（提交前在本机执行）
+```
+
+本轮未运行的项按项列出：原生冒烟（17 步，含新的 restart 检查）、starter 门控的冒烟负向对照、重启后的 NetLog 与 TCP 采样、macOS/Linux、打包版本、Agents 窗口、远程窗口、旧 profile 的词典行为。
 
 ### 发现
 
