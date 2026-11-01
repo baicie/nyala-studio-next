@@ -6,7 +6,7 @@ Nyala 是一个开源学习型 SQL IDE 项目：沿用 VS Code Workbench 原生�
 
 ## 当前阶段
 
-**Bootstrap、Windows Reload/Dispose 回归与 Rust SQLite Profile/Session（N-104，PR #33）已进入主线；SQL 查询与 UI 闭环尚未完成。** Runtime Supervisor 和出站修复分别在 Draft PR #35/#34，分支验证通过但尚未合入。构建与平台证据见 [bootstrap 记录](docs/04-code-oss-bootstrap.md)和 [进度快照](PROGRESS.md)；本文档不代表跨平台发行通过。
+**Bootstrap、Windows Reload/Dispose 回归与 Rust SQLite Profile/Session（N-104，PR #33）已进入主线；SQL 查询与 UI 闭环尚未完成。** Runtime Supervisor 和出站修复分别在 Draft PR #35 与 Ready PR #34，分支验证通过但尚未合入。构建与平台证据见 [bootstrap 记录](docs/04-code-oss-bootstrap.md)和 [进度快照](PROGRESS.md)；本文档不代表跨平台发行通过。
 
 - 基座：Code OSS 固定 release tag（初始候选 `1.142.0`）。
 - 主线运行时：Electron + Code OSS Extension Host。

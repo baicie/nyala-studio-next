@@ -5,7 +5,7 @@
 
 ## 一句话状态
 
-P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；截至 2026-11-01，PR #21–#33 已全部合入 `nyala/main`。**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误，PR #25）与 N-104 SQLite Profile/Session（PR #33，squash `195475b84b3`）已合入**；N-103 Supervisor 已在 Draft PR #35 完成实现并提交审核修复，但尚未合入。N-105–N-110 未交付，不能把连接能力视为查询执行、结果分页或 P1 阶段验收完成。合同 v1.0 有一处勘误：`failure.id` 允许 `null`（PR #27）。Windows 11 `1.143.0` 原生冒烟与 Reload/Dispose 单元测试已合入（PR #23）；内置语言功能激活修复（PR #24，ADR 0003）后为 **PASS 12/12**。运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证已关闭（PR #26），冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，这是 PR #26 的历史结果；两条出站路径已在 Draft PR #34 修复并记录 Windows 原生冒烟 **PASS 17/17**（含直接 restart IPC 检查），但修复尚未合入主线。CI 已能真实执行，`nyala/main` 的分支保护要求 4 个 checks。
+P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + 质量门禁记录），已同步到 Code OSS `1.143.0`（保留上游完整历史），P1 协议的 v1.0 可执行合同已冻结；截至 2026-11-01，PR #21–#33 已全部合入 `nyala/main`。**Rust SQL Runtime 的 N-101/N-102（stdio 分帧 + hello/health + 结构化错误，PR #25）与 N-104 SQLite Profile/Session（PR #33，squash `195475b84b3`）已合入**；N-103 Supervisor 已在 Draft PR #35 完成实现并提交审核修复，但尚未合入。N-105–N-110 未交付，不能把连接能力视为查询执行、结果分页或 P1 阶段验收完成。合同 v1.0 有一处勘误：`failure.id` 允许 `null`（PR #27）。Windows 11 `1.143.0` 原生冒烟与 Reload/Dispose 单元测试已合入（PR #23）；内置语言功能激活修复（PR #24，ADR 0003）后为 **PASS 12/12**。运行时 Chat 视图、内置 `GitHub.copilot-chat` 与 Microsoft 认证已关闭（PR #26），冒烟扩展到 17 步后为 **FAIL 14/17**：Chat 相关项全部 PASS，这是 PR #26 的历史结果；两条出站路径已在 Ready PR #34 修复并记录 Windows 原生冒烟 **PASS 17/17**（含直接 restart IPC 检查），但修复尚未合入主线。CI 已能真实执行，`nyala/main` 的分支保护要求 4 个 checks。
 
 ## 分支与 PR
 
@@ -13,7 +13,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 |---|---|---|---|
 | `nyala/main` | `195475b84b3`（2026-11-01 核对） | 稳定主线 | 已合入 #8、#11、#13–#18、#21–#33；该 HEAD 的主线 CI 四项必需检查 PASS |
 | `feat/p1-sqlite-session` | `f04316fcb2a` | → `nyala/main`（PR #33） | **MERGED**（squash `195475b84b3`）：SQLite 连接、会话与审核补测 |
-| `fix/close-runtime-egress` | `a334073f505` | → `nyala/main`（PR #34） | **Draft / 未合入**；四项必需检查 PASS，Windows 原生冒烟 17/17 PASS |
+| `fix/close-runtime-egress` | `a334073f505` | → `nyala/main`（PR #34） | **Ready / 未合入**；四项必需检查 PASS，Windows 原生冒烟 17/17 PASS |
 | `feat/p1-runtime-supervisor` | `4eb0326e2e2` | → `nyala/main`（PR #35） | **Draft / 未合入**；四项必需检查 PASS，Windows Runtime 冒烟 5/5 PASS |
 | `sync/code-oss-1.143.0` | 合并 `1.143.0` | → `nyala/main` | 同步分支：真正的 merge commit，上游 731 个提交保持为祖先 |
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
@@ -75,9 +75,9 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | #34 | `a334073f505` | **未合入**；run `41300628923` 四项必需检查 PASS；Windows 原生 17/17 PASS，含直接 `vscode:restartAgentHost` 被主进程拒绝；Quick Open 曾发生一次不稳定，详见 PR 与分支兼容性报告 |
 | #35 | `4eb0326e2e2` | **未合入**；run `41296687007` 四项必需检查 PASS；Windows Runtime 5/5 PASS；Node suite 67 passing（含真实 Runtime 与 staging 测试），不是主线现有门禁 |
 
-- **BLOCKED — 合并权限**：本轮针对 PR #34 的 ready/squash 合并操作被客户端权限策略以 `Merge Without Review` 拒绝，未执行；PR #34/#35 都不得登记为已合入，也未改分支保护或通过其他会话绕过拒绝。
+- **BLOCKED — 合并权限**：用户已明确允许继续合并；PR #34 已成功标记 Ready，但随后 squash 合并仍被客户端权限策略以 `Merge Without Review` 拒绝，未合入。PR #34/#35 都不得登记为已合入，也未改分支保护或通过其他会话绕过拒绝。
 - 正式 `patchCount` 仍为 **50**，因为 PR #33 不改计数范围内文件。待 PR #34/#35 实际合入后，重新逐文件核算；当前候选增量为 #34 的 2 个上游文件，以及 #35 的 1 个上游文件 + 4 个 Nyala 源文件，合计预测 **57 = 51 + 6**，不是原先的 56。正式计数只在合并后更新。
-- PR #35 的 `4eb0326e2e2` **尚不包含 PR #33 的 SQLite 主线**（祖先检查为 false），还须在 PR #34 合入后更新到新主线并重跑真实 Runtime 测试。`git merge-tree --write-tree` 预检确认两个候选分支唯一内容冲突是 `nyala/patch-ledger.md`；尚未解决或合并，本轮没有把两个分支的独立 PASS 宣称为组合验收。
+- PR #35 的 `4eb0326e2e2` **尚不包含 PR #33 的 SQLite 主线**（祖先检查为 false），已交回原 N-103 子会话同步当前主线并重跑真实 Runtime 测试；结果待回报。PR #34 合入后的组合验证仍需另做。`git merge-tree --write-tree` 预检确认两个候选分支唯一内容冲突是 `nyala/patch-ledger.md`；尚未解决或合并，本轮没有把两个分支的独立 PASS 宣称为组合验收。
 - 本机证据文件已核对：PR #34 的 `electron-20261101-review-60af7d7-rerun/result.json` 为 17/17 PASS，记录 Node `24.16.0` / npm `11.13.0`，与该 PR 描述中的 `24.18.0` / `11.16.0` 不一致；不将它视为指定 Node 版本的原生验收。PR #35 的 `nyala-runtime-smoke-4/result.json` 为 5/5 PASS，记录 `ebbf44da9c2` 加审核修复的提交前工作树与 Node `24.16.0`，不是新 head 上的组合验收。
 - 本次本地收尾仅修正状态文档；`git diff --check`、`nyala:validate-product`、`nyala:validate-rpc`、8 份文档的 UTF-8 与相对链接检查 **PASS**。本机 Node `24.16.0` / npm `11.13.0`，不等于 `.nvmrc` 的 `24.18.0`；没有把这次纯文档验证算作指定版本的编译或原生证据。未重跑 Electron 冒烟或全量编译。`Full test suites (manual)` 仍为 SKIPPED，不代表全量测试 PASS；Linux/macOS 原生 smoke、打包、Renderer Bridge 与查询执行仍未验收。
 
@@ -106,7 +106,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 1. ~~**CI 仍然跑不出结果（GitHub 账单阻断 + workflow 缺 build/ 依赖）**~~：账单阻断已随仓库转为公开解除；`Hygiene` 因 `nyala-ci.yml` 未安装 `build/` 依赖而失败的缺陷已由 **PR #22** 修复并合入（`b48a859214a`）。
 2. ~~**开发版本号与内置语言服务不兼容**~~：已在 `fix/extension-api-version`（`6d35da69627`，已随 PR #24 合入 `nyala/main`）修复。css/html/json/markdown 四个语言功能修复前都因 `vscode-languageclient` 的 semver 检查激活失败；修复后全部激活，Windows 原生冒烟 PASS 12/12。剩余缺口：第三方 VSIX 的 `engines.vscode` 校验仍按 `0.0.1-dev.0`（见 [ADR 0003](../../docs/adr/0003-extension-api-version.md)）；`patchCount` 已于 2026-11-01 由 46 改为 50（见 patch ledger）。
-3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，已随 PR #26 合入 `nyala/main`）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**主线仍有出站路径**：Agent Host 启动及 Chromium 拼写词典下载在 PR #26 历史冒烟中 FAIL；Draft PR #34 已修复两条路径并记录 Windows 17/17 PASS，但截至本快照未合入，不能关闭主线缺口。
+3. ~~**运行时 Chat / Copilot 仍可见**~~：已在 `fix/disabled-chat-runtime`（`f6f1e2489bb`，已随 PR #26 合入 `nyala/main`）修复。原因是开发态把 `extensions/copilot` 当作内置扩展加载，它注册默认 Chat 参与者并静默请求 `microsoft` 会话；另外 `chatSetupHidden` 没有设置。修复后 Windows 原生冒烟中 Chat 视图不显示，`GitHub.copilot-chat` 与 `vscode.microsoft-authentication` 都不激活。**主线仍有出站路径**：Agent Host 启动及 Chromium 拼写词典下载在 PR #26 历史冒烟中 FAIL；Ready PR #34 已修复两条路径并记录 Windows 17/17 PASS，但截至本快照未合入，不能关闭主线缺口。
 4. Linux 原生启动，以及所有平台的安装包、签名、更新链路均未验证；macOS 未用 `1.143.0` 复跑。
 5. Rust Runtime：N-101/N-102 已随 PR #25 合入 `nyala/main`（squash `7bfc4fc2a68`）；N-104 已随 PR #33 合入（`195475b84b3`），N-103 已在 Draft PR #35 完成实现与审核修复、尚未合入；N-105–N-110 未交付；`nyala/rpc` 合同已冻结（PR #11）。CI 的 `Rust runtime` job 随该分支加入，只覆盖 ubuntu-latest（见 [ADR 0002](../adr/0002-rust-runtime-workspace.md)）。
 6. Windows 本机（`D:\workspace\git-code\nyala-studio-next`）的 `node_modules` / `out` / `.build` / `build/node_modules` 均不存在（2026-10-30 实测）；其他机器恢复需要重新安装与编译（见下）。
@@ -150,8 +150,8 @@ gh api -X DELETE repos/baicie/nyala-studio-next/branches/nyala/main/protection
 
 1. ~~合并 PR #8~~ 已完成（2026-10-29）；产品约束、产品校验脚本与 CI 已在 `nyala/main`。
 2. ~~解决 CI 账单~~ 已解除（2026-10-30 仓库转为公开）；`nyala:validate-rpc` 早已在 `nyala-ci.yml` 中，Hygiene 依赖缺口由 PR #22 修复。
-3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；两条出站路径修复在 Draft PR #34（`a334073f505`）等待合并权限；合入后仍需 Linux / macOS 原生复跑，不能用 Windows 结果替代。
-4. P1.1：~~Rust crate + stdio framing + hello / health / error~~ 已随 PR #25 合入。N-104 SQLite Profile/Session 已随 PR #33 合入；接下来完成 Draft PR #34/#35 的审核、组合验证与 squash 合并，再推进 N-105 元数据、N-106 查询执行及后续任务。
+3. ~~补 P0 生命周期回归~~ 已在 `fix/p0-windows-smoke` 完成；内置语言服务激活失败已在 `fix/extension-api-version` 修复；运行时 Chat / Microsoft 认证已在 `fix/disabled-chat-runtime` 关闭；两条出站路径修复在 Ready PR #34（`a334073f505`）等待合并权限；合入后仍需 Linux / macOS 原生复跑，不能用 Windows 结果替代。
+4. P1.1：~~Rust crate + stdio framing + hello / health / error~~ 已随 PR #25 合入。N-104 SQLite Profile/Session 已随 PR #33 合入；接下来完成 Ready PR #34/#35 的审核、组合验证与 squash 合并，再推进 N-105 元数据、N-106 查询执行及后续任务。
 
 ## 新机器恢复步骤（macOS / Linux）
 

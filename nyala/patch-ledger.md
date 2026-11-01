@@ -38,7 +38,7 @@ Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runt
 
 PR #33 的 SQLite 实现在 `rust/` 与 ADR 中，已合入但不增加 `patchCount`，主线 `195475b84b3` 的正式计数仍为 **50**。
 
-Draft PR #34（`a334073f505`）新增修改 2 个上游文件：`src/vs/platform/agentHost/browser/agentHostEnablementService.ts` 与 `src/vs/platform/agentHost/electron-main/electronAgentHostStarter.ts`；Draft PR #35（`4eb0326e2e2`）新增修改 `src/vs/code/electron-main/app.ts`，并新增 4 个 `src/vs/platform/nyalaRuntime/` 非测试源文件。两者均未合入，正式计数不提前增加。当前合并后预测为 **57**（51 个修改的上游跟踪文件 + 6 个新增 Nyala 非测试源文件），而不是审核前的 56；合入后仍须按实际树重算。`patchCountBasis` 届时应使用“Nyala source files”，因为新增文件不全位于 Workbench。
+Ready PR #34（`a334073f505`）新增修改 2 个上游文件：`src/vs/platform/agentHost/browser/agentHostEnablementService.ts` 与 `src/vs/platform/agentHost/electron-main/electronAgentHostStarter.ts`；Draft PR #35（`4eb0326e2e2`）新增修改 `src/vs/code/electron-main/app.ts`，并新增 4 个 `src/vs/platform/nyalaRuntime/` 非测试源文件。两者均未合入，正式计数不提前增加。当前合并后预测为 **57**（51 个修改的上游跟踪文件 + 6 个新增 Nyala 非测试源文件），而不是审核前的 56；合入后仍须按实际树重算。`patchCountBasis` 届时应使用“Nyala source files”，因为新增文件不全位于 Workbench。
 
 ## 改动清单
 
