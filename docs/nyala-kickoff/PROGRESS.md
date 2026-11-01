@@ -14,7 +14,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | `nyala/main` | `195475b84b3`（2026-11-01 核对） | 稳定主线 | 已合入 #8、#11、#13–#18、#21–#33；该 HEAD 的主线 CI 四项必需检查 PASS |
 | `feat/p1-sqlite-session` | `f04316fcb2a` | → `nyala/main`（PR #33） | **MERGED**（squash `195475b84b3`）：SQLite 连接、会话与审核补测 |
 | `fix/close-runtime-egress` | `a334073f505` | → `nyala/main`（PR #34） | **Ready / 未合入**；四项必需检查 PASS，Windows 原生冒烟 17/17 PASS |
-| `feat/p1-runtime-supervisor` | `4eb0326e2e2` | → `nyala/main`（PR #35） | **Draft / 未合入**；四项必需检查 PASS，Windows Runtime 冒烟 5/5 PASS |
+| `feat/p1-runtime-supervisor` | `8938b6e22c4` | → `nyala/main`（PR #35） | **Draft / 未合入**；已包含 N-104，集成 head 四项必需检查 PASS；Windows 5/5 是先前分支 smoke 证据 |
 | `sync/code-oss-1.143.0` | 合并 `1.143.0` | → `nyala/main` | 同步分支：真正的 merge commit，上游 731 个提交保持为祖先 |
 | `fix/review-audit-findings` | `a8068687464` | → `nyala/main`（PR #8） | **MERGED**（squash `85eee995045`，2026-10-29） |
 | `feat/p1-rpc-contract` | `513a34990ae` | → `nyala/main`（PR #11） | **MERGED**（squash `3b17d4e184a`，2026-10-29） |
@@ -73,11 +73,11 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 | #32 | squash `01c953e2c70` | **MERGED**；主线 run `41270714546` 四项必需检查 PASS |
 | #33 | `f04316fcb2a` → squash `195475b84b3` | **MERGED**；合并树与已审 head 一致，主线 run `41290936784` 四项必需检查 PASS |
 | #34 | `a334073f505` | **未合入**；run `41300628923` 四项必需检查 PASS；Windows 原生 17/17 PASS，含直接 `vscode:restartAgentHost` 被主进程拒绝；Quick Open 曾发生一次不稳定，详见 PR 与分支兼容性报告 |
-| #35 | `4eb0326e2e2` | **未合入**；run `41296687007` 四项必需检查 PASS；Windows Runtime 5/5 PASS；Node suite 67 passing（含真实 Runtime 与 staging 测试），不是主线现有门禁 |
+| #35 | `8938b6e22c4` | **未合入**；已包含 N-104 主线，run `41307225775` 四项必需检查 PASS；新 head 的 Node suite 67 passing（含真实 Runtime 与 staging）；Windows 5/5 为此前审核修复工作树的证据，未在集成 head 重跑 |
 
 - **BLOCKED — 合并权限**：用户已明确允许继续合并；PR #34 已成功标记 Ready，但随后 squash 合并仍被客户端权限策略以 `Merge Without Review` 拒绝，未合入。PR #34/#35 都不得登记为已合入，也未改分支保护或通过其他会话绕过拒绝。
 - 正式 `patchCount` 仍为 **50**，因为 PR #33 不改计数范围内文件。待 PR #34/#35 实际合入后，重新逐文件核算；当前候选增量为 #34 的 2 个上游文件，以及 #35 的 1 个上游文件 + 4 个 Nyala 源文件，合计预测 **57 = 51 + 6**，不是原先的 56。正式计数只在合并后更新。
-- PR #35 的 `4eb0326e2e2` **尚不包含 PR #33 的 SQLite 主线**（祖先检查为 false），已交回原 N-103 子会话同步当前主线并重跑真实 Runtime 测试；结果待回报。PR #34 合入后的组合验证仍需另做。`git merge-tree --write-tree` 预检确认两个候选分支唯一内容冲突是 `nyala/patch-ledger.md`；尚未解决或合并，本轮没有把两个分支的独立 PASS 宣称为组合验收。
+- PR #35 已推送集成 head `8938b6e22c4c324ac725954bab689918f8ec6d3d`：两个父提交为原审核修复 `4eb0326e2e22d620029d70db8044e2e5e8c8ce8f` 与 N-104 主线 `195475b84b38f47fb2129a5b02d624141a873e38`。祖先检查与差异核对确认 SQLite 原样带入、Supervisor 源码和既有修复未变。原子会话报告 Windows Runtime 重建、client build、67 项定向测试与 diff 检查 PASS；本会话另核对新 head 的 CI run `41307225775`：四项必需检查 PASS，日志含 `NYALA_RUNTIME_REQUIRED=1`、真实 Runtime/staging 套件和 `67 passing`。这补齐的是 N-103 与 N-104 的集成，不是与 PR #34 的组合验证；后者仍 **NOT RUN**。此前两个候选分支的 ledger 冲突尚待 PR #34 合入后解决。PR 描述更新被子会话客户端权限策略拒绝，未绕过；当前以 Git 提交、CI 与本文记录为准。
 - 本机证据文件已核对：PR #34 的 `electron-20261101-review-60af7d7-rerun/result.json` 为 17/17 PASS，记录 Node `24.16.0` / npm `11.13.0`，与该 PR 描述中的 `24.18.0` / `11.16.0` 不一致；不将它视为指定 Node 版本的原生验收。PR #35 的 `nyala-runtime-smoke-4/result.json` 为 5/5 PASS，记录 `ebbf44da9c2` 加审核修复的提交前工作树与 Node `24.16.0`，不是新 head 上的组合验收。
 - 本次本地收尾仅修正状态文档；`git diff --check`、`nyala:validate-product`、`nyala:validate-rpc`、8 份文档的 UTF-8 与相对链接检查 **PASS**。本机 Node `24.16.0` / npm `11.13.0`，不等于 `.nvmrc` 的 `24.18.0`；没有把这次纯文档验证算作指定版本的编译或原生证据。未重跑 Electron 冒烟或全量编译。`Full test suites (manual)` 仍为 SKIPPED，不代表全量测试 PASS；Linux/macOS 原生 smoke、打包、Renderer Bridge 与查询执行仍未验收。
 

@@ -22,7 +22,7 @@
 | 阶段 | 当前状态 | 是否阻塞下一阶段 |
 |---|---|---|
 | P0 | 基本完成：1.142.0 macOS Electron Smoke 通过；1.143.0 Windows 原生冒烟 PASS 12/12（PR #24），Reload/Dispose 单元测试已合入（PR #23）；主线 17 步冒烟的两条出站路径修复在 Ready PR #34（`a334073f505`，Windows 17/17 PASS），尚未合入；Linux/macOS 未用 1.143.0 复跑 | 核心 smoke 闭环必须补，不能当发行通过 |
-| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Runtime N-101/N-102（PR #25）与 N-104 SQLite Profile/Session（PR #33，`195475b84b3`）已合入；N-103 在 Draft PR #35（`4eb0326e2e2`，Windows 5/5、四项必需 CI PASS）待合入；N-105–N-110 未交付 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
+| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Runtime N-101/N-102（PR #25）与 N-104 SQLite Profile/Session（PR #33，`195475b84b3`）已合入；N-103 在 Draft PR #35（`8938b6e22c4` 已集成 N-104，四项必需 CI PASS；Windows 5/5 为此前分支证据）待合入；N-105–N-110 未交付 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
 | P2–P4、P6 | 未开始 | 按各自 Exit |
 | P5 | 仅有 Agent 设计研究（[27](27-agent-platform.md)–[30](30-agent-security-evaluation.md)），无实现 | **不得阻塞 P1–P4** |
 | EX | 不纳入主线 | 独立 ADR，受控时间盒 |
