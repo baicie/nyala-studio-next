@@ -7,10 +7,12 @@ import * as cp from 'child_process';
 import { promises as fs } from 'fs';
 import { DeferredPromise, raceTimeout } from '../../../base/common/async.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
+import { toErrorMessage } from '../../../base/common/errorMessage.js';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../base/common/lifecycle.js';
-import { dirname, isAbsolute, join } from '../../../base/common/path.js';
+import { basename, dirname, isAbsolute, join } from '../../../base/common/path.js';
 import { IProcessEnvironment } from '../../../base/common/platform.js';
+import { generateUuid } from '../../../base/common/uuid.js';
 import { ILogger } from '../../log/common/log.js';
 import { encodeNyalaFrame, NYALA_FRAME_MAX_BYTES, NYALA_PRE_HELLO_FRAME_MAX_BYTES, NyalaFrameDecoder, NyalaFrameError, NyalaRuntimeClientErrors, NyalaRuntimeError, NyalaRuntimeMessage, parseNyalaRuntimeMessage } from '../common/nyalaRuntimeProtocol.js';
 
@@ -54,6 +56,48 @@ async function fileModifiedTime(path: string): Promise<number | undefined> {
 	} catch {
 		return undefined;
 	}
+}
+
+async function fileSize(path: string): Promise<number | undefined> {
+	try {
+		const stat = await fs.stat(path);
+		return stat.isFile() ? stat.size : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Copies a development build of the runtime into `stagingDir` and returns the path of the copy.
+ * Windows does not let a running executable be removed or replaced, so running
+ * `rust/target/.../nyala-runtime.exe` itself would make `cargo build` fail while a window is open.
+ * Each build gets its own folder, named after its size and modification time, and is copied once.
+ * Folders of other builds are removed when no process runs from them any more: a running copy
+ * cannot be deleted on Windows, so its folder goes on a later call. Calls must not overlap.
+ */
+export async function stageNyalaRuntimeExecutable(source: string, stagingDir: string): Promise<string> {
+	const stat = await fs.stat(source);
+	const build = `${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}`;
+	const target = join(stagingDir, build, basename(source));
+	if (await fileSize(target) !== stat.size) {
+		await fs.mkdir(dirname(target), { recursive: true });
+		// Copy under another name and rename, so that the target is never a half-written file,
+		// even after a crash during the copy.
+		const partial = `${target}.${generateUuid()}.partial`;
+		try {
+			await fs.copyFile(source, partial);
+			await fs.rename(partial, target);
+		} catch (error) {
+			await fs.rm(partial, { force: true });
+			throw error;
+		}
+	}
+	for (const entry of await fs.readdir(stagingDir)) {
+		if (entry !== build) {
+			await fs.rm(join(stagingDir, entry), { recursive: true, force: true }).catch(() => undefined);
+		}
+	}
+	return target;
 }
 
 /**
@@ -125,7 +169,8 @@ export class NyalaRuntimeProcess extends Disposable {
 	private readonly _onDidNotify = this._register(new Emitter<INyalaRuntimeNotification>());
 	readonly onDidNotify = this._onDidNotify.event;
 
-	private readonly child: cp.ChildProcessWithoutNullStreams;
+	/** `undefined` when `spawn` threw; the exit is then reported asynchronously. */
+	private readonly child: cp.ChildProcessWithoutNullStreams | undefined;
 	private readonly decoder = new NyalaFrameDecoder(NYALA_FRAME_MAX_BYTES);
 	private outgoingFrameMaxBytes = NYALA_PRE_HELLO_FRAME_MAX_BYTES;
 	private readonly pending = new Map<string, DeferredPromise<object>>();
@@ -142,35 +187,52 @@ export class NyalaRuntimeProcess extends Disposable {
 	) {
 		super();
 
-		this.child = cp.spawn(launch.executable, launch.args, {
-			cwd: dirname(launch.executable),
-			env: launch.env,
-			stdio: 'pipe',
-			windowsHide: true,
-		});
-		this.child.stderr.setEncoding('utf8');
+		let child: cp.ChildProcessWithoutNullStreams | undefined;
+		try {
+			child = cp.spawn(launch.executable, launch.args, {
+				cwd: dirname(launch.executable),
+				env: launch.env,
+				stdio: 'pipe',
+				windowsHide: true,
+			});
+		} catch (error) {
+			// Node reports only some spawn failures (ENOENT, EACCES, EAGAIN, EMFILE, ENFILE) as an
+			// `error` event and throws the others, e.g. EFTYPE for a file that is not a Windows
+			// executable or ENOEXEC / ETXTBSY on Linux. Both end the same way: an exit with
+			// `spawnError`, reported once the owner had a chance to subscribe to onDidExit.
+			const reason = typeof error?.code === 'string' ? error.code : toErrorMessage(error);
+			this.logger.error(`${this.label}: could not start the runtime (${reason})`);
+			queueMicrotask(() => this.finalize({ code: null, signal: null, spawnError: reason }));
+		}
+		this.child = child;
 
-		// The listeners stay attached for the life of the child object: an `error` event without
-		// a listener would be thrown in the main process.
-		this.child.stdout.on('data', (chunk: Buffer) => this.onStdout(VSBuffer.wrap(chunk)));
-		this.child.stderr.on('data', (chunk: string) => this.onStderr(chunk));
-		this.child.stdin.on('error', error => this.logger.trace(`${this.label}: stdin closed (${error.message})`));
-		this.child.on('error', error => this.onError(error));
-		this.child.on('close', (code, signal) => {
-			this.flushStderr();
-			this.finalize({ code, signal });
-		});
+		if (child) {
+			child.stderr.setEncoding('utf8');
+
+			// The listeners stay attached for the life of the child object: an `error` event without
+			// a listener would be thrown in the main process.
+			child.stdout.on('data', (chunk: Buffer) => this.onStdout(VSBuffer.wrap(chunk)));
+			child.stderr.on('data', (chunk: string) => this.onStderr(chunk));
+			child.stdout.on('error', error => this.logger.warn(`${this.label}: stdout error (${error.message})`));
+			child.stderr.on('error', error => this.logger.warn(`${this.label}: stderr error (${error.message})`));
+			child.stdin.on('error', error => this.logger.trace(`${this.label}: stdin closed (${error.message})`));
+			child.on('error', error => this.onError(error));
+			child.on('close', (code, signal) => {
+				this.flushStderr();
+				this.finalize({ code, signal });
+			});
+		}
 
 		this._register(toDisposable(() => {
 			if (!this._exit) {
-				this.child.kill('SIGKILL');
+				this.child?.kill('SIGKILL');
 				this.finalize({ code: null, signal: 'SIGKILL' });
 			}
 		}));
 	}
 
 	get pid(): number | undefined {
-		return this.child.pid;
+		return this.child?.pid;
 	}
 
 	get exit(): INyalaRuntimeExit | undefined {
@@ -193,7 +255,7 @@ export class NyalaRuntimeProcess extends Disposable {
 	}
 
 	request(method: string, params: object): Promise<object> {
-		if (this._exit || this._brokenReason || this._store.isDisposed) {
+		if (!this.child || this._exit || this._brokenReason || this._store.isDisposed) {
 			return Promise.reject(nyalaRuntimeLostError('the runtime process is gone'));
 		}
 		const id = `rq_${++this.lastRequestId}`;
@@ -204,7 +266,9 @@ export class NyalaRuntimeProcess extends Disposable {
 			if (error instanceof NyalaFrameError) {
 				return Promise.reject(NyalaRuntimeError.fromKind(NyalaRuntimeClientErrors.resourceLimit, 'The request exceeds the negotiated frame limit', `${error.length} bytes, limit ${error.maxBytes} bytes`));
 			}
-			throw error;
+			// For example params that JSON cannot represent (a cycle, a bigint). Callers get a
+			// rejection like for every other failure, never a synchronous throw.
+			return Promise.reject(error);
 		}
 		const response = new DeferredPromise<object>();
 		this.pending.set(id, response);
@@ -219,7 +283,7 @@ export class NyalaRuntimeProcess extends Disposable {
 	 */
 	async stop(timeoutMs: number, killTimeoutMs: number): Promise<INyalaRuntimeStopResult> {
 		if (!this._exit) {
-			this.child.stdin.end();
+			this.child?.stdin.end();
 		}
 		const exit = await raceTimeout(this.exited.p, timeoutMs);
 		if (exit) {
@@ -236,7 +300,7 @@ export class NyalaRuntimeProcess extends Disposable {
 
 	kill(): void {
 		if (!this._exit) {
-			this.child.kill('SIGKILL');
+			this.child?.kill('SIGKILL');
 		}
 	}
 
@@ -328,7 +392,7 @@ export class NyalaRuntimeProcess extends Disposable {
 
 	private onError(error: NodeJS.ErrnoException): void {
 		const reason = error.code ?? error.message;
-		if (this.child.pid === undefined) {
+		if (this.child?.pid === undefined) {
 			this.logger.error(`${this.label}: could not start the runtime (${reason})`);
 			this.finalize({ code: null, signal: null, spawnError: reason });
 		} else {

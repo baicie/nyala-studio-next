@@ -5,11 +5,13 @@
 
 import assert from 'assert';
 import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
 import { FileAccess } from '../../../../base/common/network.js';
-import { dirname, join } from '../../../../base/common/path.js';
+import { basename, dirname, join } from '../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { getRandomTestPath } from '../../../../base/test/node/testUtils.js';
 import { INyalaRuntimeRestartedParams, isNyalaRuntimeHealthResult, NyalaRuntimeError } from '../../common/nyalaRuntimeProtocol.js';
-import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, NyalaRuntimeProcess } from '../../node/nyalaRuntimeProcess.js';
+import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, NyalaRuntimeProcess, stageNyalaRuntimeExecutable } from '../../node/nyalaRuntimeProcess.js';
 import { NyalaRuntimeSupervisor } from '../../node/nyalaRuntimeSupervisor.js';
 import { isRunning, readyPid, TestRuntimeLogger, untilState } from './nyalaRuntimeTestUtils.js';
 
@@ -56,11 +58,11 @@ suite('Nyala runtime supervisor with the real runtime', function () {
 		logger = store.add(new TestRuntimeLogger());
 	});
 
-	function createSupervisor(): NyalaRuntimeSupervisor {
+	function createSupervisor(runtime = launch): NyalaRuntimeSupervisor {
 		return store.add(new NyalaRuntimeSupervisor({
 			label: 'real',
 			clientBuild: '0.0.1-test',
-			resolveLaunch: async () => launch,
+			resolveLaunch: async () => runtime,
 			policy: { initialRestartDelayMs: 20, maxRestartDelayMs: 40, maxRestarts: 2 },
 		}, logger));
 	}
@@ -117,6 +119,47 @@ suite('Nyala runtime supervisor with the real runtime', function () {
 			restarts: [{ reason: 'unexpected-exit', pendingExecutions: 'none', previousBuild: version }],
 			running: [false, false],
 		});
+	});
+
+	test('a staged copy keeps running while the build it came from is replaced', async () => {
+		// `cargo build` removes rust/target/<profile>/nyala-runtime[.exe] and writes it again. Windows
+		// refuses that while the file runs, so the main process runs a staged copy. The test works on
+		// a copy of the build and leaves rust/target alone.
+		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeStagedBuild');
+		const source = join(dir, 'target', basename(launch.executable));
+		let supervisor: NyalaRuntimeSupervisor | undefined;
+		try {
+			await fs.mkdir(dirname(source), { recursive: true });
+			await fs.copyFile(launch.executable, source);
+			const staged = await stageNyalaRuntimeExecutable(source, join(dir, 'staging'));
+			supervisor = createSupervisor({ ...launch, executable: staged });
+			await supervisor.start();
+
+			// What `cargo build` does with the original; then mark it as a new build.
+			await fs.rm(source);
+			await fs.copyFile(launch.executable, source);
+			await fs.utimes(source, new Date(Date.UTC(2001, 0, 1)), new Date(Date.UTC(2001, 0, 1)));
+			// The reason for staging: on Windows the running copy itself cannot be removed.
+			const stagedLocked = process.platform === 'win32' ? await fs.rm(staged).then(() => false, () => true) : undefined;
+			const health = await supervisor.request('runtime.health', {});
+			await supervisor.stop();
+			const restaged = await stageNyalaRuntimeExecutable(source, join(dir, 'staging'));
+
+			assert.deepStrictEqual({
+				health: isNyalaRuntimeHealthResult(health) ? health.status : health,
+				stagedLocked,
+				newFolder: dirname(restaged) !== dirname(staged),
+				folders: await fs.readdir(join(dir, 'staging')),
+			}, {
+				health: 'ok',
+				stagedLocked: process.platform === 'win32' ? true : undefined,
+				newFolder: true,
+				folders: [basename(dirname(restaged))],
+			});
+		} finally {
+			await supervisor?.stop();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 
 	test('a hello with another protocol major is rejected and the runtime exits with code 2', async () => {

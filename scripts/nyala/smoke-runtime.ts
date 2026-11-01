@@ -7,10 +7,12 @@
 // Launches the dev build through scripts/code.bat (scripts/code.sh elsewhere) with an isolated user
 // data, extensions and logs folder and checks, from the main process log and the process table:
 //
-// 1. the window gets a nyala-runtime child of the Electron main process that completed the handshake;
-// 2. a runtime killed from outside is restarted as a new generation;
-// 3. Reload Window replaces the runtime with a new generation and the old process exits by itself;
-// 4. after the application quits, no nyala-runtime process it started is left.
+// 1. the window gets a nyala-runtime child of the Electron main process that completed the handshake,
+//    running from a staged copy in the user data folder;
+// 2. the binaries under rust/target can be opened for writing (as `cargo build` does) while it runs;
+// 3. a runtime killed from outside is restarted as a new generation;
+// 4. Reload Window replaces the runtime with a new generation and the old process exits by itself;
+// 5. after the application quits, no nyala-runtime process it started is left.
 //
 // Requires `npm install`, `npm run compile`, a downloaded Electron (`npm run electron`) and
 // `cargo build` in rust/.
@@ -18,7 +20,7 @@
 // Usage: node --experimental-strip-types scripts/nyala/smoke-runtime.ts [--evidence <dir>] [--port <n>]
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { release, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright-core';
@@ -264,7 +266,9 @@ async function main(): Promise<void> {
 	check(!(await isPortOpen()), `port ${port} is already serving CDP; refusing to drive another application`);
 	const binaries = ['debug', 'release'].map(profile => join(root, 'rust', 'target', profile, RUNTIME_NAME)).filter(existsSync);
 	check(binaries.length > 0, `no ${RUNTIME_NAME} under rust/target; run 'cargo build' in rust/`);
-	const ownBinaries = new Set(binaries.map(path => path.toLowerCase()));
+	// NyalaRuntimeMainHandler runs a copy staged here (see stageNyalaRuntimeExecutable).
+	const stagingDir = join(evidenceDir, 'user-data', 'nyala-runtime-staging');
+	const isOwnBinary = (path: string | undefined) => !!path && path.toLowerCase().startsWith(stagingDir.toLowerCase());
 	const before = new Set(runtimeProcesses().map(entry => entry.pid));
 	const seen: number[] = [];
 
@@ -282,7 +286,17 @@ async function main(): Promise<void> {
 			const parent = processName(entry.parentPid);
 			check(/nyala studio|electron/i.test(parent), `parent of pid ${first.pid} is '${parent}' (pid ${entry.parentPid}), not the Electron main process`);
 			check(first.protocol === '1.0', `protocol ${first.protocol}`);
+			check(isOwnBinary(entry.path), `pid ${first.pid} runs ${entry.path}, not a copy under ${stagingDir}`);
 			return `generation 1, pid ${first.pid} (${entry.path}), parent '${parent}' pid ${entry.parentPid}, build ${first.build}, protocol ${first.protocol}`;
+		});
+
+		await step('rust/target binaries stay writable while the runtime runs', async () => {
+			check(isRunning(first.pid), `pid ${first.pid} is not running`);
+			for (const binary of binaries) {
+				// Windows refuses this (EBUSY) for the image of a running process. Nothing is written.
+				closeSync(openSync(binary, 'r+'));
+			}
+			return `opened ${binaries.join(', ')} for writing while pid ${first.pid} ran`;
 		});
 
 		await step('killed runtime is restarted as a new generation', async () => {
@@ -315,7 +329,7 @@ async function main(): Promise<void> {
 			const exited = await waitForExit(launcher, 60_000);
 			check(exited, 'the application did not exit within 60 s');
 			const leftovers = await until('runtime processes to exit', () => {
-				const ours = runtimeProcesses().filter(entry => seen.includes(entry.pid) || (!before.has(entry.pid) && ownBinaries.has(entry.path?.toLowerCase() ?? '')));
+				const ours = runtimeProcesses().filter(entry => seen.includes(entry.pid) || (!before.has(entry.pid) && isOwnBinary(entry.path)));
 				return ours.length === 0 ? [] as IProcessEntry[] : false;
 			}, 15_000).catch(() => runtimeProcesses().filter(entry => seen.includes(entry.pid)));
 			check(leftovers.length === 0, `left behind: ${JSON.stringify(leftovers)}`);

@@ -30,6 +30,7 @@ src/vs/platform/nyalaRuntime/
 ### 2. 进程所在位置：Electron Main 直接 `child_process.spawn`
 
 - 直接 spawn 可执行文件，不经 shell，`windowsHide: true`，`cwd` 为可执行文件所在目录。
+- spawn 失败有两种形式：Node 对 `ENOENT`、`EACCES` 等发出 `error` 事件，对另一些（Windows 上非可执行文件的 `EFTYPE`、Linux 上的 `ENOEXEC`/`ETXTBSY`、路径含 NUL 的 `ERR_INVALID_ARG_VALUE`）在 `cp.spawn` 里同步抛出。`NyalaRuntimeProcess` 捕获同步异常，在下一个 microtask 以带 `spawnError` 的退出结束，两种形式走同一条路径：Supervisor 进入 `failed`，不重启。`launch()` 外层另有兜底：任何意外异常都清理当前进程并进入 `failed`，不会停在 `starting` 或 `restarting`。
 - stdout 只交给帧解码器，从不写日志；出现零长度帧、超限帧或非 v1 响应/通知时，日志只记字节数，然后 kill 进程（字节流无法重新同步），按崩溃处理并以 `stream-error` 重启。
 - stderr 按行写入独立日志 `nyalaRuntime`（Output 中的 “Nyala Runtime”），单行上限 2000 字符。Runtime 自己保证 stderr 不含 payload（ADR 0002）。
 - 子进程只继承白名单环境变量（`SystemRoot`、`windir`、`TEMP`、`TMP`、`TMPDIR`、`LANG`、`LC_ALL`、`LC_CTYPE`、`RUST_BACKTRACE`），用户 shell 里的 token 等不会进入 sidecar。
@@ -93,6 +94,16 @@ v1 的 Session 没有窗口或客户端归属字段。[14-storage](../nyala-kick
 
 - 开发构建（`!isBuilt`）：`NYALA_RUNTIME_PATH` 指定绝对路径且文件存在时使用它；设置了但无效时报“找不到”，不悄悄回退。未设置时取 `<appRoot>/rust/target/{debug,release}/nyala-runtime[.exe]` 中修改时间较新的一个。
 - 打包构建：返回未找到，Supervisor 进入 `failed`（warning 级日志），IDE 照常启动。随安装包分发 Runtime 不在 N-103 范围内（后续项 1）。
+- “开发构建”只由 `isBuilt` 判断，即环境变量 `VSCODE_DEV` 是否设置。同时设置 `VSCODE_DEV` 与 `NYALA_RUNTIME_PATH`，打包应用也会启动任意指定的可执行文件。风险低：能改应用环境变量的人本来就能在该用户下运行代码；如果以后要更严，可在打包构建里完全忽略 `NYALA_RUNTIME_PATH`（与打包分发一起做，后续项 1）。
+
+**开发态复制后再启动（staging）。** Windows 不允许删除或覆盖正在运行的可执行文件。直接运行 `rust/target/debug/nyala-runtime.exe` 时，IDE 开着 `cargo build` 就会失败（已复现：打开文件写入报 `EBUSY`，`cargo build` 报 `failed to remove file … (os error 5)`；Runtime 退出后同一构建 0.54 s 成功）。因此 `NyalaRuntimeMainHandler` 不直接运行找到的文件（`rust/target` 或 `NYALA_RUNTIME_PATH`），而是先用 `stageNyalaRuntimeExecutable` 复制到 `<userData>/nyala-runtime-staging/<大小>-<修改时间>/`，再运行副本：
+
+- 每个构建一个目录，名字取文件大小与修改时间（十六进制）；同一构建只复制一次，各窗口共用。
+- 先复制为 `*.partial` 再重命名，目标文件不会是写了一半的文件。多个窗口的 staging 由 Handler 内的 `Sequencer` 串行执行。
+- 其他构建的目录在每次 staging 时尝试删除；仍有进程在运行的副本在 Windows 上删不掉，留到之后的调用再删。
+- 复制失败时记 warning 并原地运行找到的文件（退回到会阻塞重新构建的旧行为），不让 Runtime 起不来。
+- 新构建只对之后启动的 generation 生效：已运行的进程不会被替换，窗口 Reload 或崩溃重启后才用上新构建。
+- 启动耗时：Windows 第一次运行一个新的可执行文件时会先扫描它。实测 558 KB 调试构建，新副本首次启动到第一行 stderr 约 2.9 s，同一副本之后约 35 ms，复制本身 1–3 ms。原地运行 `cargo build` 的新产物时应当也有这次扫描（未单独测），staging 的副本每个构建只复制一次，所以每个构建最多一次；10 s 的握手超时足够。
 
 ### 9. 与未来 Renderer Bridge 的边界
 
@@ -116,7 +127,8 @@ v1 的 Session 没有窗口或客户端归属字段。[14-storage](../nyala-kick
 
 - 上游跟踪文件只改 `src/vs/code/electron-main/app.ts`：一行 import、一行 `createInstance`（及一行注释）。其余均为 Nyala 新文件。已在 [`nyala/patch-ledger.md`](../../nyala/patch-ledger.md) 登记；按现行口径合并后 `patchCount` 由 50 变为 55（`app.ts` +1，`src/vs/platform/nyalaRuntime/` 下 4 个非测试源文件 +4），`nyala/upstream-base.json` 在合并后更新。
 - CI：`Unit tests (node)` job 在跑单测前 `cargo build --locked -p nyala-runtime`，并设置 `NYALA_RUNTIME_REQUIRED=1`，让真实进程集成测试在没有产物时失败而不是跳过。4 个必需 job 的名字不变。
-- Windows 原生冒烟脚本 `scripts/nyala/smoke-runtime.ts` 检查：握手成功、外部 kill 后换代重启、Reload 换代且旧进程自行退出、退出应用后没有残留 `nyala-runtime` 进程。
+- Windows 原生冒烟脚本 `scripts/nyala/smoke-runtime.ts` 检查：握手成功且运行的是 staging 副本、Runtime 运行时 `rust/target` 下的二进制可以打开写入、外部 kill 后换代重启、Reload 换代且旧进程自行退出、退出应用后没有残留 `nyala-runtime` 进程。
+- 开发态每个新构建在 `<userData>/nyala-runtime-staging/` 下占一份副本（调试构建约 0.5 MB），旧副本在没有进程使用后删除。
 
 ## 后续项
 
@@ -124,3 +136,9 @@ v1 的 Session 没有窗口或客户端归属字段。[14-storage](../nyala-kick
 2. **合同澄清**：README 未写明 `runtime.restarted` 由谁发出；本实现由客户端 Supervisor 生成，建议在 README §4 写明（v1 冻结，按勘误或 minor 处理）。
 3. **按需启动**：Renderer Bridge 落地后，改为窗口第一次使用 SQL 时再启动 Runtime。
 4. **Renderer Bridge**：按 §9 的边界实现，并补 Reload/关闭时句柄失效的 UI 测试。
+5. **请求层的限制（Renderer Bridge 或第一个调用方出现之前必须补上）**：现在只有握手调用 `request()`，以下都还没有：
+   - `request()` 没有取消，也没有超时（握手的超时在 Supervisor 里单独实现）；
+   - 在途请求数量没有上限；
+   - 写 stdin 没有背压处理，`write()` 返回 `false` 时不等待 `drain`；
+   - 没有 method 白名单，`request()` 接受任意 method（§9 要求 Bridge 只放行白名单）。
+6. **Windows 上的 kill 只结束单个进程**：`SIGKILL` 在 Windows 上是对该 pid 的 `TerminateProcess`，不结束它的子进程。v1 Runtime 不创建子进程，所以现在没有孤儿；驱动（如外部数据库客户端）开始派生子进程时需要重新评估（Job Object 或进程树 kill）。

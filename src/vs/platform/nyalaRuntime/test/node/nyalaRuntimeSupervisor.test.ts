@@ -8,11 +8,11 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { timeout } from '../../../../base/common/async.js';
 import { FileAccess } from '../../../../base/common/network.js';
-import { join } from '../../../../base/common/path.js';
+import { dirname, join } from '../../../../base/common/path.js';
 import { getRandomTestPath } from '../../../../base/test/node/testUtils.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { INyalaRuntimeRestartedParams } from '../../common/nyalaRuntimeProtocol.js';
-import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, INyalaRuntimeNotification, NYALA_RUNTIME_PATH_ENV } from '../../node/nyalaRuntimeProcess.js';
+import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, INyalaRuntimeNotification, NYALA_RUNTIME_PATH_ENV, stageNyalaRuntimeExecutable } from '../../node/nyalaRuntimeProcess.js';
 import { INyalaRuntimeSupervisorPolicy, NyalaRuntimeSupervisor, NyalaRuntimeWindowSupervisors } from '../../node/nyalaRuntimeSupervisor.js';
 import { isRunning, readyPid, settledKind, TestRuntimeLogger, untilState } from './nyalaRuntimeTestUtils.js';
 
@@ -233,6 +233,75 @@ suite('Nyala runtime supervisor', function () {
 		});
 	});
 
+	test('a spawn that throws synchronously fails the supervisor on start, restart and after a crash', async () => {
+		// Node throws instead of emitting `error` for some spawn failures, e.g. EFTYPE for a file that
+		// is not a Windows executable or ENOEXEC on Linux. A NUL in the path throws
+		// ERR_INVALID_ARG_VALUE on every platform.
+		const unspawnable: INyalaRuntimeLaunch = { executable: join(tmpdir(), 'nyala\0runtime'), args: [], env: {} };
+
+		const supervisor = createSupervisor(unspawnable);
+		const states = recordStates(supervisor);
+		await supervisor.start();
+		const failed = await untilState(supervisor, state => state.type === 'failed', 'failed after start');
+		await supervisor.restart('window-reload');
+		await untilState(supervisor, state => state.type === 'failed' && supervisor.generation === 2, 'failed after restart');
+
+		// A crash schedules a restart whose spawn throws; the supervisor must not stay in restarting.
+		const launches = [fakeLaunch('ok')];
+		const crashed = store.add(new NyalaRuntimeSupervisor({ label: 'crash', clientBuild: '0.0.1-test', resolveLaunch: async () => launches.shift() ?? unspawnable, policy: TEST_POLICY }, logger));
+		const crashedStates = recordStates(crashed);
+		await crashed.start();
+		await Promise.allSettled([crashed.request('fake.exit', { code: 1 })]);
+		await untilState(crashed, state => state.type === 'failed', 'failed after a crash');
+
+		// A zero-byte file: EFTYPE, thrown synchronously, on Windows; EACCES, reported as an error
+		// event, elsewhere (the file is not executable).
+		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeEmpty');
+		await fs.mkdir(dir, { recursive: true });
+		try {
+			const empty = join(dir, process.platform === 'win32' ? 'nyala-runtime.exe' : 'nyala-runtime');
+			await fs.writeFile(empty, '');
+			const emptySupervisor = createSupervisor({ executable: empty, args: [], env: {} });
+			await emptySupervisor.start();
+			const emptyFailed = await untilState(emptySupervisor, state => state.type === 'failed', 'failed for a zero-byte file');
+
+			assert.deepStrictEqual({
+				states,
+				reason: failed.type === 'failed' ? failed.reason : undefined,
+				crashedStates,
+				empty: emptyFailed.type === 'failed' && emptyFailed.reason.startsWith('the runtime could not be started'),
+			}, {
+				states: ['starting', 'failed', 'starting', 'failed'],
+				reason: 'the runtime could not be started (ERR_INVALID_ARG_VALUE)',
+				crashedStates: ['starting', 'ready', 'restarting 20', 'starting', 'failed'],
+				empty: true,
+			});
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('a request whose params JSON cannot represent is rejected, not thrown', async () => {
+		const supervisor = createSupervisor(fakeLaunch('ok'));
+		await supervisor.start();
+		let thrown: unknown;
+		let request: Promise<object> | undefined;
+		try {
+			request = supervisor.request('fake.echo', { value: 1n });
+		} catch (error) {
+			thrown = error;
+		}
+		const settled = request ? (await Promise.allSettled([request]))[0] : undefined;
+		const echo = await supervisor.request('fake.echo', { text: 'still serving' });
+		await supervisor.stop();
+
+		assert.deepStrictEqual({
+			thrown,
+			rejected: settled?.status === 'rejected' && settled.reason instanceof TypeError,
+			echo,
+		}, { thrown: undefined, rejected: true, echo: { text: 'still serving' } });
+	});
+
 	test('one runtime per window: reload replaces it, close and shutdown stop it', async () => {
 		const restarts: INyalaRuntimeRestartedParams[] = [];
 		const windows = store.add(new NyalaRuntimeWindowSupervisors(windowId => {
@@ -312,6 +381,52 @@ suite('Nyala runtime executable', () => {
 			});
 		} finally {
 			await fs.rm(appRoot, { recursive: true, force: true });
+		}
+	});
+
+	test('staging copies each build once into its own folder and removes the folders of other builds', async () => {
+		const dir = getRandomTestPath(tmpdir(), 'vsctests', 'nyalaRuntimeStaging');
+		const name = process.platform === 'win32' ? 'nyala-runtime.exe' : 'nyala-runtime';
+		const source = join(dir, 'target', name);
+		const stagingDir = join(dir, 'staging');
+		const build = async (content: string, year: number) => {
+			await fs.writeFile(source, content);
+			await fs.utimes(source, new Date(Date.UTC(year, 0, 1)), new Date(Date.UTC(year, 0, 1)));
+		};
+		try {
+			await fs.mkdir(dirname(source), { recursive: true });
+			await build('build 1', 2000);
+			const first = await stageNyalaRuntimeExecutable(source, stagingDir);
+			const firstContent = await fs.readFile(first, 'utf8');
+			// Same size, other content: a second call for the same build must not copy again.
+			await fs.writeFile(first, 'BUILD 1');
+			const reused = await stageNyalaRuntimeExecutable(source, stagingDir);
+			const reusedContent = await fs.readFile(reused, 'utf8');
+			await build('build 2', 2001);
+			const second = await stageNyalaRuntimeExecutable(source, stagingDir);
+
+			assert.deepStrictEqual({
+				first,
+				firstContent,
+				reused: reused === first,
+				reusedContent,
+				second,
+				secondContent: await fs.readFile(second, 'utf8'),
+				folders: await fs.readdir(stagingDir),
+				files: await fs.readdir(dirname(second)),
+			}, {
+				// Folder names are the size and the modification time in hex.
+				first: join(stagingDir, '7-dc6acfac00', name),
+				firstContent: 'build 1',
+				reused: true,
+				reusedContent: 'BUILD 1',
+				second: join(stagingDir, '7-e3c7a73400', name),
+				secondContent: 'build 2',
+				folders: ['7-e3c7a73400'],
+				files: [name],
+			});
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
 

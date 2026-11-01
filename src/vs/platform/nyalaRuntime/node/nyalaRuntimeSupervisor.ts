@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { disposableTimeout, raceTimeout } from '../../../base/common/async.js';
+import { toErrorMessage } from '../../../base/common/errorMessage.js';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../base/common/lifecycle.js';
 import { ILogger } from '../../log/common/log.js';
@@ -216,6 +217,21 @@ export class NyalaRuntimeSupervisor extends Disposable {
 	}
 
 	private async launch(epoch: number): Promise<void> {
+		try {
+			await this.doLaunch(epoch);
+		} catch (error) {
+			// Nothing in doLaunch is expected to throw. If something does, end in the failed state,
+			// which restart() and a window reload can leave, instead of staying in starting or
+			// restarting for good.
+			if (epoch === this.epoch && !this.stopped) {
+				this.process = undefined;
+				this.connection.clear(); // kills a process that may already have been started
+				this.fail(`launching the runtime failed (${toErrorMessage(error)})`);
+			}
+		}
+	}
+
+	private async doLaunch(epoch: number): Promise<void> {
 		const launch = await this.options.resolveLaunch();
 		if (epoch !== this.epoch) {
 			return;

@@ -3,7 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { Sequencer } from '../../../base/common/async.js';
+import { toErrorMessage } from '../../../base/common/errorMessage.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
+import { join } from '../../../base/common/path.js';
 import { localize } from '../../../nls.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { ILifecycleMainService } from '../../lifecycle/electron-main/lifecycleMainService.js';
@@ -12,7 +15,7 @@ import { ILoggerMainService } from '../../log/electron-main/loggerService.js';
 import { IProductService } from '../../product/common/productService.js';
 import { LoadReason } from '../../window/electron-main/window.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
-import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch } from '../node/nyalaRuntimeProcess.js';
+import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, stageNyalaRuntimeExecutable } from '../node/nyalaRuntimeProcess.js';
 import { NyalaRuntimeSupervisor, NyalaRuntimeWindowSupervisors } from '../node/nyalaRuntimeSupervisor.js';
 
 /**
@@ -31,6 +34,8 @@ export class NyalaRuntimeMainHandler extends Disposable {
 
 	private readonly logger: ILogger;
 	private readonly supervisors: NyalaRuntimeWindowSupervisors;
+	/** Staging copies the executable and removes copies of older builds; windows take turns. */
+	private readonly staging = new Sequencer();
 
 	constructor(
 		@ILifecycleMainService lifecycleMainService: ILifecycleMainService,
@@ -63,7 +68,19 @@ export class NyalaRuntimeMainHandler extends Disposable {
 	}
 
 	private async resolveLaunch(): Promise<INyalaRuntimeLaunch | undefined> {
-		const executable = await findNyalaRuntimeExecutable(this.environmentMainService.appRoot, this.environmentMainService.isBuilt, process.env, process.platform);
-		return executable ? { executable, args: [], env: createNyalaRuntimeEnvironment(process.env) } : undefined;
+		const found = await findNyalaRuntimeExecutable(this.environmentMainService.appRoot, this.environmentMainService.isBuilt, process.env, process.platform);
+		if (!found) {
+			return undefined;
+		}
+		// Run a copy, so that `cargo build` can replace the original while windows are open.
+		const executable = await this.staging.queue(async () => {
+			try {
+				return await stageNyalaRuntimeExecutable(found, join(this.environmentMainService.userDataPath, 'nyala-runtime-staging'));
+			} catch (error) {
+				this.logger.warn(`could not copy ${found} to the staging folder (${toErrorMessage(error)}); running it in place, which blocks rebuilding it on Windows`);
+				return found;
+			}
+		});
+		return { executable, args: [], env: createNyalaRuntimeEnvironment(process.env) };
 	}
 }
