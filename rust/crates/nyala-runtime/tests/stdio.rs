@@ -9,13 +9,17 @@
 mod support;
 
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
-use std::thread;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use nyala_runtime::framing::{encode_frame, DEFAULT_FRAME_MAX_BYTES, PRE_HELLO_FRAME_MAX_BYTES};
+use nyala_runtime::connection::MAX_OPEN_SESSIONS;
+use nyala_runtime::framing::{
+	encode_frame, FrameDecoder, DEFAULT_FRAME_MAX_BYTES, PRE_HELLO_FRAME_MAX_BYTES,
+};
+use nyala_runtime::sqlite::OPEN_BUSY_TIMEOUT;
 use serde_json::{json, Value};
-use support::{conformance_samples, decode_frames};
+use support::{conformance_samples, decode_frames, path_param, ReadOnly, TempDir};
 
 struct Run {
 	code: Option<i32>,
@@ -91,6 +95,107 @@ fn kind(message: &Value) -> &str {
 	message["error"]["data"]["kind"]
 		.as_str()
 		.unwrap_or_else(|| panic!("expected a failure: {message}"))
+}
+
+/// `runtime.hello` that negotiates the `sqlite` feature.
+fn sqlite_hello(id: &str) -> Vec<u8> {
+	request(
+		id,
+		"runtime.hello",
+		json!({"protocolMajor": 1, "protocolMinor": 0, "clientBuild": "test", "supportedFeatures": ["sqlite"]}),
+	)
+}
+
+/// `connection.test` or `connection.open` for `path`.
+fn connect(id: &str, method: &str, path: &str, read_only: bool) -> Vec<u8> {
+	request(
+		id,
+		method,
+		json!({"driver": "sqlite", "path": path, "readOnly": read_only}),
+	)
+}
+
+fn close(id: &str, session_id: &Value, generation: &Value) -> Vec<u8> {
+	request(
+		id,
+		"connection.close",
+		json!({"sessionId": session_id, "sessionGeneration": generation}),
+	)
+}
+
+fn list(id: &str) -> Vec<u8> {
+	request(id, "connection.listSessions", json!({}))
+}
+
+/// A runtime process driven one request at a time, for requests that use ids from earlier
+/// replies.
+struct Live {
+	child: Child,
+	stdin: ChildStdin,
+	stdout: ChildStdout,
+	decoder: FrameDecoder,
+	stderr: JoinHandle<String>,
+}
+
+impl Live {
+	fn start() -> Self {
+		let mut child = spawn();
+		let stdin = child.stdin.take().unwrap();
+		let stdout = child.stdout.take().unwrap();
+		let mut stderr = child.stderr.take().unwrap();
+		// Drained on its own thread so that a full stderr pipe can never block the runtime.
+		let stderr = thread::spawn(move || {
+			let mut text = String::new();
+			stderr.read_to_string(&mut text).expect("stderr is UTF-8");
+			text
+		});
+		Live {
+			child,
+			stdin,
+			stdout,
+			decoder: FrameDecoder::new(DEFAULT_FRAME_MAX_BYTES),
+			stderr,
+		}
+	}
+
+	/// Sends one request frame and waits for its reply.
+	fn call(&mut self, frame: &[u8]) -> Value {
+		self.stdin
+			.write_all(frame)
+			.and_then(|()| self.stdin.flush())
+			.expect("write a request");
+		let mut chunk = [0; 4096];
+		loop {
+			if let Some(payload) = self.decoder.next_frame().expect("replies are valid frames") {
+				return serde_json::from_slice(&payload).expect("replies are JSON");
+			}
+			let read = self.stdout.read(&mut chunk).expect("read a reply");
+			assert!(read > 0, "the runtime closed stdout without replying");
+			self.decoder.push(&chunk[..read]);
+		}
+	}
+
+	/// Closes stdin, checks that nothing but the replies was written to stdout, and returns the
+	/// exit code and stderr.
+	fn finish(self) -> (Option<i32>, String) {
+		let Live {
+			mut child,
+			stdin,
+			mut stdout,
+			mut decoder,
+			stderr,
+		} = self;
+		drop(stdin);
+		let mut rest = Vec::new();
+		stdout
+			.read_to_end(&mut rest)
+			.expect("read stdout to the end");
+		decoder.push(&rest);
+		assert_eq!(decoder.next_frame(), Ok(None), "a reply nobody asked for");
+		assert_eq!(decoder.pending_bytes(), 0, "stdout holds a partial frame");
+		let status = child.wait().expect("wait for nyala-runtime");
+		(status.code(), stderr.join().unwrap())
+	}
 }
 
 #[test]
@@ -274,4 +379,333 @@ fn payload_content_is_never_echoed_to_stdout_or_stderr() {
 		!String::from_utf8_lossy(&run.stdout).contains(MARKER),
 		"replies must not echo request content"
 	);
+}
+
+fn result(message: &Value) -> &Value {
+	message
+		.get("result")
+		.unwrap_or_else(|| panic!("expected a result: {message}"))
+}
+
+#[test]
+fn a_session_is_tested_opened_listed_and_closed_over_the_pipe() {
+	let dir = TempDir::new("session");
+	let database = dir.database("db.sqlite");
+	let path = path_param(&database);
+	let mut runtime = Live::start();
+	assert_eq!(
+		result(&runtime.call(&sqlite_hello("rq_1")))["features"],
+		json!(["sqlite"])
+	);
+
+	let tested = runtime.call(&connect("rq_2", "connection.test", path, true));
+	assert_eq!(result(&tested)["ok"], true);
+	assert!(result(&tested)["serverVersion"].is_string(), "{tested}");
+	assert_eq!(
+		result(&runtime.call(&list("rq_3")))["sessions"],
+		json!([]),
+		"connection.test creates no session"
+	);
+
+	let session = result(&runtime.call(&connect("rq_4", "connection.open", path, true))).clone();
+	assert_eq!(session["sessionGeneration"], 1);
+	assert_eq!(session["capabilities"]["readOnly"], true);
+	let (id, generation) = (&session["sessionId"], &session["sessionGeneration"]);
+	assert_eq!(
+		result(&runtime.call(&list("rq_5")))["sessions"],
+		json!([{"sessionId": id, "sessionGeneration": generation, "driver": "sqlite", "state": "open"}])
+	);
+	assert_eq!(result(&runtime.call(&health("rq_6")))["activeSessions"], 1);
+
+	// Closing is idempotent.
+	for request_id in ["rq_7", "rq_8"] {
+		assert_eq!(
+			result(&runtime.call(&close(request_id, id, generation))),
+			&json!({"closed": true})
+		);
+	}
+	assert_eq!(
+		result(&runtime.call(&list("rq_9")))["sessions"][0]["state"],
+		"closed"
+	);
+	assert_eq!(result(&runtime.call(&health("rq_10")))["activeSessions"], 0);
+
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
+}
+
+#[test]
+fn a_generation_that_does_not_match_is_refused_and_the_sessions_stay_open() {
+	let dir = TempDir::new("generation");
+	let database = dir.database("db.sqlite");
+	let path = path_param(&database);
+	let mut runtime = Live::start();
+	runtime.call(&sqlite_hello("rq_1"));
+	let first = result(&runtime.call(&connect("rq_2", "connection.open", path, true))).clone();
+	let second = result(&runtime.call(&connect("rq_3", "connection.open", path, false))).clone();
+	assert_ne!(first["sessionId"], second["sessionId"]);
+	assert_eq!(second["sessionGeneration"], 2);
+	assert_eq!(second["capabilities"]["readOnly"], false);
+
+	// Each session's id with the other session's generation.
+	for (request_id, id, generation) in [
+		("rq_4", &first["sessionId"], &second["sessionGeneration"]),
+		("rq_5", &second["sessionId"], &first["sessionGeneration"]),
+	] {
+		let refused = runtime.call(&close(request_id, id, generation));
+		assert_eq!(kind(&refused), "INVALID_SESSION", "{refused}");
+		assert_eq!(refused["error"]["data"]["sessionId"], *id);
+	}
+	let listed = runtime.call(&list("rq_6"));
+	let states: Vec<&Value> = result(&listed)["sessions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|session| &session["state"])
+		.collect();
+	assert_eq!(states, [&json!("open"), &json!("open")]);
+
+	// Both sessions are still open when stdin closes; the runtime closes them on its way out.
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
+}
+
+#[test]
+fn session_ids_from_another_runtime_process_are_unknown() {
+	let dir = TempDir::new("processes");
+	let database = dir.database("db.sqlite");
+	let path = path_param(&database);
+	let mut a = Live::start();
+	let mut b = Live::start();
+	let mut sessions = Vec::new();
+	for runtime in [&mut a, &mut b] {
+		runtime.call(&sqlite_hello("rq_1"));
+		sessions
+			.push(result(&runtime.call(&connect("rq_2", "connection.open", path, true))).clone());
+	}
+	let (from_a, from_b) = (&sessions[0], &sessions[1]);
+	assert_ne!(from_a["sessionId"], from_b["sessionId"]);
+	// Both processes number their sessions from 1, so only the id tells them apart.
+	assert_eq!(from_a["sessionGeneration"], from_b["sessionGeneration"]);
+
+	let refused = b.call(&close(
+		"rq_3",
+		&from_a["sessionId"],
+		&from_a["sessionGeneration"],
+	));
+	assert_eq!(kind(&refused), "INVALID_SESSION", "{refused}");
+	assert_eq!(
+		result(&b.call(&list("rq_4")))["sessions"][0]["state"],
+		"open",
+		"the refused close must not touch the session of B"
+	);
+	assert_eq!(
+		result(&a.call(&close(
+			"rq_3",
+			&from_a["sessionId"],
+			&from_a["sessionGeneration"]
+		))),
+		&json!({"closed": true})
+	);
+
+	for runtime in [a, b] {
+		let (code, stderr) = runtime.finish();
+		assert_eq!(code, Some(0), "{stderr}");
+	}
+}
+
+#[test]
+fn files_that_are_not_usable_databases_are_refused_without_naming_the_path() {
+	const MARKER: &str = "hunter2-alice";
+	let dir = TempDir::new(&format!("{MARKER}-paths"));
+	let database = path_param(&dir.database("db.sqlite")).to_owned();
+	let mut cases: Vec<(String, &str)> = vec![
+		(
+			"db.sqlite".into(),
+			"path must be an absolute local file path",
+		),
+		(
+			":memory:".into(),
+			"in-memory and URI databases are not supported",
+		),
+		(
+			format!("file:{database}"),
+			"in-memory and URI databases are not supported",
+		),
+		(
+			path_param(&dir.join("missing.sqlite")).into(),
+			"file does not exist",
+		),
+		(
+			path_param(&dir.folder("folder")).into(),
+			"path is a directory",
+		),
+		(
+			path_param(&dir.file("empty.sqlite", b"")).into(),
+			"file is empty",
+		),
+		(
+			path_param(&dir.file("notes.txt", &b"plain text, not a database\n".repeat(64))).into(),
+			"file is not a SQLite database",
+		),
+		(
+			path_param(&dir.truncated_database("truncated.sqlite")).into(),
+			"database file is corrupt",
+		),
+	];
+	if cfg!(windows) {
+		// Refused from the string alone, so no SMB connection is attempted; `.invalid` never
+		// resolves in any case.
+		cases.extend([
+			(
+				r"\\nyala.invalid\share\db.sqlite".to_owned(),
+				"path must be an absolute local file path",
+			),
+			(
+				format!(r"\\?\{database}"),
+				"path must be an absolute local file path",
+			),
+			(
+				"C:db.sqlite".to_owned(),
+				"path must be an absolute local file path",
+			),
+		]);
+	} else {
+		cases.push(("/dev/null".into(), "path is not a regular file"));
+	}
+
+	let mut chunks = vec![sqlite_hello("rq_1")];
+	for (index, (path, _)) in cases.iter().enumerate() {
+		chunks.push(connect(
+			&format!("rq_t{index}"),
+			"connection.test",
+			path,
+			true,
+		));
+		chunks.push(connect(
+			&format!("rq_o{index}"),
+			"connection.open",
+			path,
+			false,
+		));
+	}
+	chunks.push(list("rq_l"));
+	let run = run(chunks);
+	assert_eq!(run.code, Some(0), "{}", run.stderr);
+	assert_eq!(run.messages.len(), 2 * cases.len() + 2);
+	for (index, (path, detail)) in cases.iter().enumerate() {
+		// connection.test and connection.open refuse the file in the same way.
+		for message in &run.messages[1 + 2 * index..][..2] {
+			assert_eq!(kind(message), "INVALID_PARAMS", "{path}: {message}");
+			assert_eq!(message["error"]["data"]["safeDetail"], *detail, "{path}");
+		}
+	}
+	assert_eq!(
+		run.messages.last().unwrap()["result"]["sessions"],
+		json!([])
+	);
+	assert!(!run.stderr.contains(MARKER), "{}", run.stderr);
+	assert!(
+		!String::from_utf8_lossy(&run.stdout).contains(MARKER),
+		"replies must not name the path"
+	);
+}
+
+#[test]
+fn a_read_write_open_of_a_read_only_file_is_refused() {
+	let dir = TempDir::new("read-only");
+	let database = dir.database("db.sqlite");
+	let Some(_read_only) = ReadOnly::set(&database) else {
+		// Root can write any file on Unix, so there is no downgrade to observe.
+		return;
+	};
+	let path = path_param(&database);
+	let run = run(vec![
+		sqlite_hello("rq_1"),
+		connect("rq_2", "connection.open", path, false),
+		connect("rq_3", "connection.test", path, false),
+		connect("rq_4", "connection.open", path, true),
+	]);
+	assert_eq!(run.code, Some(0), "{}", run.stderr);
+	for message in &run.messages[1..3] {
+		assert_eq!(kind(message), "PERMISSION_DENIED", "{message}");
+		assert_eq!(
+			message["error"]["data"]["safeDetail"],
+			"the database file is not writable"
+		);
+	}
+	assert_eq!(run.messages[3]["result"]["capabilities"]["readOnly"], true);
+}
+
+#[test]
+fn a_database_locked_by_another_process_fails_with_query_timeout() {
+	let dir = TempDir::new("locked");
+	let database = dir.database("db.sqlite");
+	let holder = rusqlite::Connection::open(&database).expect("open the lock holder");
+	// An exclusive transaction keeps every other connection from reading the file.
+	holder
+		.execute_batch("BEGIN EXCLUSIVE")
+		.expect("take the exclusive lock");
+	let path = path_param(&database);
+	let started = Instant::now();
+	let run = run(vec![
+		sqlite_hello("rq_1"),
+		connect("rq_2", "connection.test", path, true),
+		connect("rq_3", "connection.open", path, true),
+		list("rq_4"),
+	]);
+	let elapsed = started.elapsed();
+	holder.execute_batch("ROLLBACK").unwrap();
+
+	assert_eq!(run.code, Some(0), "{}", run.stderr);
+	for message in &run.messages[1..3] {
+		assert_eq!(kind(message), "QUERY_TIMEOUT", "{message}");
+		assert_eq!(
+			message["error"]["data"]["safeDetail"],
+			"database is locked by another connection"
+		);
+		assert_eq!(message["error"]["data"]["retryable"], false);
+	}
+	assert_eq!(run.messages[3]["result"]["sessions"], json!([]));
+	// Both requests waited for the busy timeout before giving up.
+	assert!(elapsed >= OPEN_BUSY_TIMEOUT, "{elapsed:?}");
+}
+
+#[test]
+fn opening_beyond_the_session_limit_is_refused_and_the_connection_continues() {
+	let dir = TempDir::new("limit");
+	let database = dir.database("db.sqlite");
+	let path = path_param(&database);
+	let mut runtime = Live::start();
+	runtime.call(&sqlite_hello("rq_1"));
+	let mut first = None;
+	for index in 0..MAX_OPEN_SESSIONS {
+		let request_id = format!("rq_o{index}");
+		let opened =
+			result(&runtime.call(&connect(&request_id, "connection.open", path, true))).clone();
+		first.get_or_insert(opened);
+	}
+
+	let refused = runtime.call(&connect("rq_x", "connection.open", path, true));
+	assert_eq!(kind(&refused), "RESOURCE_LIMIT", "{refused}");
+	assert_eq!(
+		result(&runtime.call(&health("rq_h")))["activeSessions"],
+		MAX_OPEN_SESSIONS
+	);
+
+	// Closing one session makes room for another.
+	let first = first.unwrap();
+	result(&runtime.call(&close(
+		"rq_c",
+		&first["sessionId"],
+		&first["sessionGeneration"],
+	)));
+	let reopened = runtime.call(&connect("rq_y", "connection.open", path, true));
+	assert_eq!(
+		result(&reopened)["sessionGeneration"],
+		MAX_OPEN_SESSIONS + 1
+	);
+
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
 }
