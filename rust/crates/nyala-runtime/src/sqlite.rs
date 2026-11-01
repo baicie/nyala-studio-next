@@ -253,7 +253,7 @@ fn invalid(detail: &str) -> RpcError {
 
 #[cfg(test)]
 mod tests {
-	use super::test_files::{text, ReadOnly, TempDir};
+	use super::test_files::{text, NoAccess, ReadOnly, TempDir};
 	use super::*;
 	use rusqlite::ffi;
 
@@ -455,14 +455,76 @@ mod tests {
 			);
 		}
 	}
+
+	#[test]
+	fn a_file_the_operating_system_will_not_let_us_read_is_permission_denied() {
+		let dir = TempDir::new("no-access");
+		let path = dir.database("db.sqlite");
+		let _no_access = match NoAccess::set(&path) {
+			Ok(guard) => guard,
+			Err(reason) => {
+				eprintln!("skipped: cannot take read access away from the test file: {reason}");
+				return;
+			}
+		};
+		for read_only in [true, false] {
+			assert_eq!(
+				refusal(&path, read_only),
+				(
+					ErrorKind::PermissionDenied,
+					"the operating system denied access to the file".into()
+				),
+				"read_only={read_only}"
+			);
+		}
+	}
+
+	/// A read-only connection to a WAL database needs the `-shm` index, so SQLite creates the
+	/// `-shm` and `-wal` files next to the database when the directory is writable, and a
+	/// read-only connection does not remove them when it closes. The database file itself is
+	/// not written.
+	#[test]
+	fn a_read_only_open_of_a_wal_database_leaves_its_content_unchanged() {
+		let dir = TempDir::new("wal");
+		let path = dir.wal_database("wal.sqlite");
+		assert_eq!(dir.entries(), ["wal.sqlite"]);
+		let before = fs::read(&path).expect("read the database file");
+
+		let database = Database::open(text(&path), true).expect("open the WAL database read-only");
+		assert!(database.read_only());
+		let customers: i64 = database
+			.connection
+			.query_row("SELECT count(*) FROM customers", [], |row| row.get(0))
+			.expect("read through the read-only connection");
+		assert_eq!(customers, 2);
+		database.close().expect("close the WAL database");
+
+		assert_eq!(
+			fs::read(&path).expect("read the database file"),
+			before,
+			"a read-only open must not write the database file"
+		);
+		assert_eq!(
+			dir.entries(),
+			["wal.sqlite", "wal.sqlite-shm", "wal.sqlite-wal"],
+			"the WAL auxiliary files stay behind"
+		);
+		assert_eq!(
+			fs::metadata(dir.join("wal.sqlite-wal")).unwrap().len(),
+			0,
+			"no frame is written to the WAL"
+		);
+	}
 }
 
 /// Database files in a temporary directory for the unit tests here and in `connection`.
 #[cfg(test)]
 pub(crate) mod test_files {
-	use std::fs::{self, OpenOptions, Permissions};
+	use std::fs::{self, File, OpenOptions, Permissions};
 	use std::path::{Path, PathBuf};
 	use std::process;
+	#[cfg(windows)]
+	use std::process::Command;
 	use std::sync::atomic::{AtomicU32, Ordering};
 
 	use rusqlite::Connection;
@@ -522,6 +584,19 @@ pub(crate) mod test_files {
 					CREATE VIEW recent_customers AS SELECT name FROM customers;",
 				)
 				.expect("fill the test database");
+			path
+		}
+
+		/// A database in WAL mode. Closing its only connection checkpoints it and removes the
+		/// `-wal` and `-shm` files, so only the database file is left.
+		pub fn wal_database(&self, name: &str) -> PathBuf {
+			let path = self.database(name);
+			let connection = Connection::open(&path).expect("reopen the test database");
+			let mode: String = connection
+				.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+				.expect("switch the test database to WAL");
+			assert_eq!(mode, "wal");
+			drop(connection);
 			path
 		}
 
@@ -591,6 +666,92 @@ pub(crate) mod test_files {
 	impl Drop for ReadOnly {
 		fn drop(&mut self) {
 			let _ = fs::set_permissions(&self.path, self.original.clone());
+		}
+	}
+
+	/// Keeps the current user from reading a file until dropped.
+	pub struct NoAccess {
+		path: PathBuf,
+		#[cfg(unix)]
+		original: Permissions,
+		/// `*<SID>` of the current user, as icacls takes it.
+		#[cfg(windows)]
+		account: String,
+	}
+
+	impl NoAccess {
+		/// The reason as `Err` when access cannot be taken away, or the file stays readable as
+		/// it does for root on Unix.
+		pub fn set(path: &Path) -> Result<NoAccess, String> {
+			let guard = Self::deny(path)?;
+			match File::open(path) {
+				Ok(_) => Err("the file stays readable, as it does for root".into()),
+				Err(_) => Ok(guard),
+			}
+		}
+
+		#[cfg(unix)]
+		fn deny(path: &Path) -> Result<NoAccess, String> {
+			use std::os::unix::fs::PermissionsExt;
+			let original = fs::metadata(path)
+				.map_err(|error| error.to_string())?
+				.permissions();
+			fs::set_permissions(path, Permissions::from_mode(0o000))
+				.map_err(|error| error.to_string())?;
+			Ok(NoAccess {
+				path: path.to_owned(),
+				original,
+			})
+		}
+
+		/// Adds an entry that denies reading file data. A deny entry also applies to the owner,
+		/// who keeps the right to change the access list and to delete the file.
+		#[cfg(windows)]
+		fn deny(path: &Path) -> Result<NoAccess, String> {
+			let output = Command::new("whoami")
+				.args(["/user", "/fo", "csv", "/nh"])
+				.output()
+				.map_err(|error| format!("whoami: {error}"))?;
+			// `"<domain>\<user>","S-1-5-…"`
+			let line = String::from_utf8_lossy(&output.stdout);
+			let sid = line
+				.rsplit(',')
+				.next()
+				.map(|sid| sid.trim().trim_matches('"'))
+				.filter(|sid| sid.starts_with("S-1-"))
+				.ok_or_else(|| format!("whoami printed no SID: {line}"))?;
+			let account = format!("*{sid}");
+			icacls(path, &["/deny", &format!("{account}:(RD)")])?;
+			Ok(NoAccess {
+				path: path.to_owned(),
+				account,
+			})
+		}
+	}
+
+	impl Drop for NoAccess {
+		fn drop(&mut self) {
+			#[cfg(unix)]
+			let _ = fs::set_permissions(&self.path, self.original.clone());
+			#[cfg(windows)]
+			let _ = icacls(&self.path, &["/remove:d", &self.account]);
+		}
+	}
+
+	#[cfg(windows)]
+	fn icacls(path: &Path, args: &[&str]) -> Result<(), String> {
+		let output = Command::new("icacls")
+			.arg(path)
+			.args(args)
+			.output()
+			.map_err(|error| format!("icacls: {error}"))?;
+		if output.status.success() {
+			Ok(())
+		} else {
+			Err(format!(
+				"icacls failed: {}",
+				String::from_utf8_lossy(&output.stdout)
+			))
 		}
 	}
 

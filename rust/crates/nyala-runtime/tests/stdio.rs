@@ -647,28 +647,29 @@ fn a_database_locked_by_another_process_fails_with_query_timeout() {
 		.execute_batch("BEGIN EXCLUSIVE")
 		.expect("take the exclusive lock");
 	let path = path_param(&database);
-	let started = Instant::now();
-	let run = run(vec![
-		sqlite_hello("rq_1"),
-		connect("rq_2", "connection.test", path, true),
-		connect("rq_3", "connection.open", path, true),
-		list("rq_4"),
-	]);
-	let elapsed = started.elapsed();
+	let mut runtime = Live::start();
+	runtime.call(&sqlite_hello("rq_1"));
+	// Each request is timed on its own, so that a runtime that waits only once cannot pass.
+	for (request_id, method) in [("rq_2", "connection.test"), ("rq_3", "connection.open")] {
+		let started = Instant::now();
+		let message = runtime.call(&connect(request_id, method, path, true));
+		let elapsed = started.elapsed();
+		assert_eq!(kind(&message), "QUERY_TIMEOUT", "{method}: {message}");
+		assert_eq!(
+			message["error"]["data"]["safeDetail"], "database is locked by another connection",
+			"{method}"
+		);
+		assert_eq!(message["error"]["data"]["retryable"], false, "{method}");
+		assert!(
+			elapsed >= OPEN_BUSY_TIMEOUT,
+			"{method} gave up after {elapsed:?}, before the busy timeout"
+		);
+	}
+	assert_eq!(result(&runtime.call(&list("rq_4")))["sessions"], json!([]));
 	holder.execute_batch("ROLLBACK").unwrap();
 
-	assert_eq!(run.code, Some(0), "{}", run.stderr);
-	for message in &run.messages[1..3] {
-		assert_eq!(kind(message), "QUERY_TIMEOUT", "{message}");
-		assert_eq!(
-			message["error"]["data"]["safeDetail"],
-			"database is locked by another connection"
-		);
-		assert_eq!(message["error"]["data"]["retryable"], false);
-	}
-	assert_eq!(run.messages[3]["result"]["sessions"], json!([]));
-	// Both requests waited for the busy timeout before giving up.
-	assert!(elapsed >= OPEN_BUSY_TIMEOUT, "{elapsed:?}");
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
 }
 
 #[test]

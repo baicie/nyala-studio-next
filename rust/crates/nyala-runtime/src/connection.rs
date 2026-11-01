@@ -463,8 +463,19 @@ mod tests {
 		assert_eq!(first["sessionGeneration"], 1);
 		assert_eq!(second["sessionGeneration"], 2);
 		assert_ne!(first["sessionId"], second["sessionId"]);
-		assert_eq!(first["capabilities"]["readOnly"], true);
-		assert_eq!(second["capabilities"]["readOnly"], false);
+		// Only readOnly follows the request; the rest stays false or "none" until N-105/N-108.
+		for (session, read_only) in [(&first, true), (&second, false)] {
+			assert_eq!(
+				session["capabilities"],
+				json!({
+					"driver": "sqlite",
+					"readOnly": read_only,
+					"cancel": "none",
+					"supportsTransactions": false,
+					"supportsMetadata": false,
+				})
+			);
+		}
 		assert_eq!(sessions.open_count(), 2);
 
 		let first_id = first["sessionId"].as_str().unwrap().to_owned();

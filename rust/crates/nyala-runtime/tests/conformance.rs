@@ -283,6 +283,19 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 					"{method} result fields"
 				);
 				if method == "connection.open" {
+					// The sample session advertises transactions and metadata; this build declares
+					// only what it implements.
+					assert_eq!(
+						result["capabilities"],
+						json!({
+							"driver": "sqlite",
+							"readOnly": request["params"]["readOnly"],
+							"cancel": "none",
+							"supportsTransactions": false,
+							"supportsMetadata": false,
+						}),
+						"connection.open capabilities"
+					);
 					issued.insert(
 						expected["result"]["sessionId"].as_str().unwrap().to_owned(),
 						(

@@ -69,12 +69,13 @@ rust/
 | 文件级错误的 `retryable` | 错误码表给出默认值 | 一律用表中默认值（以上三个 kind 都是 `false`），`tests/conformance.rs` 逐项比对 |
 | `safeDetail` 内容 | §7：不得含文件系统路径中的用户名 | 只写原因（如 `file does not exist`），不含路径，也不转发 SQLite 原文（rusqlite 会把路径拼进 `SQLITE_CANTOPEN` 的消息）。stderr 日志同样不含路径 |
 | `connection.test` 打不开库 | §4：结果是 `ok`、`serverVersion?`、`elapsedMs`；`ok:false` 没有原因字段 | 回与 `connection.open` 完全相同的错误响应；成功时 `ok` 恒为 `true`，v1 实现里不会出现 `ok:false`。`serverVersion` 是内置 SQLite 库版本 |
-| 文件不存在时是否创建 | 未写 | `open` 与 `test` 都不带 `SQLITE_OPEN_CREATE`，不存在即 `INVALID_PARAMS`，不会留下新文件 |
+| 文件不存在时是否创建 | 未写 | `open` 与 `test` 都不带 `SQLITE_OPEN_CREATE`，文件不存在时回 `INVALID_PARAMS`，且不会创建数据库文件或其他文件。已存在的 WAL 库见下面“WAL 库的辅助文件”一行 |
 | 可接受的路径 | 09-drivers-metadata 提到“文件路径/`:memory:`、符号链接、只读标志”，合同未写 | 只接受绝对路径指向的普通文件。拒绝 `:memory:` 与 `file:` URI（大小写不敏感）、含 NUL 的路径。Windows 只接受盘符绝对路径（`C:\…`）：拒绝 UNC（`\\server\share\…`，会发起 SMB 连接，可能把 NTLM 凭据发给外部主机）、设备路径（`\\?\…`、`\\.\…`）、盘符相对路径（`C:foo`）和根相对路径（`\foo`）；这项检查针对输入字符串，不访问文件系统 |
 | 符号链接 | 同上 | `fs::canonicalize` 跟随链接，目录、普通文件、0 字节等检查针对链接目标；Windows 上规范化结果不是 `\\?\<盘符>:\…`（如 `\\?\UNC\…`）时拒绝。打开时加 `SQLITE_OPEN_NOFOLLOW`，防止检查后路径被换成链接，但 SQLite 只在 Unix 上执行该检查 |
 | URI 文件名 | bundled 构建定义了 `SQLITE_USE_URI`，即全局开启 URI 文件名 | 打开时不设 `SQLITE_OPEN_URI`；传给 SQLite 的是规范化路径（`/…` 或 `\\?\C:\…`），不可能以 `file:` 开头，所以不会被当作 URI 解析 |
 | 非 SQLite 与损坏文件的识别 | 未写 | `sqlite3_open_v2` 不读文件；打开后执行 `SELECT count(*) FROM sqlite_master` 作为探测，读文件头、第 1 页与全部 schema 项。`open` 与 `test` 用同一探测。0 字节文件会被 SQLite 当作空库通过探测，所以在探测前单独拒绝 |
 | `readOnly` | §4 | `true` 用 SQLite 原生 `SQLITE_OPEN_READONLY` 打开，不做 SQL 文本检查。`false` 用 `SQLITE_OPEN_READWRITE`；文件在 OS 层只读时 SQLite 会静默降级为只读，打开后用 `sqlite3_db_readonly` 核对，降级即回 `PERMISSION_DENIED`，不报告 `readOnly:false` 的 Session。是否能实际拒绝写语句属于 N-109，本实现不宣称已强制 |
+| WAL 库的辅助文件 | 未写 | `readOnly` 保证不写数据库内容，但不保证目录里不出现新文件：只读连接也要用 `-shm` 索引，WAL 模式的库在目录可写时，SQLite 会在库旁生成 `<库名>-wal` 与 `<库名>-shm`，只读连接关闭时不删除它们。实测（`sqlite::tests::a_read_only_open_of_a_wal_database_leaves_its_content_unchanged`）：只读打开成功并能读出数据，数据库文件逐字节不变，`-wal` 长度为 0，两个辅助文件留在目录里。这是 SQLite 的正常行为，不改打开方式 |
 | `sessionId` 分配 | `$defs/id` pattern；§4：`open` 每次返回新 generation | `s_<16 位十六进制><n>`。16 位前缀每个进程不同（`RandomState` 种子加 pid 与时间），不是秘密也不授予任何权限，只保证上一个 Runtime 进程发出的 id 在新进程里是未知的；`n` 是进程内从 1 开始的序号 |
 | `sessionGeneration` | §4 | 进程内单调计数器，第 n 个 Session 的 generation 为 n；`(sessionId, generation)` 都由本进程发出且匹配才算有效 |
 | generation 不匹配、未知 Session | §4：close 不匹配回 `INVALID_SESSION` | `INVALID_SESSION`，`data.sessionId` 回填请求里的 id；被拒的请求不改变任何 Session。另一进程发出的 id 是未知 id，同样回 `INVALID_SESSION` |
@@ -156,16 +157,16 @@ npm run nyala:validate-rpc                                # PASS（合同未改�
 cd rust
 cargo fmt --all --check                                          # PASS
 cargo clippy --workspace --all-targets --locked -- -D warnings   # PASS
-cargo test --workspace --locked                                  # PASS：单元 51 + conformance 8 + stdio 17
+cargo test --workspace --locked                                  # PASS：单元 53 + conformance 8 + stdio 17
 cargo audit                                                      # PASS：27 个 crate 无 RustSec 告警
 cd ..
 npm run nyala:validate-rpc                                       # PASS（合同未改）
 ```
 
-- 单元测试在临时目录里用真实 SQLite 文件覆盖：读写两种模式打开、不存在（且不创建文件）、目录、0 字节、文本文件、文件头被改写、截断到 50 字节与一半、OS 层只读文件的读写请求、Unix 上的符号链接与 `/dev/null`；Windows 上的 UNC、`\\?\`、`\\.\`、`C:foo`、`\foo` 字符串判定；SQLite 错误码到 v1 kind 的映射且 `safeDetail` 不含路径；Session 生命周期、generation 不匹配、32 个上限、已关闭 Session 的保留与遗忘。
-- `tests/conformance.rs`：一致性样例会话换成临时数据库后整段重放，`connection.test/open/close` 的回复符合方法 result schema、字段集合与样例一致；文件级失败的回复符合 envelope schema 与错误码表且不含路径。
-- `tests/stdio.rs` 新增 7 个真实进程测试：test → open → listSessions → close（含重复 close）、generation 不匹配、两个 Runtime 进程的 sessionId 不同且 B 拒绝 A 的 `(id, generation)`、无效路径与损坏文件（Windows 含 UNC、`\\?\`、`C:foo`）、只读降级、另一进程持有排他锁时 `QUERY_TIMEOUT`、第 33 个 Session 回 `RESOURCE_LIMIT` 后连接继续。
-- 未验证：MSRV 1.82 构建（本机未装 1.82 工具链）、macOS 记 NOT RUN；Linux 结果以 CI `Rust runtime` job 为准。
+- 单元测试在临时目录里用真实 SQLite 文件覆盖：读写两种模式打开、不存在（且不创建文件）、目录、0 字节、文本文件、文件头被改写、截断到 50 字节与一半、OS 层只读文件的读写请求、OS 拒绝读取（Unix 用 `chmod 000`，Windows 用 `icacls /deny` 拒绝读数据；root 下文件仍可读时跳过并打印原因）、WAL 模式库的只读打开（内容逐字节不变，`-wal`/`-shm` 留在目录里且 `-wal` 为 0 字节）、Unix 上的符号链接与 `/dev/null`；Windows 上的 UNC、`\\?\`、`\\.\`、`C:foo`、`\foo` 字符串判定；SQLite 错误码到 v1 kind 的映射且 `safeDetail` 不含路径；Session 生命周期（含 `capabilities` 五个字段的取值）、generation 不匹配、32 个上限、已关闭 Session 的保留与遗忘。
+- `tests/conformance.rs`：一致性样例会话换成临时数据库后整段重放，`connection.test/open/close` 的回复符合方法 result schema、字段集合与样例一致，`connection.open` 的 `capabilities` 逐值比较（`readOnly` 等于请求的打开模式，其余为 `sqlite`/`none`/`false`/`false`）；文件级失败的回复符合 envelope schema 与错误码表且不含路径。
+- `tests/stdio.rs` 新增 7 个真实进程测试：test → open → listSessions → close（含重复 close）、generation 不匹配、两个 Runtime 进程的 sessionId 不同且 B 拒绝 A 的 `(id, generation)`、无效路径与损坏文件（Windows 含 UNC、`\\?\`、`C:foo`）、只读降级、另一进程持有排他锁时 `QUERY_TIMEOUT`（`test` 与 `open` 分别计时，各自等满 busy timeout）、第 33 个 Session 回 `RESOURCE_LIMIT` 后连接继续。
+- 未验证：MSRV 1.82 构建（本机未装 1.82 工具链）、macOS 记 NOT RUN；Linux 结果以 CI `Rust runtime` job 为准。`#[cfg(windows)]` 的测试（UNC、`\\?\`、`C:foo` 等路径判定，`icacls` 拒绝读取）只在本机 Windows 上跑过，CI 只有 `ubuntu-latest`。
 
 ## 修订记录
 
