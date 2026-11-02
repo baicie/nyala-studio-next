@@ -205,9 +205,10 @@ git diff --check                                                 # PASS
   - 脚本失败清理句柄时改用结果序号（`ResultSet::sequence`），不再依赖运行前的句柄数量——期间过期的句柄会让计数失真、留下无法引用的句柄。
   - `connection.close` 在数据库关闭失败、会话被放回后调用 `Executions::resume()`，避免残留的 stop 让该会话之后所有语句都报 `QUERY_CANCELLED`。
 - 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
+- **已合入**：PR #37，squash `b9f00ff4326`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41370054066`）。
 
 ## 修订记录
 
-- **2026-11-02 · N-105 metadata + N-106 查询执行 + N-109 只读强制**：新增 `metadata.rs`、`query.rs`、`value.rs` 与 §4 中 `runtime.health` 计数、`capabilities`、`readOnly` 三行的实际值；header 与 §2 的依赖说明加入 `column_decltype`/`hooks` 两个 rusqlite feature；后续项 8–13；证据。`nyala/rpc/**` 未改（合同保持 15 methods / 19 kinds / 36 definitions）。
+- **2026-11-02 · N-105 metadata + N-106 查询执行 + N-109 只读强制**：新增 `metadata.rs`、`query.rs`、`value.rs` 与 §4 中 `runtime.health` 计数、`capabilities`、`readOnly` 三行的实际值；header 与 §2 的依赖说明加入 `column_decltype`/`hooks` 两个 rusqlite feature；后续项 8–13；证据。`nyala/rpc/**` 未改（合同保持 15 methods / 19 kinds / 36 definitions）。已随 PR #37（squash `b9f00ff4326`）合入 `nyala/main`。
 
 - **2026-11-01 · N-104 SQLite Profile & Session connect**：新增 `rusqlite`（`bundled`）运行依赖与 §6；§1 模块列表加入 `connection.rs`、`sqlite.rs`；§2 依赖说明；§4 补充 `connection.*` 的能力位、文件级错误映射、`connection.test` 失败形态、路径安全、`readOnly`、`sessionId` / generation 分配与保留、Session 上限与 `capabilities`；后续项 6–9；证据。决策只增不删，§4 已有各行仅把“本构建尚无驱动”“计数固定为 0”改为 N-104 后的实际行为。`nyala/rpc/**` 未改。
