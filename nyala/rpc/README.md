@@ -125,18 +125,21 @@ Created → Queued → Running → Streaming → Completed
 | `string` | `value` | UTF-8 文本 |
 | `timestampTz` | `iso` | 带时区偏移的 ISO-8601 |
 | `date` | `iso` | `YYYY-MM-DD` |
-| `bytes` | `encoding`（固定 `base64`）、`data` | 仅用于小 BLOB；大对象走后续 `blob.readChunk` 能力位 |
+| `bytes` | `encoding`（固定 `base64`）、`data` | 仅用于小 BLOB；大对象走后续 `blob.readChunk` 能力位。`data` 是 base64，空 BLOB 是 `""`，与 `null`（SQL NULL）严格区分 |
 
 新增 cell type 必须提升 minor 并出现在 hello 的 `features` 中；v1 客户端遇到未知 type 必须以 `string`（渲染原文）降级显示，而不是崩溃。
 
+**v1.0 勘误（2026-11-03）**：`$defs/cell` 的 `bytes` 分支不再要求 `data` 至少 1 个字符。空 BLOB（SQLite 中 `X''`）原本只能编码成 `null` cell，与 SQL NULL 无法区分；这是编码缺陷，不是类型设计。放宽 `minLength` 只是接受已经可以表达的 `{"type":"bytes","encoding":"base64","data":""}`，不新增/删除字段、不改变 `null`、`string` 或其他 cell 的语义，故按 §8 的勘误处理，不构成 v2。Rust 侧 `value.rs` 同时改为如实编码空 BLOB；客户端据此可以区分 NULL、空 TEXT（`{"type":"string","value":""}`）、空 BLOB 与非空 BLOB。
+
 ## 7. 错误模型与限流
 
-错误对象：`{"code":<int>,"message":<string>,"data":{"kind":<string>,"retryable":<bool>,"safeDetail"?:<string>,"executionId"?:<string>,"sessionId"?:<string>,"sqlState"?:<string|null>}}`。
+错误对象：`{"code":<int>,"message":<string>,"data":{"kind":<string>,"retryable":<bool>,"safeDetail"?:<string>,"executionId"?:<string>,"sessionId"?:<string>,"sqlState"?:<string|null>,"executionRollback"?:"rolled_back"|"unknown"}}`。
 
 - `kind` 是稳定标识，`code` 是数值映射，两者必须同时出现在 [`v1/error-codes.json`](v1/error-codes.json) 中；客户端按 `kind` 分支，不按 `message` 文案分支。
 - `-32700/-32600/-32601/-32602/-32603` 保留给 JSON-RPC 层；领域错误使用 `-32001..-32014`。
 - `message` 面向开发者，可本地化；`safeDetail` 已脱敏，不得含密码、连接串、文件系统路径中的用户名。
 - 仅 `retryable: true` 的错误允许自动重试，且写语句与事务永不自动重放。
+- `executionRollback` 只出现在执行失败且没有交付结果时：`rolled_back` 表示这次执行的所有改动都已撤销（语句从未运行，或语句/脚本未进入任何写入），`unknown` 表示**可能已经有写入提交**，客户端必须按“结果未知”处理而不能当失败重放。v1 没有执行级事务（脚本自己的 `BEGIN`/`COMMIT` 属于客户端），所以带 `RETURNING` 的写语句被行数上限截断、被取消或超时后，SQLite 的提交状态不由 runtime 断言；ADR 0002 后续项 14 记录了这一限制。失败**之前**已有语句成功的脚本同样报 `unknown`：SQLite 按语句自动提交，前面那条已经落库。
 - 资源限制（默认值可被 hello 覆盖，实现须压测校准）：`frameMaxBytes` 8 MiB、`maxInitialRows` 200、`maxPageRows` 1000、`maxResultTtlSecs` 300、`maxConcurrentExecutions` 4。超限回 `RESOURCE_LIMIT`，不允许静默截断。
 
 ## 8. 变更策略

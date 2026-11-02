@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
-use crate::error::{ErrorKind, RpcError};
+use crate::error::{ErrorKind, Rollback, RpcError};
 use crate::framing::DEFAULT_FRAME_MAX_BYTES;
 use crate::protocol::{is_valid_id, JSONRPC_VERSION, MAX_PAGE_ROWS};
 use crate::worker::{Collected, Job, Outcome, State};
@@ -314,6 +314,13 @@ impl Executions {
 	) -> Vec<Value> {
 		let now = Instant::now();
 		let mut outcome = outcome;
+		// The worker decides what a failed execution did to the database; the error that reaches the
+		// client carries it, so `query.getState` answers the same question as the notification.
+		if let (Some(rollback), Some(error)) = (outcome.rollback, outcome.error.as_mut()) {
+			if error.rollback.is_none() {
+				error.rollback = Some(rollback);
+			}
+		}
 		// Handles are numbered before the entry is borrowed, because the borrow checker cannot
 		// see that the id counter and the entry are different fields of this struct.
 		let mut handles = Vec::with_capacity(outcome.results.len());
@@ -330,10 +337,19 @@ impl Executions {
 		if self.pending_results() + handles.len() > MAX_CONCURRENT_EXECUTIONS {
 			handles.clear();
 			outcome.state = State::Failed;
-			outcome.error = Some(RpcError::with_detail(
-				ErrorKind::ResourceLimit,
-				format!("at most {MAX_CONCURRENT_EXECUTIONS} executions can hold results at once"),
-			));
+			outcome.error = Some(
+				RpcError::with_detail(
+					ErrorKind::ResourceLimit,
+					format!(
+						"at most {MAX_CONCURRENT_EXECUTIONS} executions can hold results at once"
+					),
+				)
+				// The statements now run without a transaction of their own, but the same
+				// answer applies as for a row that cannot be paged: the session keeps no
+				// result, and whether an `INSERT … RETURNING` already committed cannot be
+				// proven here, so it must not be reported as rolled back.
+				.with_rollback(Rollback::Unknown),
+			);
 		}
 		// A result has to be readable, and `result.fetchPage` answers in one frame. A row whose own
 		// JSON does not fit that frame can never be paged out, so an execution that produced one
@@ -347,10 +363,15 @@ impl Executions {
 		{
 			handles.clear();
 			outcome.state = State::Failed;
-			outcome.error = Some(RpcError::with_detail(
-				ErrorKind::ResourceLimit,
-				"a row of the result does not fit in one frame",
-			));
+			outcome.error = Some(
+				RpcError::with_detail(
+					ErrorKind::ResourceLimit,
+					"a row of the result does not fit in one frame",
+				)
+				// The statement produced this result without a transaction; a write it made is
+				// not undone by refusing the handle.
+				.with_rollback(Rollback::Unknown),
+			);
 		}
 		let Some(entry) = self.entry_mut(execution) else {
 			return Vec::new();

@@ -80,14 +80,9 @@ fn bytes_cell(bytes: &[u8]) -> Result<Value, RpcError> {
 			format!("a bytes cell is limited to {MAX_BLOB_BYTES} bytes"),
 		));
 	}
-	// `$defs/cell` requires `data` to be at least one character, so an empty blob cannot be a
-	// `bytes` cell. SQLite stores an empty blob as a zero-length value with the BLOB class, and the
-	// contract's other zero-value type is a nullable one, not a string: `string` would say the value
-	// is text, which it is not. A `null` cell is the closest truthful representation v1 offers, and
-	// the column's declared type still reports the blob affinity.
-	if bytes.is_empty() {
-		return Ok(json!({"type": "null"}));
-	}
+	// An empty blob stays a blob. Its base64 is the empty string, which the contract accepts since
+	// the 2026-11-03 erratum (`nyala/rpc/README.md` §6); encoding it as `null` would make `X''`
+	// indistinguishable from SQL NULL, and a `string` cell would claim the value is text.
 	Ok(json!({"type": "bytes", "encoding": "base64", "data": base64(bytes)}))
 }
 
@@ -153,18 +148,28 @@ mod tests {
 	}
 
 	#[test]
-	fn an_empty_blob_is_not_an_empty_bytes_cell() {
-		// `$defs/cell` requires `data` to be at least one character, so `""` would be an invalid
-		// cell on the wire. An empty blob is a value with no content, which `null` is.
+	fn an_empty_blob_stays_a_blob_and_differs_from_null_and_empty_text() {
+		// Every zero-length value keeps its storage class: a client must be able to tell `NULL`,
+		// `''` and `X''` apart (`README.md` §6, erratum 2026-11-03).
 		assert_eq!(
-			cell(ValueRef::Blob(&[])).unwrap(),
+			cell(ValueRef::Null).unwrap(),
 			json!({"type": "null"}),
-			"an empty blob"
+			"SQL NULL"
 		);
 		assert_eq!(
 			cell(ValueRef::Text(&[])).unwrap(),
 			json!({"type": "string", "value": ""}),
 			"an empty string stays a string"
+		);
+		assert_eq!(
+			cell(ValueRef::Blob(&[])).unwrap(),
+			json!({"type": "bytes", "encoding": "base64", "data": ""}),
+			"an empty blob stays a blob"
+		);
+		// A one-byte blob is the smallest non-empty blob, so the two are distinguishable.
+		assert_eq!(
+			cell(ValueRef::Blob(&[0])).unwrap(),
+			json!({"type": "bytes", "encoding": "base64", "data": "AA=="})
 		);
 	}
 }

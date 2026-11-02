@@ -122,6 +122,25 @@ impl ErrorKind {
 	}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rollback {
+	/// Every change the execution made was rolled back; the database is as it was.
+	RolledBack,
+	/// The execution may have committed something that could not be undone.
+	Unknown,
+}
+
+impl Rollback {
+	/// The `executionRollback` field of the error's `data`, which is how a client learns whether a
+	/// write it never saw a result for took effect.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Rollback::RolledBack => "rolled_back",
+			Rollback::Unknown => "unknown",
+		}
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpcError {
 	pub kind: ErrorKind,
@@ -137,6 +156,10 @@ pub struct RpcError {
 	/// (`README.md` §7 allows any string); it tells a constraint violation (`19`, `1555`, `2067`)
 	/// from one the preparer rejected (`1`).
 	pub sql_state: Option<String>,
+	/// Sent as `executionRollback` on an execution that failed without handing over its results:
+	/// `rolled_back` when every change was undone, `unknown` when it may have committed. `None`
+	/// when the failure wrote nothing.
+	pub rollback: Option<Rollback>,
 }
 
 impl RpcError {
@@ -147,6 +170,7 @@ impl RpcError {
 			session_id: None,
 			execution_id: None,
 			sql_state: None,
+			rollback: None,
 		}
 	}
 
@@ -157,6 +181,7 @@ impl RpcError {
 			session_id: None,
 			execution_id: None,
 			sql_state: None,
+			rollback: None,
 		}
 	}
 
@@ -175,6 +200,13 @@ impl RpcError {
 	}
 
 	/// Attaches the database's own result code (`data.sqlState`).
+	/// Marks what an execution that failed without handing over its results did to the database
+	/// (`crate::worker::Rollback`), which becomes `data.executionRollback`.
+	pub(crate) fn with_rollback(mut self, rollback: Rollback) -> Self {
+		self.rollback = Some(rollback);
+		self
+	}
+
 	pub fn with_sql_state(mut self, sql_state: impl Into<String>) -> Self {
 		self.sql_state = Some(sql_state.into());
 		self
@@ -196,6 +228,9 @@ impl RpcError {
 		}
 		if let Some(sql_state) = &self.sql_state {
 			data.insert("sqlState".into(), json!(sql_state));
+		}
+		if let Some(rollback) = self.rollback {
+			data.insert("executionRollback".into(), json!(rollback.as_str()));
 		}
 		json!({
 			"code": self.kind.code(),

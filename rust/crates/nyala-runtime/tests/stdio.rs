@@ -945,6 +945,130 @@ fn a_query_is_executed_paged_and_released_over_the_pipe() {
 }
 
 #[test]
+fn empty_and_non_empty_blobs_cross_the_pipe_as_distinct_cells() {
+	// `X''` used to arrive as a `null` cell, indistinguishable from SQL NULL. The four zero-length
+	// shapes must now stay apart (erratum 2026-11-03, `value.rs`).
+	let dir = TempDir::new("blobs");
+	let path = dir.join("blobs.sqlite");
+	rusqlite::Connection::open(&path)
+		.unwrap()
+		.execute_batch("CREATE TABLE shapes(id INTEGER PRIMARY KEY, value BLOB);")
+		.unwrap();
+	let path = path_param(&path);
+	let mut runtime = Live::start();
+	runtime.call(&full_hello("rq_1"));
+	let session = result(&runtime.call(&connect("rq_2", "connection.open", path, false))).clone();
+	let (id, generation) = (&session["sessionId"], &session["sessionGeneration"]);
+
+	let executed = result(&runtime.call(&request(
+		"rq_3",
+		"query.execute",
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": "INSERT INTO shapes(value) VALUES (NULL), (X''), (CAST('' AS BLOB)), (X'00'), (X'666F6F')",
+			"mode": "statement",
+			"timeoutMs": 30_000,
+			"maxInitialRows": 200,
+		}),
+	)))
+	.clone();
+	runtime.wait_for_state(&executed["executionId"], "completed");
+
+	let read = result(&runtime.call(&request(
+		"rq_4",
+		"query.execute",
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": "SELECT value, typeof(value) AS kind FROM shapes ORDER BY id",
+			"mode": "statement",
+			"timeoutMs": 30_000,
+			"maxInitialRows": 200,
+		}),
+	)))
+	.clone();
+	let result_id =
+		runtime.wait_for_state(&read["executionId"], "completed")["params"]["resultIds"][0].clone();
+	let page = result(&runtime.call(&request(
+		"rq_5",
+		"result.fetchPage",
+		json!({"resultId": result_id, "cursor": null, "limit": 200}),
+	)))
+	.clone();
+	assert_eq!(
+		page["rows"],
+		json!([
+			[{"type": "null"}, {"type": "string", "value": "null"}],
+			[{"type": "bytes", "encoding": "base64", "data": ""}, {"type": "string", "value": "blob"}],
+			[{"type": "bytes", "encoding": "base64", "data": ""}, {"type": "string", "value": "blob"}],
+			[{"type": "bytes", "encoding": "base64", "data": "AA=="}, {"type": "string", "value": "blob"}],
+			[{"type": "bytes", "encoding": "base64", "data": "Zm9v"}, {"type": "string", "value": "blob"}],
+		]),
+		"{page}"
+	);
+
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
+}
+
+#[test]
+fn a_failed_write_reports_its_rollback_state_over_the_pipe() {
+	// The client has to learn from the notification whether a write it never saw a result for
+	// could have committed (ADR 0002 follow-up 14).
+	let dir = TempDir::new("rollback-flag");
+	let database = dir.database("db.sqlite");
+	let path = path_param(&database);
+	let mut runtime = Live::start();
+	runtime.call(&full_hello("rq_1"));
+	let session = result(&runtime.call(&connect("rq_2", "connection.open", path, false))).clone();
+	let (id, generation) = (&session["sessionId"], &session["sessionGeneration"]);
+
+	// A read-only statement that fails changed nothing, and the script says so.
+	let failed = result(&runtime.call(&request(
+		"rq_3",
+		"query.execute",
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": "SELECT count(*) FROM customers; SELECT * FROM missing",
+			"mode": "script",
+			"timeoutMs": 30_000,
+			"maxInitialRows": 200,
+		}),
+	)))
+	.clone();
+	let terminal = runtime.wait_for_state(&failed["executionId"], "failed");
+	assert_eq!(
+		terminal["params"]["error"]["data"]["executionRollback"], "rolled_back",
+		"{terminal}"
+	);
+
+	// A write that fails after it may have committed says `unknown`, never `rolled_back`.
+	let written = result(&runtime.call(&request(
+		"rq_4",
+		"query.execute",
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": "INSERT INTO customers(name) VALUES ('ScriptedThenFailed'); INSERT INTO missing(x) VALUES (1)",
+			"mode": "script",
+			"timeoutMs": 30_000,
+			"maxInitialRows": 200,
+		}),
+	)))
+	.clone();
+	let terminal = runtime.wait_for_state(&written["executionId"], "failed");
+	assert_eq!(
+		terminal["params"]["error"]["data"]["executionRollback"], "unknown",
+		"{terminal}"
+	);
+
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
+}
+
+#[test]
 fn a_page_too_large_for_a_frame_is_paged_instead_of_ending_the_stream() {
 	let dir = TempDir::new("big-page");
 	let path = dir.join("rows.sqlite");

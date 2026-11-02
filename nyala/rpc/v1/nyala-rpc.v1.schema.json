@@ -178,8 +178,7 @@
               "const": "base64"
             },
             "data": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             }
           },
           "additionalProperties": false
@@ -229,6 +228,14 @@
                 "string",
                 "null"
               ]
+            },
+            "executionRollback": {
+              "type": "string",
+              "enum": [
+                "rolled_back",
+                "unknown"
+              ],
+              "description": "What an execution that failed without handing over its results did to the database: rolled_back when every change was undone, unknown when it may have committed. Absent when the failure wrote nothing."
             }
           },
           "additionalProperties": false

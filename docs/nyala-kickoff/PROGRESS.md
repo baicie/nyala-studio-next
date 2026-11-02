@@ -98,6 +98,13 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 帧预算固定使用 `DEFAULT_FRAME_MAX_BYTES` 与 `server::write_message` 同一常量；`runtime.hello` 的 params schema 没有覆盖 limits 的字段，所以两者当前一致（`row_budget` 的文档注释记下了这条不变量）。
 - **PASS（本机，Windows 11 / cargo 1.96.0）**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（单元 124 + cancellation 6 + conformance 8 + contract 4 + stdio 20）、`npm run nyala:validate-rpc`、`npm run nyala:check-rpc-generated`、`npm run nyala:validate-product`、`git diff --check`。**NOT RUN**：`npm run compile` / `typecheck-client`（工作树无 `node_modules`）、macOS/Linux、MSRV 1.82。
 
+### P1.6 · PR A 空 BLOB 与失败写入语义（`fix/p1-sql-correctness`）
+
+- **空 BLOB**：`value.rs` 不再把 `X''` 编码为 `null` cell；合同 `$defs/cell` 的 `bytes.data` 允许空串（README §6 勘误），TS/Rust 声明重新生成，Rust `conformance.rs` 与 Node `validate-rpc-contract.ts` 各补正/负向 cell 用例。往返语义（NULL、空 TEXT、空 BLOB、1 字节 BLOB、普通 BLOB、超限 BLOB）由 `worker::tests` 与 stdio 端到端用例覆盖。
+- **失败写入的诚实上报**：错误信封新增 `data.executionRollback`（`rolled_back` / `unknown`）。探针在真实 SQLite 上确认 `INSERT … RETURNING` 被行数上限截断时写入**已提交**，因此运行时不承诺回滚，失败写入一律报 `unknown`；先前语句已提交的脚本同样报 `unknown`。未做外层事务包装（会改变脚本自身的 `BEGIN`/`COMMIT` 与 `PRAGMA`/`VACUUM` 语义），归于 N-402。
+- **只读回归**：`ATTACH` 后对附加库的 DML/DDL 全部 `READ_ONLY_DENIED` 且附加文件未变；`PRAGMA` 边界按实测记录（部分被拒、部分被 SQLite 静默忽略，文件不变）；`file:` URI 提权路径被 `sqlite::resolve` 拒绝且不创建文件。
+- **PASS（本机，Windows 11 / cargo 1.96.0）**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（单元 135 + cancellation 6 + conformance 8 + contract 4 + stdio 22）、`nyala:validate-rpc`、`nyala:check-rpc-generated`、`git diff --check`。**NOT RUN**：`npm run compile` / `typecheck-client`（无 `node_modules`）、macOS/Linux、MSRV 1.82。
+
 ## 2026-11-01 子会话收尾状态
 
 | PR | 已核对 head / 主线提交 | 状态与证据 |

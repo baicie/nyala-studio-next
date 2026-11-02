@@ -549,3 +549,412 @@ fn a_worker_that_panics_reports_that_it_is_gone() {
 	let job = Job::parse("s_1e2", &request, true, 4).unwrap();
 	assert!(worker.execute(job).is_err(), "the worker is gone");
 }
+
+/// Whether the named rows exist in `customers`, read on a fresh connection so the answer comes from
+/// the database file rather than from the session's connection.
+fn committed_names(path: &std::path::Path, names: &[&str]) -> i64 {
+	let connection = rusqlite::Connection::open(path).unwrap();
+	let list = names
+		.iter()
+		.map(|name| format!("'{name}'"))
+		.collect::<Vec<_>>()
+		.join(",");
+	connection
+		.query_row(
+			&format!("SELECT count(*) FROM customers WHERE name IN ({list})"),
+			[],
+			|row| row.get(0),
+		)
+		.unwrap()
+}
+
+/// A database whose `customers` table also logs every insert, so a trigger is in the path of a
+/// write the execution then fails to hand over.
+fn database_with_trigger(dir: &TempDir) -> std::path::PathBuf {
+	let path = dir.database("trigger.sqlite");
+	let connection = rusqlite::Connection::open(&path).unwrap();
+	connection
+		.execute_batch(
+			"CREATE TABLE audit(name TEXT);
+			CREATE TRIGGER customers_audit AFTER INSERT ON customers
+			BEGIN INSERT INTO audit(name) VALUES (new.name); END;",
+		)
+		.unwrap();
+	path
+}
+
+/// Like [`outcome`], with a different `timeoutMs`.
+fn outcome_with_timeout(
+	database: &Database,
+	sql: &str,
+	mode: &str,
+	timeout_ms: u64,
+) -> (String, Result<(), RpcError>, Outcome) {
+	let mut request = params(sql, mode);
+	request.insert("timeoutMs".into(), json!(timeout_ms));
+	let job = Job::parse("s_1e1", &request, database.read_only(), 4).unwrap();
+	let prepared = prepare(database, &job);
+	let outcome = if prepared.is_ok() && Stop::load(&job.stop) == Stop::Running {
+		run(database, &job)
+	} else {
+		Outcome::stopped(
+			Stop::load(&job.stop)
+				.outcome()
+				.unwrap_or_else(|| (State::Cancelled, RpcError::new(ErrorKind::QueryCancelled))),
+		)
+	};
+	(job.execution().to_owned(), prepared, outcome)
+}
+
+#[test]
+fn a_failed_statement_reports_that_it_rolled_back_and_changed_nothing() {
+	let dir = TempDir::new("rollback-statement");
+	let path = dir.database("db.sqlite");
+	let writable = open(&path, false);
+
+	// A constraint violation fails inside SQLite's own implicit transaction for the statement.
+	let (_, prepared, result) = outcome(
+		&writable,
+		"INSERT INTO customers(name) VALUES (NULL)",
+		"statement",
+	);
+	prepared.expect("the statement compiles");
+	assert_eq!(result.state, State::Failed);
+	// SQLite undoes the statement, but the writer may have stepped rows before the constraint
+	// rejected it, so the runtime reports  rather than promising a rollback it did not
+	// perform itself. What is proven is checked below: the database did not change.
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+	let error = result.error.expect("a failure names its cause");
+	assert_eq!(error.rollback, Some(Rollback::Unknown));
+	assert_eq!(committed_names(&path, &["Turing"]), 0);
+	let count: i64 = writable
+		.connection()
+		.query_row("SELECT count(*) FROM customers", [], |row| row.get(0))
+		.unwrap();
+	assert_eq!(count, 2, "the fixture rows are untouched");
+}
+
+#[test]
+fn a_script_that_fails_after_writing_reports_an_unknown_commit_state() {
+	// SQLite commits each statement of a script on its own; v1 has no execution-level transaction,
+	// so the runtime cannot undo the first statement. It must say so instead of pretending.
+	let dir = TempDir::new("rollback-script");
+	let path = dir.database("db.sqlite");
+	let writable = open(&path, false);
+	let (_, prepared, result) = outcome(
+		&writable,
+		"INSERT INTO customers(name) VALUES ('Scripted'); INSERT INTO missing(x) VALUES (1)",
+		"script",
+	);
+	prepared.expect("the first statement compiles");
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(
+		result.rollback,
+		Some(Rollback::Unknown),
+		"the first statement already committed"
+	);
+	assert_eq!(
+		result.error.as_ref().and_then(|error| error.rollback),
+		Some(Rollback::Unknown)
+	);
+	assert_eq!(
+		committed_names(&path, &["Scripted"]),
+		1,
+		"the write is real, and the outcome says so"
+	);
+}
+
+#[test]
+fn a_script_that_only_read_reports_a_rolled_back_failure() {
+	let dir = TempDir::new("rollback-read-script");
+	let writable = open(&dir.database("db.sqlite"), true);
+	let (_, prepared, result) = outcome(
+		&writable,
+		"SELECT count(*) FROM customers; SELECT * FROM missing",
+		"script",
+	);
+	prepared.expect("the first statement compiles");
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(
+		result.rollback,
+		Some(Rollback::RolledBack),
+		"nothing in this script could write"
+	);
+}
+
+#[test]
+fn a_returning_result_over_the_limit_reports_that_the_write_may_have_committed() {
+	// `INSERT … RETURNING` applies its write before the client reads a row. When the result cannot
+	// be handed over, refusing the handle does not undo the write; the outcome has to say
+	// `unknown` instead of `rolled_back` (ADR 0002 follow-up 14).
+	let dir = TempDir::new("rollback-returning");
+	let path = dir.database("db.sqlite");
+	let writable = open(&path, false);
+	let mut request = params(
+		"INSERT INTO customers(name) SELECT x FROM (SELECT 'A' x UNION ALL SELECT 'B') RETURNING id",
+		"statement",
+	);
+	request.insert("maxInitialRows".into(), json!(1));
+	let job = Job::parse("s_1e1", &request, writable.read_only(), 4).unwrap();
+	prepare(&writable, &job).expect("the statement compiles");
+	let result = run(&writable, &job);
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(
+		result.error.as_ref().map(|error| error.kind),
+		Some(ErrorKind::ResourceLimit)
+	);
+	// The rows were inserted before the result could be handed over, and they stay: the execution
+	// is  but the write is real, so the report is , never .
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+	assert_eq!(
+		result.error.as_ref().and_then(|error| error.rollback),
+		Some(Rollback::Unknown)
+	);
+	assert_eq!(committed_names(&path, &["A", "B"]), 2);
+}
+
+#[test]
+fn an_update_returning_that_exceeds_the_limit_is_not_reported_as_rolled_back() {
+	let dir = TempDir::new("rollback-update");
+	let path = dir.database("db.sqlite");
+	let writable = open(&path, false);
+	let mut request = params(
+		"UPDATE customers SET name = name || '!' RETURNING id, name",
+		"statement",
+	);
+	request.insert("maxInitialRows".into(), json!(1));
+	let job = Job::parse("s_1e1", &request, writable.read_only(), 4).unwrap();
+	prepare(&writable, &job).expect("the statement compiles");
+	let result = run(&writable, &job);
+	assert_eq!(result.state, State::Failed);
+	// The update ran before its result was refused; the rows it changed stay changed.
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+	let connection = rusqlite::Connection::open(&path).unwrap();
+	let updated: i64 = connection
+		.query_row(
+			"SELECT count(*) FROM customers WHERE name LIKE '%!%'",
+			[],
+			|row| row.get(0),
+		)
+		.unwrap();
+	assert_eq!(updated, 2, "the update is real, and the outcome says so");
+}
+
+#[test]
+fn a_trigger_that_writes_is_part_of_what_the_failed_statement_did() {
+	// The trigger runs inside the statement, so a failure of the statement undoes its side effects
+	// too; the report follows the statement, not the SQL text.
+	let dir = TempDir::new("rollback-trigger");
+	let path = database_with_trigger(&dir);
+	let writable = open(&path, false);
+	let (_, prepared, result) = outcome(
+		&writable,
+		"INSERT INTO customers(name) VALUES ('Triggered'); INSERT INTO missing(x) VALUES (1)",
+		"script",
+	);
+	prepared.expect("the first statement compiles");
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+	let connection = rusqlite::Connection::open(&path).unwrap();
+	let audited: i64 = connection
+		.query_row(
+			"SELECT count(*) FROM audit WHERE name = 'Triggered'",
+			[],
+			|row| row.get(0),
+		)
+		.unwrap();
+	assert_eq!(audited, 1, "the trigger committed with its statement");
+}
+
+#[test]
+fn a_cancelled_write_reports_an_unknown_commit_state() {
+	let dir = TempDir::new("rollback-cancel");
+	let writable = open(&dir.database("db.sqlite"), false);
+	let (_, prepared, result) = run_with(
+		&writable,
+		"INSERT INTO customers(name) SELECT 'Cancelled' FROM (WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT x FROM n)",
+		"statement",
+		60_000,
+		4,
+		|cancelled: &Job| {
+			// The cancel has to arrive while the statement runs, so the flag is set from another
+			// thread and the run starts without waiting for it.
+			let stop = cancelled.stop();
+			thread::spawn(move || {
+				thread::sleep(std::time::Duration::from_millis(50));
+				Stop::store(&stop, Stop::Cancelled);
+			});
+		},
+	);
+	prepared.expect("the statement compiles");
+	assert_eq!(result.state, State::Cancelled);
+	// The stop lands inside SQLite's own statement; the write may or may not have committed, and
+	// the outcome may not claim either way. This path answers through , which
+	// carries no rollback answer, so the run reports  for a writer.
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+}
+
+#[test]
+fn a_timed_out_write_reports_an_unknown_commit_state() {
+	let dir = TempDir::new("rollback-timeout");
+	let writable = open(&dir.database("db.sqlite"), false);
+	let (_, prepared, result) = outcome_with_timeout(
+		&writable,
+		"INSERT INTO customers(name) SELECT 'TimedOut' FROM (WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT x FROM n)",
+		"statement",
+		50,
+	);
+	prepared.expect("the statement compiles");
+	assert_eq!(result.state, State::Cancelled);
+	assert_eq!(
+		result.error.as_ref().map(|error| error.kind),
+		Some(ErrorKind::QueryTimeout)
+	);
+	// SQLite undoes the interrupted statement, but the runtime did not do it and cannot prove it:
+	// the report stays conservative (ADR 0002 follow-up 14).
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+}
+
+/// A second database next to `dir`, so a read-only session can try to attach and write it.
+fn attached_database(dir: &TempDir, name: &str) -> std::path::PathBuf {
+	let path = dir.database(name);
+	let connection = rusqlite::Connection::open(&path).unwrap();
+	connection
+		.execute_batch(
+			"CREATE TABLE linked(id INTEGER PRIMARY KEY, name TEXT);
+			INSERT INTO linked(name) VALUES ('existing');",
+		)
+		.unwrap();
+	path
+}
+
+#[test]
+fn a_read_only_session_cannot_write_an_attached_database() {
+	// SQLITE_OPEN_READONLY applies to every database the connection attaches, not only the main
+	// one; this test pins that behaviour rather than assuming it (the reviewer's note: do not
+	// presume the hole exists — measure it).
+	let dir = TempDir::new("worker-attach");
+	let main = dir.database("main.sqlite");
+	let other = attached_database(&dir, "other.sqlite");
+	let ro = open(&main, true);
+	let attach = format!("ATTACH DATABASE '{}' AS other", other.display());
+	let (_, prepared, result) = outcome(&ro, &attach, "statement");
+	prepared.expect("ATTACH compiles");
+	assert_eq!(result.state, State::Completed, "{result:?}");
+
+	for sql in [
+		"INSERT INTO other.linked(name) VALUES ('added')",
+		"UPDATE other.linked SET name = 'changed'",
+		"DELETE FROM other.linked",
+		"CREATE TABLE other.extra(x INTEGER)",
+		"DROP TABLE other.linked",
+		"ALTER TABLE other.linked ADD COLUMN note TEXT",
+	] {
+		let (_, prepared, result) = outcome(&ro, sql, "statement");
+		prepared.expect("the statement compiles; SQLite refuses it when it runs");
+		assert_eq!(result.state, State::Failed, "{sql}");
+		assert_eq!(
+			result.error.expect("a failure names its cause").kind,
+			ErrorKind::ReadOnlyDenied,
+			"{sql}"
+		);
+	}
+	// The attached file is exactly as it was.
+	let connection = rusqlite::Connection::open(&other).unwrap();
+	let rows: i64 = connection
+		.query_row("SELECT count(*) FROM linked", [], |row| row.get(0))
+		.unwrap();
+	assert_eq!(rows, 1, "nothing was written to the attached database");
+	let names: String = connection
+		.query_row("SELECT name FROM linked", [], |row| row.get(0))
+		.unwrap();
+	assert_eq!(names, "existing");
+	let objects: i64 = connection
+		.query_row(
+			"SELECT count(*) FROM sqlite_master WHERE name IN ('linked', 'extra')",
+			[],
+			|row| row.get(0),
+		)
+		.unwrap();
+	assert_eq!(objects, 1, "no schema change reached the attached database");
+}
+
+#[test]
+fn pragma_edges_do_not_escape_a_read_only_session() {
+	// The read-only mode is the boundary, not a list of statements: a PRAGMA that would change
+	// the file is refused while the connection stays usable.
+	let dir = TempDir::new("worker-pragma");
+	let path = dir.database("db.sqlite");
+	let ro = open(&path, true);
+	// Measured, not assumed: SQLite's own answer differs per pragma — some are refused as a write
+	// (`READ_ONLY_DENIED`), some are accepted and silently ignored. What the runtime guarantees is
+	// the file itself, so that is what is asserted; a state is only checked for being one of the
+	// two honest answers, never `completed` with a write.
+	for sql in [
+		"PRAGMA writable_schema=ON",
+		"PRAGMA user_version=7",
+		"PRAGMA application_id=42",
+	] {
+		let (_, prepared, result) = outcome(&ro, sql, "statement");
+		prepared.expect("the pragma compiles");
+		match result.state {
+			State::Failed => assert_eq!(
+				result.error.expect("a failure names its cause").kind,
+				ErrorKind::ReadOnlyDenied,
+				"{sql}"
+			),
+			State::Completed => {}
+			other => panic!("{sql}: {other:?}"),
+		}
+	}
+	// The value the pragma tried to change is still zero on a fresh connection.
+	let connection = rusqlite::Connection::open(&path).unwrap();
+	let version: i64 = connection
+		.query_row("PRAGMA user_version", [], |row| row.get(0))
+		.unwrap();
+	assert_eq!(version, 0, "the file was not modified");
+	let application_id: i64 = connection
+		.query_row("PRAGMA application_id", [], |row| row.get(0))
+		.unwrap();
+	assert_eq!(application_id, 0);
+	// Reading pragmas is still allowed, and the database is still readable.
+	for sql in ["PRAGMA user_version", "PRAGMA application_id"] {
+		let (_, prepared, result) = outcome(&ro, sql, "statement");
+		prepared.expect("the pragma compiles");
+		assert_eq!(result.state, State::Completed, "{sql}");
+	}
+	let count = one_result(outcome(&ro, "SELECT count(*) FROM customers", "statement").2);
+	assert_eq!(
+		Value::Array(count.rows.into_iter().map(Value::Array).collect()),
+		json!([[{"type": "int64", "text": "2"}]])
+	);
+}
+
+#[test]
+fn a_uri_cannot_be_used_to_open_a_read_only_profile_read_write() {
+	// Paths are canonicalised before SQLite sees them, so a `file:` URI never reaches the URI
+	// parser; `mode=rwc` would otherwise create or open a database for writing. The same check
+	// runs for `connection.test` and `connection.open` (`sqlite::resolve`).
+	let dir = TempDir::new("worker-uri");
+	let path = dir.database("db.sqlite");
+	let absolute = path.display().to_string();
+	for candidate in [
+		format!("file:{absolute}?mode=rwc"),
+		format!("file:{absolute}?mode=rw"),
+		format!("file:{absolute}"),
+		"file:new.sqlite?mode=rwc".to_owned(),
+	] {
+		let error = crate::sqlite::Database::open(&candidate, true).expect_err(&candidate);
+		assert_eq!(error.kind, ErrorKind::InvalidParams, "{candidate}");
+	}
+	// No file was created by any of the attempts.
+	let entries: Vec<String> = std::fs::read_dir(dir.join(""))
+		.unwrap()
+		.map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+		.collect();
+	assert_eq!(
+		entries,
+		["db.sqlite"],
+		"no URI created a database: {entries:?}"
+	);
+}

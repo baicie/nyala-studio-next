@@ -57,6 +57,7 @@ export interface INyalaRuntimeErrorObjectData {
 	readonly executionId?: NyalaId;
 	readonly sessionId?: NyalaId;
 	readonly sqlState?: string | null;
+	readonly executionRollback?: 'rolled_back' | 'unknown';
 }
 
 export interface INyalaRuntimeHelloParams {

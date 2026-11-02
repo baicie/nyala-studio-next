@@ -140,7 +140,10 @@ rust/
 11. **N-107**：结果在内存中整段保留（上限 `MAX_CONCURRENT_EXECUTIONS` 个执行、每个 `maxInitialRows` 行与 16 MiB），`result.fetchPage` 只做前向切片；真正的流式游标仍属 N-107。TTL 到期回收已实现并有测试：`maxResultTtlSecs` 在每次 `query.execute`、`result.fetchPage` 与安装句柄时清理过期句柄，`query::tests::a_handle_nobody_fetches_expires_after_its_ttl` 用零 TTL 证明句柄在过期后回 `RESULT_EXPIRED` 且从 `pendingResults` 消失（2026-11-02 补测）。
 12. **约束违例没有专用 kind**：v1 错误码表的 19 个 kind 里没有“约束违例”，而 `v1/` 冻结（README §8）。`UNIQUE` / `NOT NULL` / `CHECK` 失败与整数溢出一并报 `SQL_SYNTAX`，并回填 `data.sqlState`（SQLite 扩展结果码：`1555`、`2067`、`1299` 等，语法错误是 `1`），客户端据此区分“文本编译不了”与“数据被拒绝”；`sqlState` 字段 schema 与 README §7 本来就有，样例 rq_009 记录了 `"1"`。`CONSTRAINT_VIOLATION` 一类的新 kind 属后续 minor，需要单独合同 PR 与 ADR。（2026-11-02 决策。）
 13. ~~**`result.fetchPage` 受帧上限约束**~~ 已完成（2026-11-02）：回复必须能装进一帧，否则 `write_message` 失败会让整个 runtime 退出、所有会话一起丢失。页面在接近 `frameMaxBytes` 时提前结束并回 `hasMore: true` + `nextCursor`，这不是截断——行仍在句柄里，客户端按 cursor 继续取。单行本身超过一帧预算时，执行在**安装句柄时**就报 `RESOURCE_LIMIT`（`failed`，不交结果），而不是先 `completed` 再让每一页都失败：`Executions::finished` 用与 `fetch_page` 相同的预算（`row_budget`）逐行量 JSON。`MAX_BLOB_BYTES` = 1 MiB 与 `MAX_RESULT_BYTES` = 16 MiB 保护不了这一点——一行可以有多个 cell，8 个 1 MiB blob 只占 8 MiB。测试：`query::tests::a_result_with_a_row_too_wide_for_a_frame_fails_instead_of_completing`（注册表）与 `tests/stdio.rs` 的同名端到端用例（真实进程）。流式游标仍属 N-107。
-14. **被拒绝的结果收不回已经写下的数据**：`INSERT … RETURNING` 在客户端读完行之前已经应用写入，而且 SQLite 在自提交模式下会在语句自己的事务里结束它，`ROLLBACK` 无从下手。结果超过 `maxInitialRows` 时执行报 `failed` / `RESOURCE_LIMIT`，写入却已生效（N-108 复查确认，2026-11-02）。可行的修法是脚本与单语句都在执行外再包一层事务、只有结果被接受才提交，这改变语句的原子性语义，归入 N-107 与 N-402（事务所有权）一起决定。
+14. **被拒绝的结果收不回已经写下的数据（2026-11-03 部分关闭）**：`INSERT … RETURNING` 在客户端读完行之前已经应用写入，而且 SQLite 在自提交模式下会在语句自己的事务里结束它，`ROLLBACK` 无从下手。结果超过 `maxInitialRows` 时执行报 `failed` / `RESOURCE_LIMIT`，写入却已生效（N-108 复查确认，2026-11-02；PR A 的探针在真实 SQLite 上复现：`INSERT … RETURNING` 被行数上限截断后 `count(*)` 多出 2 行）。
+    - **本轮交付的诚实报告**：错误信封新增 `data.executionRollback`（`"rolled_back"` / `"unknown"`，README §7）。执行失败且没有交付结果时，如果失败语句或其脚本中的前序语句可能写过库，运行时报 `unknown`；只有确定为只读或未运行的失败才报 `rolled_back`。客户端据此**不会**把一次可能已提交的写当作失败重放。`Executions::finished` 里因结果上限/单行超帧而拒绝句柄时同样报 `unknown`。
+    - **本轮明确没有做的**：用外层事务包住 `query.execute` 并只在结果被接受时提交。尝试过并**放弃**：v1 没有执行级事务，脚本里的 `BEGIN` / `COMMIT` / `SAVEPOINT` 属于客户端；在任何脚本外层再包一层事务会改变这些脚本的语义（内层 `BEGIN` 直接失败，`PRAGMA journal_mode`、`VACUUM` 报 “cannot … from within a transaction”），也会把并发会话的锁持有时间从“语句级”扩大到“结果生命周期”。正确的事务所有权（N-402）需要显式的 `transaction.*` 方法与客户端可见的提交点，归于后续任务。
+    - **未关闭部分**：写入已提交而结果被拒时的实际回滚能力；以及取消/超时中断的写语句，SQLite 自己的回滚行为仍是唯一保证（运行时不加断言，统一报 `unknown`）。
 
 ## 证据
 
@@ -272,6 +275,8 @@ git diff --check                                                 # PASS
 - 未验证：Node 24.18.0 指定版本（本机 24.16.0）、macOS、MSRV 1.82。
 
 ## 修订记录
+
+- **2026-11-03 · P1 SQL 正确性加固（PR A）**：`value.rs` 把空 BLOB 编码为 `{"type":"bytes","encoding":"base64","data":""}`，不再混同 SQL NULL；`$defs/cell` 的 `bytes.data` 放宽为允许空串（README §6 勘误），Rust 与 TS 生成声明重新生成，Rust/Node 两侧校验器各补正/负向 cell 用例。失败执行新增 `data.executionRollback`（`rolled_back` / `unknown`），后续项 14 记录其局限。新增只读边界回归：`ATTACH` 后写附加库、`PRAGMA` 边界、`file:` URI 提权、失败后数据不变。`nyala/rpc/**` 有合同改动（只新增可选字段与放宽 `minLength`，按 §8 属勘误，不升 v2）。
 
 - **2026-11-02 · 状态文档追赶主线（N-107 后续）**：后续项 11 的 TTL 验收由零 TTL 测试关闭、13 已随 PR #43 关闭，证据节的 N-107 已知缺口改为只剩后续项 14；`row_budget` 增加文档注释，记下分页预算固定为 `DEFAULT_FRAME_MAX_BYTES`、与 `write_message` 一致，而 hello 的 params schema 没有覆盖 limits 的字段——以后若加覆盖，必须同时改这两处。`nyala/rpc/**` 未改。
 
