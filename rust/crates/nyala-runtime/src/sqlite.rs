@@ -32,6 +32,10 @@ pub fn library_version() -> &'static str {
 }
 
 /// An open SQLite connection.
+///
+/// rusqlite's `Connection` is `Send` but not `Sync`, so at most one thread may use it at a time.
+/// A session therefore owns its `Database` on a worker thread; the request loop keeps only a
+/// [`ConnectionInterrupt`], which SQLite allows from any thread (see `query.rs`).
 pub struct Database {
 	connection: Connection,
 	read_only: bool,
@@ -105,6 +109,16 @@ impl Database {
 		&self.connection
 	}
 
+	/// A handle that interrupts a statement running on this connection from another thread,
+	/// which is how `query.cancel` reaches a statement the request loop is not executing
+	/// (`query.rs`). The handle shares the connection's interrupt slot, so it is only used while
+	/// the `Database` is alive; the session drops it together with the worker.
+	pub(crate) fn interrupt_handle(&self) -> ConnectionInterrupt {
+		ConnectionInterrupt {
+			handle: self.connection.get_interrupt_handle(),
+		}
+	}
+
 	/// Closes the connection. If closing fails, the database is still open and is returned
 	/// together with the error.
 	// The error carries the database back so the caller keeps it alive; boxing it would hide that
@@ -128,6 +142,21 @@ impl Database {
 				error,
 			)
 		})
+	}
+}
+
+/// Interrupts the statement running on one connection from another thread.
+///
+/// SQLite allows `sqlite3_interrupt` from any thread, but not after the connection closed; the
+/// handle is therefore only reachable through the worker that owns the `Database`, and the
+/// worker drops it before it closes the connection.
+pub(crate) struct ConnectionInterrupt {
+	handle: rusqlite::InterruptHandle,
+}
+
+impl ConnectionInterrupt {
+	pub(crate) fn interrupt(&self) {
+		self.handle.interrupt();
 	}
 }
 

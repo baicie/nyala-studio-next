@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use nyala_runtime::server::serve;
 
 fn main() -> ExitCode {
-	let status = serve(io::stdin().lock(), io::stdout().lock(), io::stderr());
+	// `serve` reads on a thread of its own, so it takes the `Send` handle, not a lock.
+	let status = serve(io::stdin(), io::stdout().lock(), io::stderr());
 	ExitCode::from(status.code())
 }
