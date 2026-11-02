@@ -6,11 +6,12 @@
 //! Envelope parsing and protocol constants (`nyala/rpc/README.md` §2–§4).
 //!
 //! Payloads are kept as [`serde_json::Value`] and checked explicitly instead of being mapped to
-//! hand-written DTOs: generated TS/Rust types are N-110's job, and a second DTO set here would
-//! be a second source of truth.
+//! hand-written DTOs: the method list and the id pattern come from [`crate::contract`], which is
+//! generated from `nyala/rpc/v1/` (N-110), so neither can drift from the contract.
 
 use serde_json::{Map, Value};
 
+use crate::contract;
 use crate::error::{ErrorKind, RpcError};
 
 pub const JSONRPC_VERSION: &str = "2.0";
@@ -20,22 +21,9 @@ pub const PROTOCOL_MINOR: i64 = 0;
 /// Reported as `runtimeBuild` in the `runtime.hello` result.
 pub const RUNTIME_BUILD: &str = env!("CARGO_PKG_VERSION");
 
-/// Request methods of the v1 catalog (README §4). Anything else is `METHOD_NOT_FOUND`.
-pub const V1_REQUEST_METHODS: &[&str] = &[
-	"runtime.hello",
-	"runtime.health",
-	"connection.test",
-	"connection.open",
-	"connection.close",
-	"connection.listSessions",
-	"metadata.listObjects",
-	"metadata.describe",
-	"query.execute",
-	"query.cancel",
-	"query.getState",
-	"result.fetchPage",
-	"result.release",
-];
+/// Request methods of the v1 catalog (README §4), generated from the contract's `request` union.
+/// Anything else is `METHOD_NOT_FOUND`.
+pub const V1_REQUEST_METHODS: &[&str] = &contract::REQUEST_METHODS;
 
 /// v1 features this build implements (`README.md` §3). The runtime must not advertise a capability
 /// it cannot serve: `sqlite` unlocks `connection.*` (N-104), `metadata.listObjects` unlocks

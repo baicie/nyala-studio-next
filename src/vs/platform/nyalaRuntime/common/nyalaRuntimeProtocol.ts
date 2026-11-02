@@ -5,12 +5,17 @@
 
 // Client side of the Nyala RPC v1 stdio contract (`nyala/rpc/README.md`): length-prefixed
 // framing and the envelope, hello, health and restart shapes the Electron Main supervisor needs.
-// The contract under `nyala/rpc/v1/` is the source of truth. These declarations are checked
-// against it by `test/node/nyalaRuntimeProtocol.test.ts` until N-110 generates them.
+// The message shapes come from `nyalaRuntimeContract.generated.ts`, which is generated from
+// `nyala/rpc/v1/` by `scripts/nyala/generate-rpc-contract.ts` (N-110); this file adds the
+// runtime value checks and the client-side error kinds on top of them.
 
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { isObject } from '../../../base/common/types.js';
 import { ChunkStream } from '../../../base/parts/ipc/common/ipc.net.js';
+import { INyalaRuntimeErrorObject, INyalaRuntimeErrorObjectData, INyalaRuntimeHealthResult, INyalaRuntimeHelloResult, INyalaRuntimeRestartedParams, NYALA_ERROR_KINDS, NYALA_RPC_ID_PATTERN } from './nyalaRuntimeContract.generated.js';
+
+export { NYALA_ERROR_KINDS, NYALA_RPC_ID_PATTERN, NYALA_RPC_NOTIFICATION_METHODS, NYALA_RPC_REQUEST_METHODS } from './nyalaRuntimeContract.generated.js';
+export type { INyalaRuntimeErrorObject, INyalaRuntimeErrorObjectData, INyalaRuntimeHealthResult, INyalaRuntimeHelloParams, INyalaRuntimeHelloResult, INyalaRuntimeRestartedParams, NyalaErrorKindSpec } from './nyalaRuntimeContract.generated.js';
 
 //#region Framing
 
@@ -112,33 +117,20 @@ export class NyalaFrameDecoder {
 export const NYALA_PROTOCOL_MAJOR = 1;
 export const NYALA_PROTOCOL_MINOR = 0;
 
-/** `error.data` of a failure response (README section 7). */
-export interface INyalaRuntimeErrorData {
-	readonly kind: string;
-	readonly retryable: boolean;
-	readonly safeDetail?: string;
-	readonly executionId?: string;
-	readonly sessionId?: string;
-	readonly sqlState?: string | null;
-}
-
-export interface INyalaRuntimeErrorObject {
-	readonly code: number;
-	readonly message: string;
-	readonly data: INyalaRuntimeErrorData;
-}
+/** `error.data` of a failure response (README section 7); generated from `$defs/error`. */
+export type INyalaRuntimeErrorData = INyalaRuntimeErrorObjectData;
 
 /**
- * Error kinds the client raises itself. `code` and `retryable` repeat `nyala/rpc/v1/error-codes.json`;
- * a test compares them with the table.
+ * Error kinds the client raises itself. `code` and `retryable` are the generated table's, so they
+ * cannot drift from `nyala/rpc/v1/error-codes.json`; the comments say when the client raises one.
  */
 export const NyalaRuntimeClientErrors = {
 	/** The runtime process exited or was stopped; every handle it issued is void. */
-	runtimeLost: { kind: 'RUNTIME_LOST', code: -32012, retryable: true },
+	runtimeLost: NYALA_ERROR_KINDS.RUNTIME_LOST,
 	/** `protocolMajor` differs, or the runtime's hello reply is not a v1 reply. */
-	protocolMismatch: { kind: 'PROTOCOL_MISMATCH', code: -32011, retryable: false },
+	protocolMismatch: NYALA_ERROR_KINDS.PROTOCOL_MISMATCH,
 	/** A request does not fit into the negotiated frame limit; it is not truncated. */
-	resourceLimit: { kind: 'RESOURCE_LIMIT', code: -32014, retryable: false },
+	resourceLimit: NYALA_ERROR_KINDS.RESOURCE_LIMIT,
 } as const;
 
 /**
@@ -186,7 +178,8 @@ interface IRawError {
 	readonly data?: { readonly kind?: unknown; readonly retryable?: unknown; readonly safeDetail?: unknown };
 }
 
-const ID_PATTERN = /^[a-z]{1,4}_[A-Za-z0-9]{1,64}$/;
+/** The `$defs/id` pattern, generated from the contract so the two cannot drift. */
+const ID_PATTERN = new RegExp(NYALA_RPC_ID_PATTERN);
 
 /** Whether `value` is a request id as `$defs/id` of the v1 schema defines it. */
 export function isNyalaRequestId(value: unknown): value is string {
@@ -246,46 +239,8 @@ export function parseNyalaRuntimeMessage(payload: VSBuffer): NyalaRuntimeMessage
 
 //#region runtime.hello, runtime.health, runtime.restarted
 
-export interface INyalaRuntimeHelloParams {
-	readonly protocolMajor: number;
-	readonly protocolMinor: number;
-	readonly clientBuild: string;
-	readonly supportedFeatures: readonly string[];
-}
-
-export interface INyalaRuntimeLimits {
-	readonly frameMaxBytes: number;
-	readonly maxInitialRows: number;
-	readonly maxPageRows: number;
-	readonly maxResultTtlSecs: number;
-	readonly maxConcurrentExecutions: number;
-}
-
-export interface INyalaRuntimeHelloResult {
-	readonly protocolMajor: number;
-	readonly protocolMinor: number;
-	readonly runtimeBuild: string;
-	readonly features: readonly string[];
-	readonly limits: INyalaRuntimeLimits;
-}
-
-export interface INyalaRuntimeHealthResult {
-	readonly status: 'ok' | 'degraded';
-	readonly uptimeMs: number;
-	readonly activeSessions: number;
-	readonly activeExecutions: number;
-	readonly pendingResults: number;
-}
-
-/**
- * Params of the `runtime.restarted` notification. After it, every session, execution and result
- * handle of the previous process is void, and no write is replayed automatically (README section 4).
- */
-export interface INyalaRuntimeRestartedParams {
-	readonly reason: string;
-	readonly pendingExecutions: 'unknown' | 'none';
-	readonly previousBuild?: string;
-}
+/** `limits` of the `runtime.hello` result; the type is generated from the contract. */
+export type INyalaRuntimeLimits = INyalaRuntimeHelloResult['limits'];
 
 function isCount(value: unknown, minimum = 0): value is number {
 	return Number.isInteger(value) && (value as number) >= minimum;

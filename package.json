@@ -72,6 +72,8 @@
     "vscode-dts-compile-check": "tsc --project src/tsconfig.vscode-dts.json && tsc --project src/tsconfig.vscode-proposed-dts.json",
     "valid-layers-check": "node build/checker/layersChecker.ts && node build/checker/layersTypeCheck.ts",
     "nyala:validate-rpc": "node --experimental-strip-types scripts/nyala/validate-rpc-contract.ts",
+    "nyala:generate-rpc": "node --experimental-strip-types scripts/nyala/generate-rpc-contract.ts",
+    "nyala:check-rpc-generated": "node --experimental-strip-types scripts/nyala/generate-rpc-contract.ts --check",
     "define-class-fields-check": "node --max-old-space-size=8192 build/lib/propertyInitOrderChecker.ts && tsc --project src/tsconfig.defineClassFields.json",
     "update-distro": "node build/npm/update-distro.ts",
     "export-policy-data": "node build/lib/policies/exportPolicyData.ts",

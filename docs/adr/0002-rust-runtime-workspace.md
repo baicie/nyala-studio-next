@@ -40,8 +40,11 @@ rust/
 
 ### 3. 合同是唯一事实源
 
-- 不手写一套 DTO：envelope 与 params 以 `serde_json::Value` 显式校验。TS/Rust 类型生成是 N-110 的工作，在此之前多一套 DTO 就多一个事实源。
-- `error.rs` 的错误表与 `nyala/rpc/v1/error-codes.json` 逐项比对（`tests/conformance.rs`），任何一边单独改动都会让测试失败。
+- 不手写一套 DTO：envelope 与 params 以 `serde_json::Value` 显式校验。N-110 生成的是**作为数据使用的合同事实**（方法目录、id 模式、错误表）与 TS 侧的消息类型，不是带校验逻辑的 serde DTO；两套 DTO 会让“合同说什么”和“运行时接受什么”重新分叉。
+- TS 与 Rust 的生成声明都来自 `scripts/nyala/generate-rpc-contract.ts`（`npm run nyala:generate-rpc`），输入只有 `nyala/rpc/v1/`：`nyalaRuntimeContract.generated.ts`（方法目录、`$defs` 派生的 params/result 类型、cell 联合、错误表 `NYALA_ERROR_KINDS`）与 `rust/.../src/contract.rs`（`REQUEST_METHODS`、`NOTIFICATION_METHODS`、`ID_PATTERN`、每个错误 kind 的 `ErrorKindSpec`）。`npm run nyala:check-rpc-generated` 在 CI 的 `Product baseline` job 中对两个文件做 `--check`。
+- `error.rs` 不再保存 `kind`/`code`/`retryable`：`ErrorKind::spec()` 从 `contract::` 常量取值，所以向 `error-codes.json` 增删 kind 而不重新生成，Rust 端直接编译失败；`protocol.rs` 的 `V1_REQUEST_METHODS` 直接引用 `contract::REQUEST_METHODS`。
+- `tests/contract.rs` 在 Rust 侧、`nyalaRuntimeContract.test.ts` 在 TS 侧各自重读 `nyala/rpc/v1/` 并与生成值逐项比较，覆盖“改了合同但没跑生成器”的检出（CI 的 `--check` 之外的第二道，且在未安装 Node 的 Rust 测试环境里也成立）。
+- `tests/conformance.rs` 的错误表比对与 `nyalaRuntimeProtocol.test.ts` 的客户端错误 kind 比对保留：前者校验 `ErrorKind` 的序列化行为，后者校验客户端自造的三个错误对象确实来自生成的表。
 - `tests/conformance.rs` 直接读取 `nyala/rpc/v1/` 下的 schema、错误码表与 `conformance.ndjson`：每条样例经 Rust 编码后逐字节和粘包解码还原；样例与负向对照经同一个 schema 子集求值器校验；每个样例请求交给 `Server`，回复须符合 envelope schema、方法 result schema 与错误码表。不复制任何样例或错误码。
 
 ### 4. 合同未写死之处的实现选择
@@ -105,7 +108,8 @@ rust/
 
 - **加入 `cli/` workspace**：会修改上游 `cli/Cargo.toml`，计入补丁数并在每次 Code OSS 同步时产生冲突。
 - **一次拆出 `nyala-protocol` / `nyala-core` / `nyala-runtime`**：现在只有一个使用方，拆分只增加样板；设计包也建议先单 crate。
-- **serde derive DTO**：手写类型与合同并存即两个事实源，违背 README §8，等 N-110 的生成方案。
+- **serde derive DTO**：手写类型与合同并存即两个事实源，违背 README §8。N-110 生成后仍不采用：运行时的 envelope 校验是显式代码（`protocol.rs`），再生成一套 serde DTO 会引入第二套校验语义；生成范围只覆盖“作为数据使用”的合同事实。
+- **从 schema 生成完整的 TS 运行时校验器**：需要生成器实现 schema 的求值语义，体积与风险都超过手写 `isNyalaRuntimeHelloResult` 等四个检查函数，且这些检查覆盖的仅是客户端消费的 hello/health/restarted 三个结果。
 - **Tokio + 异步 stdio**：此阶段没有并发需求，留到执行与取消落地时再引入。
 - **rusqlite 0.41.x**：需要 Rust 1.89 与 edition 2024，超出 workspace MSRV。
 - **系统 SQLite（不用 `bundled`）**：各平台版本与编译选项不同，Windows 没有现成的系统库，行为无法统一测试。
@@ -131,7 +135,7 @@ rust/
 7. **路径安全的已知缺口**：Windows 上映射到网络位置的盘符（`net use Z: \\server\share`）和指向共享的符号链接或 junction，规范化结果可能仍是盘符形式，无法从路径判定为网络位置；`SQLITE_OPEN_NOFOLLOW` 只在 Unix 上生效，Windows 上检查与打开之间存在替换为链接的窗口。需要时可改为打开句柄后用 `GetFinalPathNameByHandle` / `GetFileInformationByHandle` 核对。
 8. ~~**N-109**：`readOnly: true` 只依赖 `SQLITE_OPEN_READONLY`，不检查 SQL 文本~~ 已完成（2026-11-02）：DML、DDL（`CREATE` / `DROP` / `ALTER`）与带副作用的语句都由 SQLite 的只读模式拒绝，回 `READ_ONLY_DENIED`，测试同时证明数据与 schema 未被修改、同一会话随后仍可读（`query::tests::a_read_only_session_lets_sqlite_refuse_every_kind_of_write`）。
 9. ~~**N-105 / N-108**：`supportsMetadata` 与 `cancel` 分别在 metadata 与中断实现后改为真实值~~ 已完成（N-105/N-106）：`supportsMetadata: true`，`cancel: "cooperative"`。`query.cancel` 本身仍无法中断运行中的执行——v1 逐请求处理，收到 `query.cancel` 时语句已经结束，所以它回 `accepted: false` 与终态；真正的中断（跨线程取消）随 N-108 的异步执行落地。
-10. **N-106 留下的合同缺口**：`query.execute` 的结果没有“影响行数”字段，DML/DDL 执行成功时只能回 `{executionId, state: "completed", sequence}` 而无法告知写了几行；客户端需要另查。由 N-110 或下一次 minor 修订评估。
+10. **N-106 留下的合同缺口**：`query.execute` 的结果没有“影响行数”字段，DML/DDL 执行成功时只能回 `{executionId, state: "completed", sequence}` 而无法告知写了几行；客户端需要另查。N-110 只做生成，不改变合同；留给下一次 minor 修订评估。
 11. **N-107**：结果在内存中整段保留（上限 `MAX_CONCURRENT_EXECUTIONS` 个执行、每个 `maxInitialRows` 行与 16 MiB），`result.fetchPage` 只做前向切片；真正的流式游标与 TTL 到期回收的完整验收属 N-107。当前 TTL（`maxResultTtlSecs`）在每次 fetch/execute 时清理过期句柄。
 12. **约束违例没有专用 kind**：v1 错误码表的 19 个 kind 里没有“约束违例”，而 `v1/` 冻结（README §8）。`UNIQUE` / `NOT NULL` / `CHECK` 失败与整数溢出一并报 `SQL_SYNTAX`，并回填 `data.sqlState`（SQLite 扩展结果码：`1555`、`2067`、`1299` 等，语法错误是 `1`），客户端据此区分“文本编译不了”与“数据被拒绝”；`sqlState` 字段 schema 与 README §7 本来就有，样例 rq_009 记录了 `"1"`。`CONSTRAINT_VIOLATION` 一类的新 kind 属后续 minor，需要单独合同 PR 与 ADR。（2026-11-02 决策。）
 13. **`result.fetchPage` 受帧上限约束**：回复必须能装进一帧，否则 `write_message` 失败会让整个 runtime 退出、所有会话一起丢失。页面在接近 `frameMaxBytes` 时提前结束并回 `hasMore: true` + `nextCursor`，这不是截断——行仍在句柄里，客户端按 cursor 继续取。单行本身就超过一帧预算时回 `RESOURCE_LIMIT`（`MAX_BLOB_BYTES` = 1 MiB 与 `MAX_RESULT_BYTES` = 16 MiB 已保证不会发生）。
@@ -207,7 +211,33 @@ git diff --check                                                 # PASS
 - 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
 - **已合入**：PR #37，squash `b9f00ff4326`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41370054066`）。
 
+### N-110（2026-11-02）
+
+环境同上（Windows 11，cargo 1.96.0；Node v24.16.0）。
+
+```bash
+npm run nyala:validate-rpc                                       # PASS（合同未改：15 methods / 19 error kinds / 36 definitions）
+npm run nyala:generate-rpc                                       # 写出两个文件
+npm run nyala:check-rpc-generated                                # PASS（2 files up to date）
+cd rust
+cargo fmt --all --check                                          # PASS
+cargo clippy --workspace --all-targets --locked -- -D warnings   # PASS
+cargo test --workspace --locked                                  # PASS：单元 91 + conformance 8 + stdio 19 + contract 4
+cd ..
+git diff --check                                                 # PASS
+```
+
+- **生成器**：`scripts/nyala/generate-rpc-contract.ts` 只读 `nyala/rpc/v1/nyala-rpc.v1.schema.json` 与 `error-codes.json`，只用 `node:` 内置模块（CI 的 `Product baseline` job 没有 `npm ci`），以 `node --experimental-strip-types` 运行。遇到未实现的 schema 关键字直接失败，与两个合同校验脚本同一策略：schema 改动不会静默产出错的声明。
+- **TS 产物**：`nyalaRuntimeContract.generated.ts` 生成 `NYALA_RPC_ID_PATTERN`、请求/通知方法目录、`NyalaId`、`NyalaCell` 判别联合、`INyalaRuntimeErrorObject`（`$defs/error`）、每个方法的 params/result 接口（嵌套对象按路径命名，如 `INyalaRuntimeHelloResultLimits`）、`INyalaRuntimeRequestParams`/`INyalaRuntimeRequestResults` 与 `NYALA_ERROR_KINDS`。`nyalaRuntimeProtocol.ts` 删掉了手写的同名接口，只保留值检查与客户端错误对象。
+- **Rust 产物**：`src/contract.rs` 生成 `REQUEST_METHODS`、`NOTIFICATION_METHODS`、`ID_PATTERN`、`ErrorKindSpec` 与 19 个 kind 常量。生成器按 rustfmt 的规则输出（100 列内联、超出展开；结构体字面量始终展开），所以重新生成不会让 `cargo fmt --check` 失败。
+- **两侧的编译期/测试期绊线**：`error.rs` 的 `match` 引用 `contract::<KIND>`，合同增删 kind 不重新生成即编译失败；`protocol.rs` 的 `V1_REQUEST_METHODS` 引用生成的目录。`tests/contract.rs` 与 `nyalaRuntimeContract.test.ts` 各自重读合同文件比对生成值，覆盖“合同改了但生成器没跑”。
+- **CI**：`Product baseline` job 在 `nyala:validate-rpc` 之后运行 `npm run nyala:check-rpc-generated`（比较 CRLF 归一化后的内容，Windows 检出不会误报）；`Unit tests (node)` 的文件列表加入 `nyalaRuntimeContract.test.ts`。`Rust runtime` job 不加生成步骤——它没有 `setup-node`，而该检查已在 `Product baseline` 覆盖两个文件。
+- **未做**：从 schema 生成 TS 运行时校验器（见“未采纳的替代方案”）；`rust/crates/nyala-runtime/src/server.rs` 的方法分发仍用字符串匹配，只受 `tests/conformance.rs` 的方法覆盖检查约束。
+- 未验证：Node 24.18.0 指定版本（本机 24.16.0）、Linux 四项必需检查、macOS、MSRV 1.82。
+
 ## 修订记录
+
+- **2026-11-02 · N-110 合同生成声明**：§3 的“不手写 DTO”改写为生成范围与绊线说明（生成器、两侧产物、`error.rs` 从 `contract::` 取 kind/code/retryable、两层检测）；“未采纳的替代方案”改写 serde DTO 一条并新增“不生成运行时校验器”；后续项 10 注明 N-110 不改合同；证据。`nyala/rpc/**` 未改。实测发现合并后的 PR #19（`@vscode/markdown-editor` 升级）把修改的上游跟踪文件从 55 增加到 57（`extensions/markdown-language-features/package.json` 与 `package-lock.json`），而 `upstream-base.json` 仍停在 #20 时的 `61`；本 PR 按现有口径把它更正为 `63`（57 + 6）。`src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts` 是新增的非测试 Nyala 源文件，合并后新增数由 6 变为 7、`patchCount` 由 `63` 变为 `64`；生成器、`rust/` 与文档不计入。
 
 - **2026-11-02 · N-105 metadata + N-106 查询执行 + N-109 只读强制**：新增 `metadata.rs`、`query.rs`、`value.rs` 与 §4 中 `runtime.health` 计数、`capabilities`、`readOnly` 三行的实际值；header 与 §2 的依赖说明加入 `column_decltype`/`hooks` 两个 rusqlite feature；后续项 8–13；证据。`nyala/rpc/**` 未改（合同保持 15 methods / 19 kinds / 36 definitions）。已随 PR #37（squash `b9f00ff4326`）合入 `nyala/main`。
 
