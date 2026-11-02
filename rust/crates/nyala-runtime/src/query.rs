@@ -61,6 +61,13 @@ const PAGE_ENVELOPE_RESERVE: usize = 16 * 1024;
 /// Bytes one row may take in a `result.fetchPage` reply. The same budget
 /// [`Executions::fetch_page`] applies to the first row of a page: the frame, less the envelope
 /// reserve, less a further reserve for the columns every page repeats.
+///
+/// `DEFAULT_FRAME_MAX_BYTES` is also what `server::write_message` enforces, and a client cannot
+/// change it: the `runtime.hello` result advertises it, but the method's params schema has no
+/// field to override a limit. If hello ever gains that override, this budget and the write path
+/// have to take the session's negotiated frame size together — measuring pages against 8 MiB
+/// while the transport carries another frame size would let a page that cannot be written look
+/// servable.
 fn row_budget(columns: &[Value]) -> Result<usize, RpcError> {
 	let reserve = PAGE_ENVELOPE_RESERVE
 		.checked_add(array_len(columns)?)

@@ -18,7 +18,7 @@
 | N-103 Supervisor | **PASS / 已合入** | PR #35，squash `24c3cc7aa23`；spawn/kill/restart/backoff/shutdown、同步 spawn 抛错、帧错误换代、每窗口一个 Runtime、staging 与不重放已测；staging 缓存身份为内容 SHA-256 + POSIX 执行位，红绿对照成立（旧实现 4 个内容回归 FAIL）；Linux CI run `41314270226` `71 passing`，含 `✔ staging follows the source execute bits on POSIX and ignores them on Windows`、真实 Runtime 必跑（`NYALA_RUNTIME_REQUIRED=1`）。Windows 原生 Runtime smoke 5/5 是合并前工作树证据，最终 head 未重跑；macOS 与 Linux 原生桌面 smoke **NOT RUN** |
 | 禁用 Chat 的 Agent Host / 词典出站 | **PASS / 已合入** | PR #34，squash `2b73f20285c`；head `a334073f505` 四项必需检查 PASS；Windows 原生 smoke 17/17 PASS，直接 `vscode:restartAgentHost` 被主进程门禁拒绝；真实 enablement 描述符测试 `nyalaAgentHostEnablement.test.ts` 与负向对照（组合树上 1 passing）。一次 Quick Open 超时仍需保留记录；系统级抓包、Linux/macOS 原生、旧 profile、打包版本 **NOT RUN** |
 
-PR #34 与 #35 已于 2026-11-01 合入，N-105/N-106/N-109 随 PR #37（`b9f00ff4326`）合入，N-110 的生成合同随 PR #39（`113a170be69`）合入；但平台覆盖仍未补齐：完整 P1 headless 查询闭环、N-107 的流式游标仍未交付、N-108 的运行中取消/`unknown` 已随 PR #41（squash `e90619d396b`）合入（Linux CI 四项必需检查 PASS，Windows 本机单元/集成测试 PASS）；N-104 的原生只读打开不等于 N-109 完成。
+PR #34 与 #35 已于 2026-11-01 合入，N-105/N-106/N-109 随 PR #37（`b9f00ff4326`）合入，N-110 的生成合同随 PR #39（`113a170be69`）合入，N-108 的运行中取消/`unknown` 随 PR #41（squash `e90619d396b`）合入（Linux CI 四项必需检查 PASS），单行超帧随 PR #43（squash `db514f8837e`）修正。P1 headless 查询闭环（握手 → 打开 → metadata → 执行 → 分页 → release → 关闭 → 退出）由 `tests/stdio.rs::a_query_is_executed_paged_and_released_over_the_pipe` 覆盖；仍未补齐的是 N-107 的流式游标、被拒绝结果的事务语义，以及 Linux/macOS 原生平台门禁。N-104 的原生只读打开不等于 N-109 完成。
 
 ## 必测失败场景
 

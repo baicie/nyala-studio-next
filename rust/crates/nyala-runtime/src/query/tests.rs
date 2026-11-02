@@ -669,3 +669,36 @@ fn a_result_with_a_row_too_wide_for_a_frame_fails_instead_of_completing() {
 	assert_eq!(notifications[0]["params"]["state"], "completed");
 	assert_eq!(registry.pending_results(), 1);
 }
+
+#[test]
+fn a_handle_nobody_fetches_expires_after_its_ttl() {
+	// `maxResultTtlSecs` is the only thing that reclaims a result nobody released, so expiry has
+	// to be observable: a zero TTL puts the deadline at the moment the handle is installed, and
+	// the next request that looks at the clock drops it. The execution itself is terminal either
+	// way and `query.getState` keeps answering for it.
+	let mut registry = ids("s_1");
+	let id = begun(&mut registry, "SELECT 1", "statement");
+	registry.finished(&id, completed_outcome(vec![collected(1)]), Duration::ZERO);
+	assert_eq!(
+		registry.pending_results(),
+		1,
+		"the handle is installed before the clock is looked at again"
+	);
+	assert_eq!(
+		registry
+			.fetch_page(&object(
+				json!({"resultId": "s_1r1", "cursor": null, "limit": 2})
+			))
+			.unwrap_err()
+			.kind,
+		ErrorKind::ResultExpired,
+		"a handle past its TTL is expired, not unknown"
+	);
+	assert_eq!(registry.pending_results(), 0, "expiry releases the handle");
+	assert_eq!(
+		registry
+			.get_state(&object(json!({"executionId": id})))
+			.unwrap()["state"],
+		"completed"
+	);
+}

@@ -933,6 +933,13 @@ fn a_query_is_executed_paged_and_released_over_the_pipe() {
 		"{count}"
 	);
 
+	// The P1 exit path ends with the client closing the session: the worker stops, and the
+	// process still exits on its own once stdin closes.
+	assert_eq!(
+		result(&runtime.call(&close("rq_17", id, generation))),
+		&json!({"closed": true})
+	);
+
 	let (code, stderr) = runtime.finish();
 	assert_eq!(code, Some(0), "{stderr}");
 }

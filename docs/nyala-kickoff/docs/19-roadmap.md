@@ -53,7 +53,7 @@ Exit：空工作区 Electron 启动、原生编辑器/命令可用、Nyala 命�
 
 **P1.3** SQLite metadata + query execute SELECT1 + invalid SQL + read-only/DML guard。**已合入**（N-105/N-106/N-109，PR #37）：`metadata.listObjects/describe`、`query.execute/getState`、`result.fetchPage/release` 与只读强制在 Rust Runtime 内实现并有 headless 证据（DML / DDL / 带副作用语句均被 SQLite 只读模式拒绝）；剩余项见下一行。
 
-**P1.4** ResultHandle/fetchPage/release、cancel/timeout、异常子进程重启与未知执行状态。分页句柄、release、timeout 中断、分页的帧上限保护已随 P1.3 落地；`query.cancel` 对运行中执行的真实中断、`cancel_requested` 与 `unknown` 已在分支 `feat/p1-async-execution` 完成（待合入）；流式游标（N-107 剩余部分）仍待办。
+**P1.4** ResultHandle/fetchPage/release、cancel/timeout、异常子进程重启与未知执行状态。分页句柄、release、timeout 中断、分页的帧上限保护已随 P1.3 落地；`query.cancel` 对运行中执行的真实中断、`cancel_requested` 与 `unknown` 已随 PR #41（squash `e90619d396b`）合入；单行超过一帧的报错位置已由 PR #43（squash `db514f8837e`）修正；流式游标（N-107 剩余部分）仍待办。
 
 Exit：不通过 UI 也能跑集成测试；Rust 内核可复用，RPC 编解码/生命周期通过测试。
 
