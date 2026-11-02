@@ -242,6 +242,7 @@ git diff --check                                                 # PASS
 - **一致性说明**：`conformance.ndjson` rq_010 的 `SELECT count(*)` 只有两行，取消到达前语句通常已结束，本构建在重放里报 `completed`；README §5 允许 `cancel_requested → completed`，真实中断由 `tests/cancellation.rs` 确定性证明。rq_011 / rq_012 的取消样例断言接受 `cancelled` 或 `completed`，并核对其余字段。
 - **未做**：N-107 流式游标（结果仍在内存里整段保留）；同一 Session 的多执行并发（一个连接一次一个语句）；请求 id 复用检测。
 - 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
+- **已合入**：PR #41，squash `e90619d396b`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41422938946`，head `c67bdabc99f`）。
 
 ### N-110（2026-11-02）
 

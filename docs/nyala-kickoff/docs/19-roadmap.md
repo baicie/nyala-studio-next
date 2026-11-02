@@ -22,7 +22,7 @@
 | 阶段 | 当前状态 | 是否阻塞下一阶段 |
 |---|---|---|
 | P0 | 基本完成：1.142.0 macOS Electron Smoke 通过；1.143.0 Windows 原生冒烟 PASS 12/12（PR #24），Reload/Dispose 单元测试已合入（PR #23）；主线 17 步冒烟的两条出站路径修复已随 PR #34（`2b73f20285c`）合入，Windows 17/17 PASS；Linux/macOS 未用 1.143.0 复跑 | 核心 smoke 闭环必须补，不能当发行通过 |
-| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Runtime N-101/N-102（PR #25）与 N-104 SQLite Profile/Session（PR #33，`195475b84b3`）已合入；N-103 Electron Main Supervisor（PR #35，squash `24c3cc7aa23`）已合入；N-105/N-106/N-109 已随 PR #37（squash `b9f00ff4326`）合入（metadata、查询执行与只读强制）；N-107 部分、N-108 完成（分支 `feat/p1-async-execution`，待合入）；N-110（TS/Rust 生成合同 + CI 漂移检查）已随 PR #39（squash `113a170be69`）合入 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
+| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Runtime N-101/N-102（PR #25）与 N-104 SQLite Profile/Session（PR #33，`195475b84b3`）已合入；N-103 Electron Main Supervisor（PR #35，squash `24c3cc7aa23`）已合入；N-105/N-106/N-109 已随 PR #37（squash `b9f00ff4326`）合入（metadata、查询执行与只读强制）；N-107 部分、N-108 已随 PR #41（squash `e90619d396b`）合入；N-110（TS/Rust 生成合同 + CI 漂移检查）已随 PR #39（squash `113a170be69`）合入 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
 | P2–P4、P6 | 未开始 | 按各自 Exit |
 | P5 | 仅有 Agent 设计研究（[27](27-agent-platform.md)–[30](30-agent-security-evaluation.md)），无实现 | **不得阻塞 P1–P4** |
 | EX | 不纳入主线 | 独立 ADR，受控时间盒 |
