@@ -211,13 +211,7 @@ impl Sessions {
 			// The registry keeps answering `query.getState` for what it ran, exactly as a closed
 			// session stays listed. A close that stopped an execution has notifications in flight
 			// that only this registry can turn into `cancelled`.
-			self.closing.push(ClosingSession {
-				key: key.clone(),
-				executions,
-			});
-			if self.closing.len() > MAX_CLOSED_SESSIONS {
-				self.closing.remove(0);
-			}
+			self.retire(key.clone(), executions);
 			self.closed.push_back(key);
 			if self.closed.len() > MAX_CLOSED_SESSIONS {
 				self.closed.pop_front();
@@ -307,6 +301,43 @@ impl Sessions {
 		})
 	}
 
+	/// Keeps a closed session's registry so that its terminal notifications and `query.getState`
+	/// still work. The limit drops the oldest registry whose executions all reached a terminal
+	/// state; one that is still owed a report is never dropped, because its `cancelled` would
+	/// otherwise be lost (`README.md` §5). A registry with outstanding work survives until a later
+	/// report retires it ([`Sessions::apply_event`]).
+	fn retire(&mut self, key: SessionKey, executions: Executions) {
+		self.closing.push(ClosingSession { key, executions });
+		self.forget_idle_registries();
+	}
+
+	/// Drops retained registries beyond the limit, oldest first, skipping any that still owes a
+	/// terminal state.
+	fn forget_idle_registries(&mut self) {
+		while self.closing.len() > MAX_CLOSED_SESSIONS {
+			let index = self
+				.closing
+				.iter()
+				.position(|session| session.executions.active() == 0);
+			match index {
+				Some(index) => {
+					self.closing.remove(index);
+				}
+				// Every retained session still owes a terminal state; dropping one would lose it.
+				None => break,
+			}
+		}
+	}
+
+	/// The retained registry of the session that issued `id`, matched as `<sessionId><e|r><digits>`
+	/// exactly as [`Sessions::owner`] matches an open one.
+	fn retained_owner(&mut self, id: &str) -> Option<&mut Executions> {
+		self.closing
+			.iter_mut()
+			.find(|session| owns(&session.key.id, id))
+			.map(|session| &mut session.executions)
+	}
+
 	/// The open session that `session` names. Worker reports carry the session id itself, not an
 	/// execution or result id, so they cannot go through [`Sessions::owner`].
 	fn session_index(&self, session: &str) -> Option<usize> {
@@ -357,18 +388,9 @@ impl Sessions {
 	/// id of session 1 (`s_…1`) is a textual prefix of the id of session 11 (`s_…11`), but the
 	/// character after it in `s_…11e1` is `1`, so the prefix alone must not claim the id.
 	fn owner(&self, id: &str) -> Option<usize> {
-		self.open.iter().position(|session| {
-			id.strip_prefix(session.key.id.as_str())
-				.is_some_and(|rest| {
-					// `<marker><digits>`, marker `e` for an execution or `r` for a result.
-					let Some((&marker, digits)) = rest.as_bytes().split_first() else {
-						return false;
-					};
-					matches!(marker, b'e' | b'r')
-						&& !digits.is_empty()
-						&& digits.iter().all(u8::is_ascii_digit)
-				})
-		})
+		self.open
+			.iter()
+			.position(|session| owns(&session.key.id, id))
 	}
 
 	fn id_param<'a>(
@@ -385,18 +407,14 @@ impl Sessions {
 
 	/// `query.getState`. A session that was closed while an execution stopped still answers, so the
 	/// client can read the terminal state the notification reported (`README.md` §4, "补偿读").
-	pub fn get_state(&self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+	pub fn get_state(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
 		let id = Self::id_param(params, "executionId", "query.getState")?;
 		if let Some(index) = self.owner(id) {
 			return self.open[index].executions.get_state(params);
 		}
-		if let Some(closing) = self
-			.closing
-			.iter()
-			.find(|session| id.starts_with(&session.key.id))
-		{
+		if let Some(executions) = self.retained_owner(id) {
 			// The registry itself checks that the id is one it issued.
-			return closing.executions.get_state(params);
+			return executions.get_state(params);
 		}
 		Err(invalid("executionId is unknown"))
 	}
@@ -419,11 +437,15 @@ impl Sessions {
 		}
 	}
 
-	/// `result.fetchPage`.
+	/// `result.fetchPage`. A result of a session that closed stays readable while its registry is
+	/// retained, so a client can finish reading what it asked for before the close.
 	pub fn fetch_page(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
 		let id = Self::id_param(params, "resultId", "result.fetchPage")?;
-		match self.owner(id) {
-			Some(index) => self.open[index].executions.fetch_page(params),
+		if let Some(index) = self.owner(id) {
+			return self.open[index].executions.fetch_page(params);
+		}
+		match self.retained_owner(id) {
+			Some(executions) => executions.fetch_page(params),
 			None => Err(query::expired()),
 		}
 	}
@@ -512,19 +534,52 @@ impl Sessions {
 			Event::Prepared { .. } | Event::Metadata { .. } => Vec::new(),
 		};
 		// The registry stays so that `query.getState` answers for the executions it holds; it is
-		// forgotten like a closed session once a later session takes its place.
-		if self.closing.len() > MAX_CLOSED_SESSIONS {
-			self.closing.remove(0);
-		}
+		// forgotten like a closed session once a later session takes its place, and never while it
+		// still owes a terminal state.
+		self.forget_idle_registries();
 		notifications
 	}
 
 	/// The worker of `session` panicked: its open executions end as `unknown` or `cancelled`, and
 	/// the session itself stays listed so `query.getState` keeps answering for them.
 	pub(crate) fn worker_gone(&mut self, session: &str) -> Vec<Value> {
-		match self.session_index(session) {
-			Some(index) => self.open[index].executions.worker_gone(),
+		if let Some(index) = self.session_index(session) {
+			return self.open[index].executions.worker_gone();
+		}
+		// A worker that dies while its session is closing still has to report the executions it
+		// was running; they cannot be proven to have committed.
+		match self
+			.closing
+			.iter_mut()
+			.find(|closing| closing.key.id == session)
+		{
+			Some(closing) => {
+				let notifications = closing.executions.worker_gone();
+				if closing.executions.active() == 0 {
+					let index = self
+						.closing
+						.iter()
+						.position(|candidate| candidate.key.id == session)
+						.expect("the registry was just found");
+					self.closing.remove(index);
+				}
+				notifications
+			}
 			None => Vec::new(),
+		}
+	}
+
+	/// A job reached a session that was closed before its worker prepared it. The worker is gone, so
+	/// no report will come; the execution is dropped and the caller answers the request with an
+	/// error instead of leaving it owed.
+	pub(crate) fn forget(&mut self, session: &str, execution: &str) {
+		let index = self
+			.closing
+			.iter()
+			.position(|closing| closing.key.id == session && owns(session, execution));
+		if let Some(index) = index {
+			self.closing[index].executions.forget();
+			self.closing.remove(index);
 		}
 	}
 }
@@ -623,6 +678,20 @@ fn session_key_from(params: &Map<String, Value>) -> Result<(&str, u64), RpcError
 		.filter(|generation| *generation >= 1)
 		.ok_or_else(|| invalid("sessionGeneration must be an integer >= 1"))?;
 	Ok((id, generation))
+}
+
+/// Whether the id `<sessionId><e|r><digits>` belongs to `session`. Session ids end in a decimal
+/// counter, so the character after a real session id is a marker, never a digit: the id of session
+/// 1 (`s_…1`) is a textual prefix of session 11 (`s_…11`), but the character after it in
+/// `s_…11e1` is `1`, so the prefix alone must not claim the id.
+fn owns(session: &str, id: &str) -> bool {
+	id.strip_prefix(session).is_some_and(|rest| {
+		// `<marker><digits>`, marker `e` for an execution or `r` for a result.
+		let Some((&marker, digits)) = rest.as_bytes().split_first() else {
+			return false;
+		};
+		matches!(marker, b'e' | b'r') && !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
+	})
 }
 
 fn check_generation(key: &SessionKey, generation: u64) -> Result<(), RpcError> {
@@ -1104,6 +1173,116 @@ mod tests {
 			.unwrap();
 		assert_eq!(state["state"], "cancelled");
 		assert_eq!(sessions.open_count(), 0);
+	}
+
+	#[test]
+	fn get_state_routes_a_closed_sessions_execution_by_its_whole_id() {
+		let dir = TempDir::new("closed-routing");
+		let path = dir.database("db.sqlite");
+		let (mut sessions, reports) = paired();
+		// Session 1's id is a textual prefix of session 11's, so a bare `starts_with` on the
+		// retained registries would look in session 1 and answer "unknown".
+		let opened: Vec<Value> = (0..=11)
+			.map(|_| sessions.open(&target(&path, true)).unwrap())
+			.collect();
+		let eleventh = &opened[10];
+		let first = opened[0]["sessionId"].as_str().unwrap().to_owned();
+		let eleventh_id = eleventh["sessionId"].as_str().unwrap().to_owned();
+		assert!(format!("{eleventh_id}e1").starts_with(&first));
+
+		let started = sessions
+			.begin_execution(&query(eleventh, "SELECT 1 AS answer"))
+			.unwrap();
+		let execution = started.execution.clone();
+		let result = complete(&mut sessions, &reports, &execution);
+		sessions.close(&key(eleventh)).unwrap();
+
+		let state = sessions
+			.get_state(&params(json!({"executionId": execution})))
+			.unwrap();
+		assert_eq!(state["state"], "completed");
+		// The result handle of the closed session is still readable through its owner.
+		let page = sessions
+			.fetch_page(&params(json!({"resultId": result, "limit": 1})))
+			.unwrap();
+		assert_eq!(page["rows"], json!([[{"type": "int64", "text": "1"}]]));
+	}
+
+	#[test]
+	fn a_retained_registry_that_still_owes_a_report_is_not_evicted() {
+		let dir = TempDir::new("closing-retention");
+		let path = dir.database("db.sqlite");
+		let (mut sessions, reports) = paired();
+		// A session that closes while a statement runs owes a terminal notification; closing
+		// `MAX_CLOSED_SESSIONS` more sessions must not push that registry out and lose it.
+		let busy = sessions.open(&target(&path, true)).unwrap();
+		let started = sessions
+			.begin_execution(&query(
+				&busy,
+				"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n",
+			))
+			.unwrap();
+		match reports.recv().expect("the worker reports") {
+			Input::Event(Event::Prepared {
+				session,
+				execution,
+				error,
+			}) => {
+				sessions
+					.prepared(&session, &execution, error)
+					.expect("the reply of a prepared execution")
+					.result
+					.expect("the statement prepared");
+			}
+			other => panic!("expected a prepared report: {other:?}"),
+		}
+		let (_, notifications) = sessions.close(&key(&busy)).unwrap();
+		assert_eq!(notifications[0]["params"]["state"], "cancel_requested");
+
+		for _ in 0..=MAX_CLOSED_SESSIONS {
+			let opened = sessions.open(&target(&path, true)).unwrap();
+			sessions.close(&key(&opened)).unwrap();
+		}
+
+		// The stopped execution still reports its terminal state, and its registry still answers.
+		let terminal = loop {
+			let event = match reports.recv().expect("the worker reports") {
+				Input::Event(event) => event,
+				other => panic!("expected a worker report: {other:?}"),
+			};
+			let finished = matches!(event, Event::Finished { .. });
+			let produced = sessions.apply_event(event);
+			if finished {
+				break produced;
+			}
+		};
+		assert_eq!(terminal[0]["params"]["state"], "cancelled");
+		assert_eq!(terminal[0]["params"]["executionId"], started.execution);
+	}
+
+	#[test]
+	fn a_job_prepared_after_its_session_closed_is_forgotten_instead_of_left_owed() {
+		let dir = TempDir::new("closed-before-prepared");
+		let path = dir.database("db.sqlite");
+		let (mut sessions, reports) = paired();
+		let opened = sessions.open(&target(&path, true)).unwrap();
+		let started = sessions
+			.begin_execution(&query(&opened, "SELECT 1 AS answer"))
+			.unwrap();
+		sessions.close(&key(&opened)).unwrap();
+		// The worker prepared the job before it exited; the registry has no open session for it.
+		let report = reports.recv().expect("the worker reports");
+		let (session, execution, error) = match report {
+			Input::Event(Event::Prepared {
+				session,
+				execution,
+				error,
+			}) => (session, execution, error),
+			other => panic!("expected a prepared report: {other:?}"),
+		};
+		assert!(sessions.prepared(&session, &execution, error).is_none());
+		sessions.forget(&session, &execution);
+		assert_eq!(started.execution, execution);
 	}
 
 	#[test]

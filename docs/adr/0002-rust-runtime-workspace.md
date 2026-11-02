@@ -139,7 +139,8 @@ rust/
 10. **N-106 留下的合同缺口**：`query.execute` 的结果没有“影响行数”字段，DML/DDL 执行成功时只能回 `{executionId, state: "completed", sequence}` 而无法告知写了几行；客户端需要另查。N-110 只做生成，不改变合同；留给下一次 minor 修订评估。
 11. **N-107**：结果在内存中整段保留（上限 `MAX_CONCURRENT_EXECUTIONS` 个执行、每个 `maxInitialRows` 行与 16 MiB），`result.fetchPage` 只做前向切片；真正的流式游标与 TTL 到期回收的完整验收属 N-107。当前 TTL（`maxResultTtlSecs`）在每次 fetch/execute 时清理过期句柄。
 12. **约束违例没有专用 kind**：v1 错误码表的 19 个 kind 里没有“约束违例”，而 `v1/` 冻结（README §8）。`UNIQUE` / `NOT NULL` / `CHECK` 失败与整数溢出一并报 `SQL_SYNTAX`，并回填 `data.sqlState`（SQLite 扩展结果码：`1555`、`2067`、`1299` 等，语法错误是 `1`），客户端据此区分“文本编译不了”与“数据被拒绝”；`sqlState` 字段 schema 与 README §7 本来就有，样例 rq_009 记录了 `"1"`。`CONSTRAINT_VIOLATION` 一类的新 kind 属后续 minor，需要单独合同 PR 与 ADR。（2026-11-02 决策。）
-13. **`result.fetchPage` 受帧上限约束**：回复必须能装进一帧，否则 `write_message` 失败会让整个 runtime 退出、所有会话一起丢失。页面在接近 `frameMaxBytes` 时提前结束并回 `hasMore: true` + `nextCursor`，这不是截断——行仍在句柄里，客户端按 cursor 继续取。单行本身就超过一帧预算时回 `RESOURCE_LIMIT`（`MAX_BLOB_BYTES` = 1 MiB 与 `MAX_RESULT_BYTES` = 16 MiB 已保证不会发生）。
+13. **`result.fetchPage` 受帧上限约束**：回复必须能装进一帧，否则 `write_message` 失败会让整个 runtime 退出、所有会话一起丢失。页面在接近 `frameMaxBytes` 时提前结束并回 `hasMore: true` + `nextCursor`，这不是截断——行仍在句柄里，客户端按 cursor 继续取。单行本身就超过一帧预算时回 `RESOURCE_LIMIT`。`MAX_BLOB_BYTES` = 1 MiB 与 `MAX_RESULT_BYTES` = 16 MiB 并**不能**保证不出现这种单行：一行可以有多个 cell，8 个 1 MiB blob 只占 8 MiB，执行会 `completed`、`fetchPage` 却只能报错。单行的帧预算要在收集时按行量算，与 N-107 的流式游标一并处理。
+14. **被拒绝的结果收不回已经写下的数据**：`INSERT … RETURNING` 在客户端读完行之前已经应用写入，而且 SQLite 在自提交模式下会在语句自己的事务里结束它，`ROLLBACK` 无从下手。结果超过 `maxInitialRows` 时执行报 `failed` / `RESOURCE_LIMIT`，写入却已生效（N-108 复查确认，2026-11-02）。可行的修法是脚本与单语句都在执行外再包一层事务、只有结果被接受才提交，这改变语句的原子性语义，归入 N-107 与 N-402（事务所有权）一起决定。
 
 ## 证据
 
@@ -209,6 +210,7 @@ git diff --check                                                 # PASS
   - `metadata.describe` 的 `nullable` 按 SQLite 真实语义判断：只有 rowid 别名主键（`PRAGMA index_list` 中没有 `origin = 'pk'` 的索引）允许 NULL；`TEXT PRIMARY KEY`、复合键、`WITHOUT ROWID`、`INTEGER PRIMARY KEY DESC` 都不允许。
   - 脚本失败清理句柄时改用结果序号（`ResultSet::sequence`），不再依赖运行前的句柄数量——期间过期的句柄会让计数失真、留下无法引用的句柄。
   - `connection.close` 在数据库关闭失败、会话被放回后调用 `Executions::resume()`，避免残留的 stop 让该会话之后所有语句都报 `QUERY_CANCELLED`。
+- **已知缺口**：`INSERT … RETURNING` 被拒绝时写入已生效、单行可以超过一帧，见后续项 13、14。
 - 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
 - **已合入**：PR #37，squash `b9f00ff4326`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41370054066`）。
 
@@ -220,7 +222,7 @@ git diff --check                                                 # PASS
 cd rust
 cargo fmt --all --check                                          # PASS
 cargo clippy --workspace --all-targets --locked -- -D warnings   # PASS
-cargo test --workspace --locked                                  # PASS：单元 110 + cancellation 6 + conformance 8 + contract 4 + stdio 19
+cargo test --workspace --locked                                  # PASS：单元 122 + cancellation 6 + conformance 8 + contract 4 + stdio 19
 cd ..
 npm run nyala:check-rpc-generated                                # PASS（合同未改，2 files up to date）
 git diff --check                                                 # PASS
@@ -228,12 +230,14 @@ git diff --check                                                 # PASS
 
 - **线程划分**：每个 Session 的 `Database` 移进一个 `nyala-session-<id>` worker 线程（`src/worker.rs`）；请求循环保留 `sqlite3_interrupt` 句柄与 `Executions` 注册表（`src/query.rs`），从不持有连接。`events.rs` 定义一个 `mpsc` 通道承载三类输入：客户端字节、输入结束、worker 报告，所以 `Server::step` 是一条单序阻塞循环，通知在语句运行期间就能写出，`query.cancel` 也能在语句运行期间被处理。stdin 由 `nyala-input` 线程读取。
 - **执行与回复分离**：`query.execute` 校验参数、分配 id、把 job 交给 worker，回复要等 worker 报告“第一条语句已 prepare”才写出（`queued`，`sequence: 1`）。SQLite 编译不了的语句由 worker 报告失败，回复是错误 envelope（rq_009），执行以 `failed` 留在注册表里供 `query.getState` 补偿读。
-- **取消**：`query.cancel` 立即回 `{"accepted": true, "state": "cancel_requested"}` 并写 `cancel_requested` 通知（独立序号），同时设置该执行的 stop 标志并调用 `sqlite3_interrupt`。注意 `CancelRequested ≠ Cancelled`：语句可能已经过了最后一个可中断点，终态是 `cancelled` 还是 `completed` 由 worker 报告。用户取消的 `cancelled` 不带 `error`（rq_012）。
+- **取消**：`query.cancel` 立即回 `{"accepted": true, "state": "cancel_requested"}` 并写 `cancel_requested` 通知（独立序号），同时设置该执行的 stop 标志；只有已经 `running` 的执行才调用 `sqlite3_interrupt`，排队中的执行只靠标志停下——`InterruptHandle` 是连接级的，取消一个排队执行时中断会打到正在运行的另一个语句上。注意 `CancelRequested ≠ Cancelled`：语句可能已经过了最后一个可中断点，终态是 `cancelled` 还是 `completed` 由 worker 报告。用户取消的 `cancelled` 不带 `error`（rq_012）。
 - **超时**：`progress_handler`（每 `PROGRESS_OPS` = 1000 步）检查 stop 标志与 deadline；超时写入 `Stop::TimedOut`，终态 `cancelled` + `QUERY_TIMEOUT`。每个执行有自己的标志，所以超时与会话关闭同时发生时原因不会串。
-- **worker 死亡**：`catch_unwind` 捕获 panic 后报告 `WorkerGone`；运行过语句的执行以 `unknown` 结束（是否已提交无法证明），没开始的以 `cancelled` 结束；worker 死前未 prepare 的 `query.execute` 与排队中的 `metadata.*` 都会收到 `INTERNAL` 失败回复，不会悬空。
-- **会话关闭**：`connection.close` 先对未终态的执行发 `cancel_requested`、中断、再等 worker 关闭连接；关闭后的注册表进入 `closing` 保留区，终态通知与 `query.getState` 仍可用。数据库关闭失败时会话保持 open 并回 `INTERNAL`，之后的语句不受残留 stop 影响。
+- **worker 死亡**：`catch_unwind` 捕获 panic 后报告 `WorkerGone`；运行过语句的执行以 `unknown` 结束（是否已提交无法证明），没开始的以 `cancelled` 结束；worker 死前未 prepare 的 `query.execute` 与排队中的 `metadata.*` 都会收到 `INTERNAL` 失败回复，不会悬空（`server::tests::a_metadata_call_owed_to_a_dead_worker_is_answered_with_an_error`）。客户端还不知道的 `executionId`（`query.execute` 的回复还没写出）不写 `stateChanged`：先写失败回复，再谈状态。
+- **会话关闭**：`connection.close` 先对未终态的执行发 `cancel_requested`、中断、再等 worker 关闭连接；关闭后的注册表进入 `closing` 保留区，终态通知、`query.getState` 与已安装结果句柄的 `result.fetchPage` 仍可用。保留区最多 32 个，淘汰时跳过仍有未终态执行的注册表（否则终态永远丢失）；`executionId` / `resultId` 按 `<sessionId>e<n>` / `<sessionId>r<n>` 的 marker 前缀归属整个 id，先匹配 session 1 再匹配 session 11 会串。worker 在会话关闭之后才 prepare 的 job 无人可报状态，请求循环回 `INTERNAL` 并让注册表忘记它，不留悬空请求。数据库关闭失败时会话保持 open 并回 `INTERNAL`，之后的语句不受残留 stop 影响。
 - **`metadata.*` 移到 worker**：metadata 与语句共用同一条连接，一次只能用一个；把它排队到 worker 后，请求循环不会因为一个排队中的 metadata 调用而卡住、进而让 `query.cancel` 无法到达运行中的语句。
-- **结果上限**：`maxConcurrentExecutions` 仍是 4（执行 + 未释放结果），脚本额外收到“本会话还能放几个结果”，超出回 `RESOURCE_LIMIT` 而不是静默丢弃最旧句柄。
+- **结果上限**：`maxConcurrentExecutions` 仍是 4（执行 + 未释放结果）。脚本收到“本会话还能放几个结果”的准入预算，但预算是排队时的快照，所以注册表在安装句柄时按会话总数再查一次：两个在空会话里同时准入的脚本不能各自再交 3 个结果。超出回 `RESOURCE_LIMIT`（执行以 `failed` 结束、安装 0 个句柄）而不是静默丢弃最旧句柄。
+- **脚本失败时的连接状态**：v1 没有 `transaction.*`，脚本里的 `BEGIN` / `SAVEPOINT` 是唯一能打开事务的途径，而连接属于会话。脚本停在错误或取消上时，`run` 在报告终态之前 `ROLLBACK`，免得半途的脚本把事务、锁与已写的数据留给之后的执行；执行前连接本来就已在事务里，或脚本正常结束（`BEGIN` 后没有 `COMMIT`），都不回滚——那是客户端自己要求的。
+- **请求循环**：`Server::drain` 只消费 worker 报告；`try_recv` 拿到的帧或输入结束放回 `recovered` 队列，由 `step` 原序处理，客户端请求与 EOF 都不会被吞掉。
 - **测试**：`tests/cancellation.rs` 在真实子进程上验证取消打断运行中的语句、迟到的取消回 `completed`、超时回 `QUERY_TIMEOUT`、关闭会话后的终态与 `getState`、取消先于执行到达、排队的执行按序运行；`src/{query,worker,server,connection}/...` 的单元测试覆盖注册表状态机、worker 的 SQL 行为与超时/中断、服务端的延迟回复与元数据排队；`tests/conformance.rs` 与 `tests/stdio.rs` 改为按通知跟踪状态。
 - **一致性说明**：`conformance.ndjson` rq_010 的 `SELECT count(*)` 只有两行，取消到达前语句通常已结束，本构建在重放里报 `completed`；README §5 允许 `cancel_requested → completed`，真实中断由 `tests/cancellation.rs` 确定性证明。rq_011 / rq_012 的取消样例断言接受 `cancelled` 或 `completed`，并核对其余字段。
 - **未做**：N-107 流式游标（结果仍在内存里整段保留）；同一 Session 的多执行并发（一个连接一次一个语句）；请求 id 复用检测。
@@ -266,7 +270,7 @@ git diff --check                                                 # PASS
 
 ## 修订记录
 
-- **2026-11-02 · N-108 异步执行与取消**：§1 模块列表加入 `events.rs`、`worker.rs` 与 `tests/cancellation.rs`；§2 的“不引入 Tokio”改写为实际的 per-session 线程模型；§4 更新 `runtime.health` 计数、打开时的阻塞范围与 `capabilities.cancel`；后续项 5、9 关闭；证据。`nyala/rpc/**` 未改。
+- **2026-11-02 · N-108 异步执行与取消**：§1 模块列表加入 `events.rs`、`worker.rs` 与 `tests/cancellation.rs`；§2 的“不引入 Tokio”改写为实际的 per-session 线程模型；§4 更新 `runtime.health` 计数、打开时的阻塞范围与 `capabilities.cancel`；后续项 5、9 关闭，后续项 13 修正（单行超过一帧不受 blob 上限保护），新增后续项 14（被拒绝的结果收不回已写数据）；证据，并在复查后补充会话关闭、取消、worker 死亡与脚本失败的行为。`nyala/rpc/**` 未改。
 
 - **2026-11-02 · N-110 合同生成声明**：§3 的“不手写 DTO”改写为生成范围与绊线说明（生成器、两侧产物、`error.rs` 从 `contract::` 取 kind/code/retryable、两层检测）；“未采纳的替代方案”改写 serde DTO 一条并新增“不生成运行时校验器”；后续项 10 注明 N-110 不改合同；证据。`nyala/rpc/**` 未改。实测发现合并后的 PR #19（`@vscode/markdown-editor` 升级）把修改的上游跟踪文件从 55 增加到 57（`extensions/markdown-language-features/package.json` 与 `package-lock.json`），而 `upstream-base.json` 仍停在 #20 时的 `61`；本 PR 按现有口径把它更正为 `63`（57 + 6）。`src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts` 是新增的非测试 Nyala 源文件，合并后新增数由 6 变为 7、`patchCount` 由 `63` 变为 `64`（合并后实测 `64`，`upstream-base.json` 已更新）；生成器、`rust/` 与文档不计入。已随 PR #39（squash `113a170be69`）合入 `nyala/main`，四项必需检查 PASS（run `41375212220`）。
 

@@ -145,6 +145,10 @@ pub struct Server {
 	owed: HashMap<String, String>,
 	/// Frames and worker reports, in arrival order.
 	input: mpsc::Receiver<Input>,
+	/// Items taken from `input` that belong to the stream loop, kept in front of it. A
+	/// `try_recv` takes an item out even when the caller only wanted reports, so the drain of
+	/// [`Server::round_trip`] and [`Server::drain`] parks what it finds here instead of dropping it.
+	recovered: VecDeque<Input>,
 	/// Handed to the input reader thread and to every session worker.
 	sender: events::Sender,
 	decoder: FrameDecoder,
@@ -187,6 +191,7 @@ impl Server {
 			pending: Vec::new(),
 			owed: HashMap::new(),
 			input,
+			recovered: VecDeque::new(),
 			sender,
 			decoder: FrameDecoder::new(PRE_HELLO_FRAME_MAX_BYTES),
 			frames: VecDeque::new(),
@@ -253,9 +258,18 @@ impl Server {
 			if !self.frames.is_empty() {
 				continue;
 			}
-			match self.input.recv() {
-				Ok(Input::Bytes(bytes)) => self.decoder.push(&bytes),
-				Ok(Input::Ended(EndOfInput::Input)) => {
+			let item = match self.recovered.pop_front() {
+				Some(item) => item,
+				None => match self.input.recv() {
+					Ok(item) => item,
+					// The server holds a sender itself, so this cannot happen; ending cleanly beats
+					// spinning if it ever does.
+					Err(_) => return Reply::end(ExitStatus::Clean),
+				},
+			};
+			match item {
+				Input::Bytes(bytes) => self.decoder.push(&bytes),
+				Input::Ended(EndOfInput::Input) => {
 					if self.decoder.pending_bytes() == 0 {
 						return Reply::end(ExitStatus::Clean);
 					}
@@ -265,14 +279,11 @@ impl Server {
 					));
 					return Reply::end(ExitStatus::StreamError);
 				}
-				Ok(Input::Ended(EndOfInput::Read(error))) => {
+				Input::Ended(EndOfInput::Read(error)) => {
 					self.log(format_args!("input read failed: {error}"));
 					return Reply::end(ExitStatus::StreamError);
 				}
-				Ok(Input::Event(event)) => return self.handle_event(event),
-				// The server holds a sender itself, so this cannot happen; ending cleanly beats
-				// spinning if it ever does.
-				Err(_) => return Reply::end(ExitStatus::Clean),
+				Input::Event(event) => return self.handle_event(event),
 			}
 		}
 	}
@@ -380,12 +391,25 @@ impl Server {
 
 	/// Applies the worker reports already queued, appending what they produce. Does not block: a
 	/// report that has not arrived yet is the worker's business, not this call's.
+	///
+	/// A frame or the end of the input that is queued next stops the drain and is parked in
+	/// [`Server::recovered`], because the stream loop owns it and `try_recv` has already removed it
+	/// from the channel.
 	pub fn drain(&mut self, reply: &mut Reply) {
-		while let Ok(Input::Event(event)) = self.input.try_recv() {
-			let produced = self.handle_event(event);
-			reply.messages.extend(produced.messages);
-			if reply.exit.is_none() {
-				reply.exit = produced.exit;
+		loop {
+			match self.input.try_recv() {
+				Ok(Input::Event(event)) => {
+					let produced = self.handle_event(event);
+					reply.messages.extend(produced.messages);
+					if reply.exit.is_none() {
+						reply.exit = produced.exit;
+					}
+				}
+				Ok(other) => {
+					self.recovered.push_front(other);
+					return;
+				}
+				Err(_) => return,
 			}
 		}
 	}
@@ -438,8 +462,17 @@ impl Server {
 				let Some(pending) = self.take_pending(&execution) else {
 					return Reply::none();
 				};
+				let closed = RpcError::with_detail(
+					ErrorKind::Internal,
+					"the session closed before the statement was prepared",
+				)
+				.for_session(session.clone());
 				let Some(prepared) = self.sessions.prepared(&session, &execution, error) else {
-					return Reply::none();
+					// The session was closed before its worker prepared this job, so no state can be
+					// reported for it; the request is still owed an answer.
+					self.sessions.forget(&session, &execution);
+					self.owed.remove(&pending.request);
+					return Reply::send(failure(Some(&pending.request), &closed));
 				};
 				self.owed.remove(&pending.request);
 				let mut messages = Vec::with_capacity(prepared.notifications.len() + 1);
@@ -477,8 +510,22 @@ impl Server {
 					);
 					messages.push(failure(Some(&pending.request), &error));
 				}
-				// A metadata call queued on the worker dies with it.
-				self.owed.retain(|_, owner| owner != &session);
+				// A metadata call queued on the worker dies with it, and the request is still owed an
+				// answer: it was only ever going to come from that worker.
+				let stranded: Vec<String> = self
+					.owed
+					.iter()
+					.filter(|(_, owner)| *owner == &session)
+					.map(|(request, _)| request.clone())
+					.collect();
+				for request in stranded {
+					self.owed.remove(&request);
+					let error = RpcError::with_detail(
+						ErrorKind::Internal,
+						"the session worker stopped before the call finished",
+					);
+					messages.push(failure(Some(&request), &error));
+				}
 				Reply::send_all(messages)
 			}
 			Event::Started { .. } | Event::Finished { .. } => {
@@ -1349,6 +1396,104 @@ mod tests {
 			json!({"executionId": error["executionId"]}),
 		);
 		assert_eq!(reply_to(&state, "rq_1")["result"]["state"], "failed");
+	}
+
+	#[test]
+	fn a_drain_keeps_the_frames_and_the_end_of_input_it_finds() {
+		let dir = TempDir::new("server-drain");
+		let path = dir.database("db.sqlite");
+		let mut server = negotiated();
+		let session = open(&mut server, &path);
+		// A frame and the end of the input arrive while nothing is owed. `drain` takes whatever is
+		// queued, so it must put both back instead of dropping them.
+		let health =
+			json!({"jsonrpc": "2.0", "id": "rq_2", "method": "runtime.health", "params": {}});
+		let frame = encode_frame(health.to_string().as_bytes(), DEFAULT_FRAME_MAX_BYTES).unwrap();
+		server.sender.send(Input::Bytes(frame)).unwrap();
+		server.sender.send(Input::Ended(EndOfInput::Input)).unwrap();
+		server.drain(&mut Reply::none());
+		// The drain stops at the first item it does not own and parks it; the end of the input stays
+		// in the channel, which the stream loop reads next.
+		assert_eq!(server.recovered.len(), 1, "the frame was parked");
+
+		// The stream loop still answers the frame and then ends cleanly.
+		let answered = server.step();
+		assert!(
+			reply_to(&answered, "rq_2").get("result").is_some(),
+			"{:?}",
+			answered.messages
+		);
+		assert_eq!(server.step().exit, Some(ExitStatus::Clean));
+		let _ = session;
+	}
+
+	#[test]
+	fn a_request_that_was_owed_when_its_session_closed_is_answered_with_an_error() {
+		let dir = TempDir::new("server-closed-pending");
+		let path = dir.database("db.sqlite");
+		let mut server = negotiated();
+		let session = open(&mut server, &path);
+		let execute = execute_request("rq_2", &session, "SELECT 1 AS answer", 30_000);
+		let close = json!({
+			"jsonrpc": "2.0",
+			"id": "rq_3",
+			"method": "connection.close",
+			"params": {
+				"sessionId": session["sessionId"],
+				"sessionGeneration": session["sessionGeneration"],
+			},
+		});
+		// Both requests reach the loop before the worker reports anything: the execute is owed and
+		// the close runs first.
+		let first = server.handle_payload(execute.to_string().as_bytes());
+		assert!(first.messages.is_empty(), "the execute reply is deferred");
+		let closed = server.handle_payload(close.to_string().as_bytes());
+		assert_eq!(reply_to(&closed, "rq_3")["result"]["closed"], true);
+
+		// Whatever the worker reports now, the execute is answered and no reply stays owed.
+		let settled = server.settle();
+		let answered: Vec<&Value> = settled
+			.messages
+			.iter()
+			.filter(|message| message["id"] == "rq_2")
+			.collect();
+		assert_eq!(answered.len(), 1, "{:?}", settled.messages);
+		assert!(
+			answered[0].get("error").is_some(),
+			"the session closed before the statement was prepared: {answered:?}"
+		);
+	}
+
+	#[test]
+	fn a_metadata_call_owed_to_a_dead_worker_is_answered_with_an_error() {
+		let dir = TempDir::new("server-dead-worker");
+		let path = dir.database("db.sqlite");
+		let mut server = negotiated();
+		let session = open(&mut server, &path);
+		let metadata = json!({
+			"jsonrpc": "2.0",
+			"id": "rq_2",
+			"method": "metadata.listObjects",
+			"params": {
+				"sessionId": session["sessionId"],
+				"sessionGeneration": session["sessionGeneration"],
+				"limit": 10,
+			},
+		});
+		let reply = server.handle_payload(metadata.to_string().as_bytes());
+		assert!(reply.messages.is_empty(), "the metadata reply is deferred");
+
+		// The worker dies before it answers. The request is still owed an answer.
+		let session_id = session["sessionId"].as_str().unwrap().to_owned();
+		let produced = server.handle_event(Event::WorkerGone {
+			session: session_id,
+		});
+		let message = reply_to(&produced, "rq_2");
+		assert_eq!(message["error"]["data"]["kind"], "INTERNAL");
+		assert!(
+			server.owed.is_empty(),
+			"nothing may stay owed to a worker that is gone"
+		);
 	}
 
 	#[test]

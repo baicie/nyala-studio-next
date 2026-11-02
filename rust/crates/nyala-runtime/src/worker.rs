@@ -16,6 +16,12 @@
 //! arrives while another execution runs waits in the command queue. It reports the first
 //! prepared statement before it runs anything, so that a statement SQLite cannot compile is
 //! answered with the structured error (`conformance.ndjson` rq_009) rather than with `queued`.
+//!
+//! The worker owns the session's only connection, so it also owns the session's transaction
+//! state. v1 has no `transaction.*` method: a script that opens a transaction with `BEGIN` or
+//! `SAVEPOINT` is the only way to one. When such a script ends in an error or a stop, the worker
+//! rolls back to the level it found, so a half-run script cannot leave its locks and its partial
+//! writes on the connection for the next execution.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
@@ -205,7 +211,9 @@ pub(crate) struct Job {
 	/// Set by `query.cancel` or by the session closing; the worker's progress callback reads it.
 	stop: Arc<AtomicU8>,
 	/// Result handles this execution may still create, so a script cannot push the session over
-	/// `maxConcurrentExecutions` on its own.
+	/// `maxConcurrentExecutions` on its own. It is the count the registry saw at admission; jobs
+	/// admitted while another one is queued share it, so the registry re-checks the total when it
+	/// installs the handles ([`crate::query::Executions::finished`]).
 	spare_results: usize,
 }
 
@@ -565,8 +573,16 @@ fn prepare(database: &Database, job: &Job) -> Result<(), RpcError> {
 }
 
 /// Arms the timeout, runs the statements and disarms it again.
+///
+/// When the script ends in an error or a stop, a transaction it opened is rolled back before the
+/// outcome is reported. The connection belongs to the session, not to the execution: leaving it
+/// inside a transaction would keep its locks and its half-applied writes for every later
+/// execution, and v1 has no `transaction.*` method with which a client could end it. Only what
+/// this script opened is rolled back; a transaction that was already open on the connection is
+/// left to whoever opened it.
 fn run(database: &Database, job: &Job) -> Outcome {
 	let started = Instant::now();
+	let autocommit = database.connection().is_autocommit();
 	let mut results = Vec::new();
 	let result = match arm(database, started + job.request.timeout, job.stop()) {
 		Ok(()) => {
@@ -576,6 +592,11 @@ fn run(database: &Database, job: &Job) -> Outcome {
 		}
 		Err(error) => Err((State::Failed, error)),
 	};
+	if result.is_err() && autocommit {
+		// The rollback is best effort: its own failure must not replace the outcome the client
+		// is owed, and the next `BEGIN` reports the connection if it is still unusable.
+		let _ = database.connection().execute_batch("ROLLBACK");
+	}
 	let elapsed_ms = milliseconds(started.elapsed());
 	match result {
 		Ok(()) => Outcome {

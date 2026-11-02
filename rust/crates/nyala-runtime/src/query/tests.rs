@@ -246,7 +246,9 @@ fn a_closing_session_moves_its_executions_to_cancel_requested() {
 	registry.finished(&first, completed_outcome(Vec::new()), TTL);
 
 	let (notifications, interrupt) = registry.request_stop();
-	assert!(interrupt);
+	// Neither execution was started, so neither statement is stepping: the flags stop them before
+	// they run, and no interrupt is sent (it would hit whatever the connection runs instead).
+	assert!(!interrupt);
 	// Only the execution that has not finished is reported.
 	assert_eq!(notifications.len(), 1);
 	assert_eq!(notifications[0]["params"]["executionId"], second);
@@ -510,4 +512,122 @@ fn the_oldest_terminal_executions_are_forgotten_first() {
 		"the first execution is forgotten"
 	);
 	assert_eq!(registry.active(), 0);
+}
+
+#[test]
+fn jobs_admitted_behind_each_other_cannot_put_more_than_four_results_into_the_session() {
+	let mut registry = ids("s_1");
+	// The budget is a snapshot taken at admission: while nothing has finished, every admitted job
+	// sees four free handles, so a queued script and a queued statement would otherwise each hand
+	// over its own result and push the session past the advertised limit.
+	let script = begun(&mut registry, "SELECT 1; SELECT 2", "script");
+	let statement = begun(&mut registry, "SELECT 3", "statement");
+	let mut installed = Vec::new();
+	for id in [&script, &statement] {
+		registry.finished(id, completed_outcome(vec![collected(1)]), TTL);
+		installed.push(id.clone());
+	}
+	// Two finished executions produced two handles, which is within the limit.
+	assert_eq!(registry.pending_results(), 2);
+
+	// Fill the session to the limit, then start two more queued jobs at the same moment.
+	for _ in 0..MAX_CONCURRENT_EXECUTIONS - 2 {
+		let id = begun(&mut registry, "SELECT 1", "statement");
+		registry.finished(&id, completed_outcome(vec![collected(1)]), TTL);
+	}
+	assert_eq!(registry.pending_results(), MAX_CONCURRENT_EXECUTIONS);
+	// Nothing may be admitted now.
+	assert_eq!(
+		registry
+			.begin(&request("SELECT 1", "statement"), true)
+			.map(|_| ())
+			.unwrap_err()
+			.kind,
+		ErrorKind::ResourceLimit
+	);
+
+	// A released handle makes room for one, and the handle that arrives late still fits.
+	registry
+		.release(&object(json!({"resultId": "s_1r1"})))
+		.unwrap();
+	let late = begun(&mut registry, "SELECT 1", "statement");
+	let notifications = registry.finished(&late, completed_outcome(vec![collected(1)]), TTL);
+	assert_eq!(notifications[0]["params"]["state"], "completed");
+	assert_eq!(
+		registry.pending_results(),
+		MAX_CONCURRENT_EXECUTIONS,
+		"the session never holds more than the advertised limit"
+	);
+}
+
+#[test]
+fn a_job_whose_results_exceed_the_session_reports_the_limit_instead_of_handing_one_out() {
+	let mut registry = ids("s_1");
+	// Two queued jobs, both admitted while the session was empty, both carrying a full budget.
+	let first = begun(&mut registry, "SELECT 1; SELECT 2; SELECT 3", "script");
+	let second = begun(&mut registry, "SELECT 1; SELECT 2; SELECT 3", "script");
+	registry.finished(
+		&first,
+		completed_outcome(vec![collected(1), collected(1), collected(1)]),
+		TTL,
+	);
+	// Three handles are live, so only one more fits. The second job collected three rows above the
+	// row limits, so its execution reports the limit and installs nothing.
+	let notifications = registry.finished(
+		&second,
+		completed_outcome(vec![collected(1), collected(1), collected(1)]),
+		TTL,
+	);
+	assert_eq!(notifications[0]["params"]["state"], "failed");
+	assert_eq!(
+		notifications[0]["params"]["error"]["data"]["kind"],
+		"RESOURCE_LIMIT"
+	);
+	assert!(notifications[0]["params"].get("resultIds").is_none());
+	assert_eq!(registry.pending_results(), 3);
+}
+
+#[test]
+fn a_cancel_of_a_queued_execution_does_not_interrupt_the_running_one() {
+	let mut registry = ids("s_1");
+	let running = begun(&mut registry, "SELECT 1", "statement");
+	registry.started(&running);
+	let queued = begun(&mut registry, "SELECT 2", "statement");
+
+	// The interrupt stops whatever the session's connection is stepping, which is not this
+	// execution: it is stopped by its flag alone.
+	let outcome = registry
+		.cancel(&object(json!({"executionId": queued})))
+		.unwrap();
+	assert!(!outcome.interrupt, "a queued execution is not stepping");
+	assert_eq!(outcome.reply["state"], "cancel_requested");
+	assert!(
+		registry
+			.cancel(&object(json!({"executionId": running})))
+			.unwrap()
+			.interrupt,
+		"the running execution is the one to interrupt"
+	);
+}
+
+#[test]
+fn a_worker_that_dies_does_not_notify_before_the_queued_reply() {
+	let mut registry = ids("s_1");
+	// Neither reply went out yet: neither execution has a state the client has heard of, so the
+	// failure the request loop writes for each request is the only thing it may receive.
+	let id = registry
+		.begin(&request("SELECT 1", "statement"), true)
+		.unwrap()
+		.execution()
+		.to_owned();
+	registry
+		.begin(&request("SELECT 2", "statement"), true)
+		.unwrap();
+	let notifications = registry.worker_gone();
+	assert!(
+		notifications
+			.iter()
+			.all(|notification| notification["params"]["executionId"] != id),
+		"an execution the client has not been told about has no state to report: {notifications:?}"
+	);
 }

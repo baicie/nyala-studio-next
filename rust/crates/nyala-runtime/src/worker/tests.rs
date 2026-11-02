@@ -402,6 +402,60 @@ fn a_late_cancel_does_not_turn_a_finished_statement_into_a_cancellation() {
 }
 
 #[test]
+fn a_script_that_fails_inside_its_transaction_does_not_leave_it_open() {
+	let dir = TempDir::new("worker-transaction");
+	let path = dir.database("db.sqlite");
+	let database = open(&path, false);
+	database
+		.connection()
+		.execute_batch("CREATE TABLE keyed(id INTEGER PRIMARY KEY, code TEXT UNIQUE);")
+		.unwrap();
+	// `BEGIN` then a constraint violation: SQLite keeps the transaction open, and the connection
+	// belongs to the session, so without a rollback every later execution would run inside it and
+	// its locks would outlive the failed one. v1 has no `transaction.*` method to end it.
+	let (_, prepared, result) = outcome(
+		&database,
+		"BEGIN; INSERT INTO keyed(id, code) VALUES (1, 'a'); INSERT INTO keyed(id, code) VALUES (1, 'b'); SELECT 1",
+		"script",
+	);
+	prepared.expect("the first statement compiles");
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(
+		result.error.expect("a failure names its cause").kind,
+		ErrorKind::SqlSyntax
+	);
+	assert!(
+		database.connection().is_autocommit(),
+		"the failed script's transaction was rolled back"
+	);
+
+	// The rollback undid the part of the script that had run, and the session keeps working.
+	let count = one_result(outcome(&database, "SELECT count(*) FROM keyed", "statement").2);
+	assert_eq!(
+		Value::Array(count.rows.into_iter().map(Value::Array).collect()),
+		json!([[{"type": "int64", "text": "0"}]])
+	);
+	one_result(outcome(&database, "SELECT 1 AS answer", "statement").2);
+}
+
+#[test]
+fn a_script_that_opens_a_transaction_and_completes_keeps_it() {
+	let dir = TempDir::new("worker-transaction-open");
+	let path = dir.database("db.sqlite");
+	let database = open(&path, false);
+	// A script that ends cleanly is not rolled back: `BEGIN` without `COMMIT` is a transaction the
+	// client asked for, and v1 sends the following statements of the same session into it.
+	let (_, prepared, result) = outcome(&database, "BEGIN", "script");
+	prepared.expect("the statement compiles");
+	assert_eq!(result.state, State::Completed, "{:?}", result.error);
+	assert!(
+		!database.connection().is_autocommit(),
+		"the script left its transaction open on purpose"
+	);
+	database.connection().execute_batch("ROLLBACK").unwrap();
+}
+
+#[test]
 fn a_database_locked_by_another_connection_reports_a_query_timeout() {
 	let dir = TempDir::new("worker-locked");
 	let path = dir.database("db.sqlite");

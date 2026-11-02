@@ -281,12 +281,27 @@ impl Executions {
 		ttl: Duration,
 	) -> Vec<Value> {
 		let now = Instant::now();
+		let mut outcome = outcome;
 		// Handles are numbered before the entry is borrowed, because the borrow checker cannot
 		// see that the id counter and the entry are different fields of this struct.
 		let mut handles = Vec::with_capacity(outcome.results.len());
-		for collected in outcome.results {
+		for collected in std::mem::take(&mut outcome.results) {
 			self.results += 1;
 			handles.push((format!("{}r{}", self.prefix, self.results), collected));
+		}
+		// A job's result budget is a snapshot taken when it was admitted, and a job that queued
+		// behind another one took the same snapshot, so the session-wide cap is enforced here, where
+		// the handles are actually installed. The rows are dropped whole rather than truncated
+		// (`README.md` §7) and the execution reports the limit instead of handing out a handle it
+		// cannot keep. The worker's own check stays as the early refusal that runs before a script
+		// collects more than the session could hold.
+		if self.pending_results() + handles.len() > MAX_CONCURRENT_EXECUTIONS {
+			handles.clear();
+			outcome.state = State::Failed;
+			outcome.error = Some(RpcError::with_detail(
+				ErrorKind::ResourceLimit,
+				format!("at most {MAX_CONCURRENT_EXECUTIONS} executions can hold results at once"),
+			));
 		}
 		let Some(entry) = self.entry_mut(execution) else {
 			return Vec::new();
@@ -353,7 +368,7 @@ impl Executions {
 			return Ok(CancelOutcome {
 				reply: json!({"accepted": true, "state": State::CancelRequested.as_str()}),
 				notifications: Vec::new(),
-				interrupt: true,
+				interrupt: entry.started,
 			});
 		}
 		entry.state = State::CancelRequested;
@@ -368,10 +383,13 @@ impl Executions {
 			entry.cancel_pending = true;
 			Vec::new()
 		};
+		// `sqlite3_interrupt` stops whatever the session's one connection is stepping, not the
+		// execution the id names. A queued execution is stopped by its flag: the worker reads it
+		// before it runs anything. Interrupting for it would abort the statement that is running.
 		Ok(CancelOutcome {
 			reply: json!({"accepted": true, "state": State::CancelRequested.as_str()}),
 			notifications,
-			interrupt: true,
+			interrupt: entry.started,
 		})
 	}
 
@@ -381,14 +399,19 @@ impl Executions {
 		let mut notifications = Vec::new();
 		let mut interrupt = false;
 		for entry in &mut self.entries {
-			if entry.state.is_terminal() || entry.state == State::CancelRequested {
+			if entry.state.is_terminal() {
 				continue;
 			}
-			entry.state = State::CancelRequested;
+			// The flag is set even for an execution another cancel already moved to
+			// `cancel_requested`: the worker may not have read it yet.
 			if let Some(stop) = &entry.stop {
 				stop.store(STOP_CANCELLED, Ordering::SeqCst);
 			}
-			interrupt = true;
+			interrupt |= entry.started;
+			if entry.state == State::CancelRequested {
+				continue;
+			}
+			entry.state = State::CancelRequested;
 			if entry.replied {
 				entry.sequence += 1;
 				notifications.push(entry.notification());
@@ -426,10 +449,22 @@ impl Executions {
 					"the session worker stopped before the statement ran",
 				)
 			});
-			notifications.push(entry.notification());
+			// An execution whose `queued` reply was never sent has no state to report: its reply is
+			// the failure the request loop writes for it, and a notification before that would name
+			// an execution the client has not been told about (`README.md` §5: the reply comes first).
+			if entry.replied {
+				notifications.push(entry.notification());
+			}
 		}
 		self.trim();
 		notifications
+	}
+
+	/// Drops the executions of a session whose worker exited before it prepared a job: no report
+	/// will arrive for them, so nothing here can be answered any more. The result handles stay,
+	/// because a client may still be reading a result of an execution that did finish.
+	pub(crate) fn forget(&mut self) {
+		self.entries.clear();
 	}
 
 	/// `query.getState`.
