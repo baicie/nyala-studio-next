@@ -43,7 +43,7 @@ use serde_json::{json, Map, Value};
 use crate::error::{ErrorKind, RpcError};
 use crate::framing::DEFAULT_FRAME_MAX_BYTES;
 use crate::protocol::{is_valid_id, JSONRPC_VERSION, MAX_PAGE_ROWS};
-use crate::worker::{Job, Outcome, State};
+use crate::worker::{Collected, Job, Outcome, State};
 
 /// Executions one session may have open at once: queued, running, or holding a result nobody
 /// released yet. Advertised as `maxConcurrentExecutions` (`nyala/rpc/README.md` §7); the advertised
@@ -57,6 +57,31 @@ pub const MAX_RETAINED_EXECUTIONS: usize = 32;
 /// `columns`, `rowCountEstimate`, `hasMore` and `nextCursor`. A page's rows get what is left of
 /// `frameMaxBytes`, so the reply always fits one frame.
 const PAGE_ENVELOPE_RESERVE: usize = 16 * 1024;
+
+/// Bytes one row may take in a `result.fetchPage` reply. The same budget
+/// [`Executions::fetch_page`] applies to the first row of a page: the frame, less the envelope
+/// reserve, less a further reserve for the columns every page repeats.
+fn row_budget(columns: &[Value]) -> Result<usize, RpcError> {
+	let reserve = PAGE_ENVELOPE_RESERVE
+		.checked_add(array_len(columns)?)
+		.ok_or_else(|| RpcError::with_detail(ErrorKind::Internal, "the page budget overflowed"))?;
+	Ok(usize::try_from(DEFAULT_FRAME_MAX_BYTES)
+		.unwrap_or(usize::MAX)
+		.saturating_sub(reserve))
+}
+
+/// Whether `collected` holds a row that `result.fetchPage` could never answer with: one whose own
+/// JSON exceeds [`row_budget`]. The statement itself may have run to completion; the result is
+/// what cannot cross the pipe.
+fn has_a_row_that_cannot_be_paged(collected: &Collected) -> bool {
+	let Ok(budget) = row_budget(&collected.columns) else {
+		return true;
+	};
+	collected.rows.iter().any(|row| {
+		// A row is its cells, their brackets and the comma before it, as `fetch_page` counts it.
+		array_len(row).is_ok_and(|size| size.saturating_add(1) > budget)
+	})
+}
 
 /// The flag a cancellable execution shares with its worker: `0` running, `1` timed out, `2`
 /// cancelled (`worker::Stop`). The registry only ever sets `2`.
@@ -303,6 +328,23 @@ impl Executions {
 				format!("at most {MAX_CONCURRENT_EXECUTIONS} executions can hold results at once"),
 			));
 		}
+		// A result has to be readable, and `result.fetchPage` answers in one frame. A row whose own
+		// JSON does not fit that frame can never be paged out, so an execution that produced one
+		// reports the limit now, where the client can still see it as the execution's outcome,
+		// instead of completing and leaving a handle whose every page fails (`README.md` §7).
+		// `maxInitialRows` does not bound this: one row of many large cells is within every cell
+		// limit and still wider than a frame.
+		if handles
+			.iter()
+			.any(|(_, collected)| has_a_row_that_cannot_be_paged(collected))
+		{
+			handles.clear();
+			outcome.state = State::Failed;
+			outcome.error = Some(RpcError::with_detail(
+				ErrorKind::ResourceLimit,
+				"a row of the result does not fit in one frame",
+			));
+		}
 		let Some(entry) = self.entry_mut(execution) else {
 			return Vec::new();
 		};
@@ -542,11 +584,7 @@ impl Executions {
 		//
 		// Sizes are the rows' own JSON, measured as the encoder will write them (escaping included),
 		// plus the columns object, which every page repeats.
-		let columns_size = array_len(&handle.columns)?;
-		let mut budget = usize::try_from(DEFAULT_FRAME_MAX_BYTES)
-			.unwrap_or(usize::MAX)
-			.saturating_sub(PAGE_ENVELOPE_RESERVE)
-			.saturating_sub(columns_size);
+		let mut budget = row_budget(&handle.columns)?;
 		let mut end = handle.next;
 		while end < handle.rows.len() && end - handle.next < limit {
 			// A row is its cells, their brackets and the comma before it.
