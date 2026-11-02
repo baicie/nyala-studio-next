@@ -6,8 +6,8 @@
 
 ## 计数口径
 
-`nyala/upstream-base.json` 的 `patchCount` 为 `63`：57 个已跟踪的上游文件发生修改，另有 6
-个 Nyala 源文件新增（2 个在 `src/vs/workbench/contrib/nyala/`，4 个在 `src/vs/platform/nyalaRuntime/`）。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
+`nyala/upstream-base.json` 的 `patchCount` 为 `64`：57 个已跟踪的上游文件发生修改，另有 7
+个 Nyala 源文件新增（2 个在 `src/vs/workbench/contrib/nyala/`，5 个在 `src/vs/platform/nyalaRuntime/`）。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
 `.github/workflows/nyala-ci.yml`、`scripts/nyala/`、`nyala/` 元数据和 Nyala 自有的 `rust/`
 Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runtime-workspace.md)）不计入
 该数字，但仍属于当前工作树，提交前应随变更审阅。
@@ -42,7 +42,7 @@ Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runt
 
 `63` 是 `nyala/main` `cff320ad65e` 上的实测值（2026-11-02，N-110 分支重算）：修改的上游跟踪文件 57 个、新增的非测试 Nyala 源文件 6 个。比 `61` 多的 2 个是 PR #19（dependabot，`@vscode/markdown-editor` `0.0.2-130` → `0.0.2-144`）合入的 `extensions/markdown-language-features/package.json` 与 `package-lock.json`——它们此前与 `1.143.0` 一致，PR #19 只登记了 npm 依赖升级，没有同步 ledger，`upstream-base.json` 因此停在 `61`。本次按口径补记并更正为 `63`。风险与移除条件同 PR #20：上游升级同一依赖时该差异自然消失。
 
-N-110（PR 见 `feat/p1-rpc-generated-contracts`）会新增 `src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts`，合并后新增数 6 → 7、`patchCount` `63` → `64`；该重算按“合并之后更新”的规则在其合入后执行，本 PR 只记录预测值。生成器 `scripts/nyala/generate-rpc-contract.ts` 与 `rust/` 下的 `contract.rs` 按口径不计入。
+`64` 是 N-110（PR #39，squash `113a170be69`）合入后的实测值（2026-11-02）：新增的非测试 Nyala 源文件 6 → 7，新增的是 `src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts`（由 `scripts/nyala/generate-rpc-contract.ts` 生成，按 `src/` 下源文件计）；修改的上游跟踪文件仍为 57。生成器本身、`rust/` 下的 `contract.rs` 与文档按口径不计入。`upstream-base.json` 已在合并后更新为 `64`。
 
 `61` 是 PR #20（dependabot，四个 workflow 的 GitHub Actions 版本升级）合入后、`nyala/main` `4b5c38345b8` 上的实测值（2026-11-02）：修改的上游跟踪文件 51 → 55，新增的 4 个是 `.github/workflows/css-order-scan.yml`、`pr-darwin-test.yml`、`pr-linux-test.yml`、`pr-win32-test.yml`——它们此前与 `1.143.0` 一致，该 PR 把其中的 `actions/setup-node`、`actions/cache`、`actions/upload-artifact`、`actions/download-artifact` 升到新版本。同一 PR 也改了已计入的 `.github/workflows/nyala-ci.yml`；其余 9 个 workflow 已在补丁集内，不重复计数。没有新增或删除 Nyala 源文件，仍为 6 个。风险：上游再次升级这些 action 时会产生行级冲突，按上游版本重新套用即可，无产品语义；移除条件：Nyala 不再固定 action 版本，或上游自己完成同等升级时该差异自然消失。
 

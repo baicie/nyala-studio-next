@@ -31,7 +31,7 @@
 | N-107 | P0 | N-106 | ResultHandle + FetchPage/TTL/release | 大结果缓存限额与过期测试 · **部分交付**：句柄、前向分页（受帧上限约束，超预算即提前结束并给 cursor）、TTL 清理与 release 随 PR #37 落地；流式游标与大结果不整段驻留仍待办 |
 | N-108 | P0 | N-106 | Cancel/Timeout/Runtime killed | Unknown/Cancelled 区分 · **部分**（随 PR #37）：超时（含无结果列的 DML）与会话关闭的中断已区分 `QUERY_TIMEOUT` / `QUERY_CANCELLED` 且终态为 `cancelled`；`query.cancel` 对运行中执行的真实中断、`cancel_requested` 与 `unknown` 仍待办（需异步执行） |
 | N-109 | P0 | N-104 | Readonly DB enforced | 尝试实际修改失败 · **Done**（PR #37：DML / DDL / 带副作用的语句由 `SQLITE_OPEN_READONLY` 拒绝，全部 `READ_ONLY_DENIED`；测试证明数据与 schema 未改、同一会话随后仍可读。不以 SQL 正则作为边界） |
-| N-110 | P1 | N-107 | Protocol TS/Rust generated contracts | **Done**（分支 `feat/p1-rpc-generated-contracts`）：`scripts/nyala/generate-rpc-contract.ts` 只读 `nyala/rpc/v1/`，生成 `nyalaRuntimeContract.generated.ts` 与 `rust/.../src/contract.rs`；`npm run nyala:check-rpc-generated` 在 CI `Product baseline` 中检出漂移；`error.rs` 的 kind/code/retryable 取自生成表，合同增删 kind 未重新生成即编译失败；两侧各有合同回读测试（Rust `tests/contract.rs` 4 项、TS `nyalaRuntimeContract.test.ts` 3 项）。正/负向样例由既有 `tests/conformance.rs` 与 `nyalaRuntimeProtocol.test.ts` 覆盖 |
+| N-110 | P1 | N-107 | Protocol TS/Rust generated contracts | **Done**（PR #39，squash `113a170be69`）：`scripts/nyala/generate-rpc-contract.ts` 只读 `nyala/rpc/v1/`，生成 `nyalaRuntimeContract.generated.ts` 与 `rust/.../src/contract.rs`；`npm run nyala:check-rpc-generated` 在 CI `Product baseline` 中检出漂移；`error.rs` 的 kind/code/retryable 取自生成表，合同增删 kind 未重新生成即编译失败；两侧各有合同回读测试（Rust `tests/contract.rs` 4 项、TS `nyalaRuntimeContract.test.ts` 3 项）。正/负向样例由既有 `tests/conformance.rs` 与 `nyalaRuntimeProtocol.test.ts` 覆盖 |
 
 **v1.1 验收补充**（只增加检查项，不改 ID、优先级或依赖）：
 
