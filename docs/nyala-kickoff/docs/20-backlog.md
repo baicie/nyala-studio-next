@@ -26,11 +26,11 @@
 | N-102 | P0 | N-101 | Hello/version/error protocol | Major 不匹配拒绝 · **Done**（同 N-101） |
 | N-103 | P0 | N-102 | Electron Sidecar supervisor | 退出/重启/清理测试 · **Done**（PR #35，squash `24c3cc7aa23`；spawn/kill/restart/backoff/shutdown/孤儿进程、同步 spawn 抛错、帧错误换代、每窗口一个 Runtime；staging 缓存按内容 SHA-256 + 执行位识别，红绿对照成立；Linux CI `71 passing` 含 POSIX 执行位用例；Windows 原生 Runtime smoke 5/5 为此前工作树证据，最终 head 未重跑；见 [ADR 0004](../../adr/0004-runtime-supervisor.md)） |
 | N-104 | P0 | N-102 | SQLite Profile/Session connect | connect/close/invalid file 测试 · **Done**（PR #33，squash `195475b84b3`；会话生命周期、无效文件、OS 拒绝、WAL 只读副作用与 capabilities 测试；主线 run `41290936784` 四项必需检查 PASS；见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md)） |
-| N-105 | P0 | N-104 | SQLite metadata | 表/视图/列/permission/refresh |
-| N-106 | P0 | N-104 | SELECT 1 / errors / query states | 终态、耗时、错误测试 |
-| N-107 | P0 | N-106 | ResultHandle + FetchPage/TTL/release | 大结果缓存限额与过期测试 |
-| N-108 | P0 | N-106 | Cancel/Timeout/Runtime killed | Unknown/Cancelled 区分 |
-| N-109 | P0 | N-104 | Readonly DB enforced | 尝试实际修改失败 |
+| N-105 | P0 | N-104 | SQLite metadata | 表/视图/列/permission/refresh · **Done**（分支 `feat/p1-sqlite-metadata-query`：`metadata.listObjects` / `metadata.describe`，kinds 过滤、不透明前向 cursor、标识符转义；证据见 [ADR 0002](../../adr/0002-rust-runtime-workspace.md#n-105--n-1062026-11-02)） |
+| N-106 | P0 | N-104 | SELECT 1 / errors / query states | 终态、耗时、错误测试 · **Done**（同一分支：`query.execute/getState/cancel`、`result.fetchPage/release`、超时中断、只读拒绝；额度在语句执行前拒绝） |
+| N-107 | P0 | N-106 | ResultHandle + FetchPage/TTL/release | 大结果缓存限额与过期测试 · **部分交付**：句柄、前向分页（受帧上限约束，超预算即提前结束并给 cursor）、TTL 清理与 release 随该分支落地；流式游标与大结果不整段驻留仍待办 |
+| N-108 | P0 | N-106 | Cancel/Timeout/Runtime killed | Unknown/Cancelled 区分 · **部分**：超时（含无结果列的 DML）与会话关闭的中断已区分 `QUERY_TIMEOUT` / `QUERY_CANCELLED` 且终态为 `cancelled`；`query.cancel` 对运行中执行的真实中断、`cancel_requested` 与 `unknown` 仍待办（需异步执行） |
+| N-109 | P0 | N-104 | Readonly DB enforced | 尝试实际修改失败 · **Done**（分支 `feat/p1-sqlite-metadata-query`：DML / DDL / 带副作用的语句由 `SQLITE_OPEN_READONLY` 拒绝，全部 `READ_ONLY_DENIED`；测试证明数据与 schema 未改、同一会话随后仍可读。不以 SQL 正则作为边界） |
 | N-110 | P1 | N-107 | Protocol TS/Rust generated contracts | 合同一致性 CI |
 
 **v1.1 验收补充**（只增加检查项，不改 ID、优先级或依赖）：

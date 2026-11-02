@@ -146,6 +146,13 @@ pub struct RpcError {
 	pub safe_detail: Option<String>,
 	/// Sent as `sessionId`: the session the failed request named.
 	pub session_id: Option<String>,
+	/// Sent as `executionId`: the execution the failed request named or produced.
+	pub execution_id: Option<String>,
+	/// Sent as `sqlState`: the database's own result code, when a database reported the failure.
+	/// SQLite has no SQLSTATE codes, so this is its extended result code in decimal
+	/// (`README.md` §7 allows any string); it tells a constraint violation (`19`, `1555`, `2067`)
+	/// from one the preparer rejected (`1`).
+	pub sql_state: Option<String>,
 }
 
 impl RpcError {
@@ -154,6 +161,8 @@ impl RpcError {
 			kind,
 			safe_detail: None,
 			session_id: None,
+			execution_id: None,
+			sql_state: None,
 		}
 	}
 
@@ -162,6 +171,8 @@ impl RpcError {
 			kind,
 			safe_detail: Some(detail.into()),
 			session_id: None,
+			execution_id: None,
+			sql_state: None,
 		}
 	}
 
@@ -169,6 +180,19 @@ impl RpcError {
 	/// pattern, because `data.sessionId` is checked against it.
 	pub fn for_session(mut self, session_id: impl Into<String>) -> Self {
 		self.session_id = Some(session_id.into());
+		self
+	}
+
+	/// Attaches the execution the request named. Callers pass only ids that match the contract's id
+	/// pattern, because `data.executionId` is checked against it.
+	pub fn for_execution(mut self, execution_id: impl Into<String>) -> Self {
+		self.execution_id = Some(execution_id.into());
+		self
+	}
+
+	/// Attaches the database's own result code (`data.sqlState`).
+	pub fn with_sql_state(mut self, sql_state: impl Into<String>) -> Self {
+		self.sql_state = Some(sql_state.into());
 		self
 	}
 
@@ -182,6 +206,12 @@ impl RpcError {
 		}
 		if let Some(session_id) = &self.session_id {
 			data.insert("sessionId".into(), json!(session_id));
+		}
+		if let Some(execution_id) = &self.execution_id {
+			data.insert("executionId".into(), json!(execution_id));
+		}
+		if let Some(sql_state) = &self.sql_state {
+			data.insert("sqlState".into(), json!(sql_state));
 		}
 		json!({
 			"code": self.kind.code(),
@@ -226,5 +256,22 @@ mod tests {
 	fn safe_detail_is_optional() {
 		let data = RpcError::new(ErrorKind::RuntimeLost).to_json()["data"].clone();
 		assert_eq!(data, json!({"kind": "RUNTIME_LOST", "retryable": true}));
+	}
+
+	#[test]
+	fn a_database_result_code_is_reported_as_sql_state() {
+		let error = RpcError::with_detail(ErrorKind::SqlSyntax, "rejected")
+			.with_sql_state("2067")
+			.for_execution("s_1e1");
+		assert_eq!(
+			error.to_json()["data"],
+			json!({
+				"kind": "SQL_SYNTAX",
+				"retryable": false,
+				"safeDetail": "rejected",
+				"executionId": "s_1e1",
+				"sqlState": "2067",
+			})
+		);
 	}
 }

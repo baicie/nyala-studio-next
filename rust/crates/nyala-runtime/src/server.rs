@@ -158,6 +158,13 @@ impl Server {
 			"connection.open" => self.sessions.open(&request.params),
 			"connection.close" => self.sessions.close(&request.params),
 			"connection.listSessions" => self.sessions.list(&request.params),
+			"metadata.listObjects" => self.sessions.list_objects(&request.params),
+			"metadata.describe" => self.sessions.describe(&request.params),
+			"query.execute" => self.sessions.execute(&request.params),
+			"query.cancel" => self.sessions.cancel(&request.params),
+			"query.getState" => self.sessions.get_state(&request.params),
+			"result.fetchPage" => self.sessions.fetch_page(&request.params),
+			"result.release" => self.sessions.release(&request.params),
 			// required_feature names only methods with a handler above; this arm keeps a future
 			// mismatch between the two from panicking.
 			_ => Err(RpcError::with_detail(
@@ -233,24 +240,31 @@ impl Server {
 			));
 		}
 		let uptime_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+		let (active_executions, pending_results) = self.sessions.counters();
 		Ok(json!({
 			"status": "ok",
 			"uptimeMs": uptime_ms,
 			"activeSessions": self.sessions.open_count(),
-			// Executions and result handles arrive with N-106/N-107.
-			"activeExecutions": 0,
-			"pendingResults": 0,
+			"activeExecutions": active_executions,
+			"pendingResults": pending_results,
 		}))
 	}
 }
 
 /// The feature a v1 method needs, for the methods this build implements. `None` means no
 /// negotiation unlocks the method yet, so it is always refused with `PROTOCOL_MISMATCH`.
+/// The `features` bit a method needs. The contract's §3 list is what clients read, so each method
+/// maps to its own bit; `metadata.describe` has none of its own and rides on `metadata.listObjects`.
 fn required_feature(method: &str) -> Option<&'static str> {
 	match method {
 		"connection.test" | "connection.open" | "connection.close" | "connection.listSessions" => {
 			Some("sqlite")
 		}
+		"metadata.listObjects" | "metadata.describe" => Some("metadata.listObjects"),
+		"query.execute" | "query.getState" => Some("query.execute"),
+		"query.cancel" => Some("query.cancel"),
+		"result.fetchPage" => Some("result.fetchPage"),
+		"result.release" => Some("result.release"),
 		_ => None,
 	}
 }
@@ -591,14 +605,31 @@ mod tests {
 		}
 	}
 
+	/// The feature a method needs, as `required_feature` maps it. The contract's §3 list is what a
+	/// client reads, so this is the list the test unlocks method by method.
+	const FEATURES: [&str; 6] = [
+		"sqlite",
+		"metadata.listObjects",
+		"query.execute",
+		"query.cancel",
+		"result.fetchPage",
+		"result.release",
+	];
+
+	fn hello_with(features: &[&str]) -> Value {
+		let mut params = hello_params(1, 0);
+		params["supportedFeatures"] = json!(features);
+		params
+	}
+
 	#[test]
-	fn sqlite_unlocks_the_connection_methods_only() {
+	fn sqlite_alone_unlocks_only_the_connection_methods() {
 		let mut server = Server::new();
 		call(&mut server, "runtime.hello", hello_params(1, 0));
 		for method in &V1_REQUEST_METHODS[2..] {
 			let reply = call(&mut server, method, json!({}));
 			// The connection methods reach their handlers, which reject the empty params; every
-			// other method needs a feature this build does not implement yet.
+			// other method needs a feature the client did not offer.
 			let expected = match *method {
 				"connection.listSessions" => "result",
 				"connection.test" | "connection.open" | "connection.close" => "INVALID_PARAMS",
@@ -609,6 +640,49 @@ mod tests {
 				.unwrap_or("result");
 			assert_eq!(outcome, expected, "{method}");
 			assert_eq!(reply.exit, None);
+		}
+	}
+
+	#[test]
+	fn every_catalog_method_is_reachable_once_its_feature_is_negotiated() {
+		let mut server = Server::new();
+		call(&mut server, "runtime.hello", hello_with(&FEATURES));
+		for method in &V1_REQUEST_METHODS[2..] {
+			let reply = call(&mut server, method, json!({}));
+			// Empty params fail for every method except the one that takes none; nothing may be
+			// refused for want of a feature.
+			let outcome = message(&reply)["error"]["data"]["kind"]
+				.as_str()
+				.unwrap_or("result");
+			assert_ne!(outcome, "PROTOCOL_MISMATCH", "{method} after negotiating");
+			assert_eq!(reply.exit, None, "{method}");
+		}
+	}
+
+	#[test]
+	fn dropping_one_feature_refuses_exactly_the_methods_that_need_it() {
+		let needs = required_feature;
+		for withheld in FEATURES {
+			let offered: Vec<&str> = FEATURES
+				.into_iter()
+				.filter(|feature| *feature != withheld)
+				.collect();
+			let mut server = Server::new();
+			call(&mut server, "runtime.hello", hello_with(&offered));
+			for method in &V1_REQUEST_METHODS[2..] {
+				let reply = call(&mut server, method, json!({}));
+				let outcome = message(&reply)["error"]["data"]["kind"]
+					.as_str()
+					.unwrap_or("result");
+				if needs(method) == Some(withheld) {
+					assert_eq!(outcome, "PROTOCOL_MISMATCH", "{method} without {withheld}");
+				} else {
+					assert_ne!(
+						outcome, "PROTOCOL_MISMATCH",
+						"{method} with {withheld} missing"
+					);
+				}
+			}
 		}
 	}
 

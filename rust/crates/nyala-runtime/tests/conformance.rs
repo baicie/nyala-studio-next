@@ -237,6 +237,8 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 	// The sample session's sessionId, mapped to the sessionId and generation this runtime issued
 	// for the sample's connection.open.
 	let mut issued: HashMap<String, (Value, Value)> = HashMap::new();
+	// Sample executionId/resultId to the one this runtime issued, for the same replay reason.
+	let mut issued_ids: HashMap<String, Value> = HashMap::new();
 	let mut server = Server::new();
 	let mut answered = 0;
 	for (index, (line, sample)) in samples.iter().enumerate() {
@@ -244,6 +246,33 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 			let reply = server.handle_payload(line.as_bytes());
 			assert_eq!(reply.message, None, "notifications get no reply: {line}");
 			assert_eq!(reply.exit, None);
+			// A notification naming result ids tells this test which of its ids stand for the
+			// sample's, exactly as a client would learn them (`README.md` §4). `getState` is the
+			// compensation read for a notification this build never sends.
+			if let (Some(sample_execution), Some(sample_results)) = (
+				sample["params"]["executionId"].as_str(),
+				sample["params"]["resultIds"].as_array(),
+			) {
+				if let Some(execution) = issued_ids.get(sample_execution) {
+					let state = server
+						.handle_payload(
+							json!({"jsonrpc": "2.0", "id": "rq_state", "method": "query.getState", "params": {"executionId": execution}})
+								.to_string()
+								.as_bytes(),
+						)
+						.message
+						.unwrap();
+					let results = state["result"]["resultIds"]
+						.as_array()
+						.cloned()
+						.unwrap_or_default();
+					for (sample_id, result) in sample_results.iter().zip(results) {
+						if let Some(sample_id) = sample_id.as_str() {
+							issued_ids.insert(sample_id.to_owned(), result);
+						}
+					}
+				}
+			}
 			continue;
 		}
 		if !is_request(sample) {
@@ -262,21 +291,32 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 			request["params"]["sessionGeneration"] = generation;
 		}
 
+		// Sample execution and result ids are replaced by the ones this process issued, exactly as
+		// for the session, so that the sample's own flow can be replayed end to end.
+		for field in ["executionId", "resultId"] {
+			let Some(sample_id) = request["params"][field].as_str().map(str::to_owned) else {
+				continue;
+			};
+			if let Some(issued) = issued_ids.get(&sample_id) {
+				request["params"][field] = issued.clone();
+			}
+		}
+
 		let reply = server.handle_payload(request.to_string().as_bytes());
 		assert_eq!(reply.exit, None, "{line}");
 		let message = reply.message.expect("every request gets a response");
 		assert_conforms(&schema, &registry, &request, &message);
 		let method = request["method"].as_str().unwrap();
+		let (_, expected) = samples[index..]
+			.iter()
+			.find(|(_, later)| later["id"] == sample["id"] && !is_request(later))
+			.expect("every request is followed by its response");
 		match method {
 			"runtime.hello" | "runtime.health" | "connection.test" | "connection.open"
 			| "connection.close" => {
 				let result = message
 					.get("result")
 					.unwrap_or_else(|| panic!("{method}: {message}"));
-				let (_, expected) = samples[index..]
-					.iter()
-					.find(|(_, later)| later["id"] == sample["id"] && !is_request(later))
-					.expect("every request is followed by its response");
 				assert_eq!(
 					keys(result),
 					keys(&expected["result"]),
@@ -284,15 +324,17 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 				);
 				if method == "connection.open" {
 					// The sample session advertises transactions and metadata; this build declares
-					// only what it implements.
+					// only what it implements. Cancellation is cooperative because a timeout ends a
+					// running statement through SQLite's progress callback; `transaction.*` has no
+					// implementation, so it stays false.
 					assert_eq!(
 						result["capabilities"],
 						json!({
 							"driver": "sqlite",
 							"readOnly": request["params"]["readOnly"],
-							"cancel": "none",
+							"cancel": "cooperative",
 							"supportsTransactions": false,
-							"supportsMetadata": false,
+							"supportsMetadata": true,
 						}),
 						"connection.open capabilities"
 					);
@@ -305,11 +347,111 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 					);
 				}
 			}
-			// The metadata, query and result features arrive with N-105..N-107.
-			method => assert_eq!(
-				message["error"]["data"]["kind"], "PROTOCOL_MISMATCH",
-				"{method}"
-			),
+			"metadata.listObjects" => {
+				// The fixture below holds exactly the objects the sample session lists.
+				let result = message
+					.get("result")
+					.unwrap_or_else(|| panic!("{method}: {message}"));
+				assert_eq!(result, &expected["result"], "metadata.listObjects result");
+			}
+			"metadata.describe" => {
+				let result = message
+					.get("result")
+					.unwrap_or_else(|| panic!("{method}: {message}"));
+				assert!(
+					!result["columns"].as_array().unwrap().is_empty(),
+					"metadata.describe returns columns"
+				);
+			}
+			"query.execute" => {
+				// A statement that does not compile is answered with an error, not a result
+				// (rq_009); the sample records the error kind the client must act on.
+				if let Some(expected) = expected.get("result") {
+					let result = message
+						.get("result")
+						.unwrap_or_else(|| panic!("{method}: {message}"));
+					// The sample was recorded against a runtime that answers before the statement runs
+					// and reports `queued`; this build runs to the terminal state inside the request,
+					// so the state is the terminal one. The fields are the same.
+					assert_eq!(keys(result), keys(expected), "query.execute result fields");
+					let sample_id = expected["executionId"]
+						.as_str()
+						.expect("the sample names its execution")
+						.to_owned();
+					issued_ids.insert(sample_id, result["executionId"].clone());
+					let sample_state = expected["state"].as_str().expect("state");
+					if sample_state == "queued" {
+						assert_eq!(
+							result["state"], "completed",
+							"a successful statement completes"
+						);
+					}
+				} else {
+					assert_eq!(
+						message["error"]["data"]["kind"], expected["error"]["data"]["kind"],
+						"query.execute error kind: {message}"
+					);
+					// The sample records the database's own result code next to the kind; SQLite
+					// reports the preparer's `SQLITE_ERROR` as `1` for a statement it cannot compile.
+					assert_eq!(
+						message["error"]["data"]["sqlState"], expected["error"]["data"]["sqlState"],
+						"query.execute error sqlState: {message}"
+					);
+				}
+			}
+			"query.cancel" => {
+				let result = message
+					.get("result")
+					.unwrap_or_else(|| panic!("{method}: {message}"));
+				// Nothing runs while this reply is built (v1 handles one request at a time), so the
+				// request is refused and the terminal state is reported instead of accepted.
+				assert_eq!(result["accepted"], false, "query.cancel");
+				assert_eq!(result["state"], "completed", "query.cancel");
+			}
+			"query.getState" => {
+				let result = message
+					.get("result")
+					.unwrap_or_else(|| panic!("{method}: {message}"));
+				assert_eq!(result["state"], "completed", "query.getState");
+				assert!(
+					result["resultIds"]
+						.as_array()
+						.is_some_and(|ids| !ids.is_empty()),
+					"a completed execution names its results: {result}"
+				);
+			}
+			"result.fetchPage" => {
+				// The sample fetches twice: once while the handle is live, once after
+				// `result.release`, which must fail as RESULT_EXPIRED. The expected record
+				// therefore has either a `result` or an `error`.
+				if let Some(expected) = expected.get("result") {
+					let result = message
+						.get("result")
+						.unwrap_or_else(|| panic!("{method}: {message}"));
+					assert_eq!(
+						keys(result),
+						keys(expected),
+						"result.fetchPage result fields"
+					);
+					// `SELECT 1 AS answer` is the sample's first result: one INT64 cell.
+					assert_eq!(result["columns"], expected["columns"], "columns");
+					assert_eq!(result["rows"], expected["rows"], "rows");
+					assert_eq!(result["hasMore"], false);
+					assert_eq!(result["nextCursor"], Value::Null);
+				} else {
+					assert_eq!(
+						message["error"]["data"]["kind"], "RESULT_EXPIRED",
+						"a released handle cannot be fetched: {message}"
+					);
+				}
+			}
+			"result.release" => {
+				let result = message
+					.get("result")
+					.unwrap_or_else(|| panic!("{method}: {message}"));
+				assert_eq!(result, &json!({"released": true}), "result.release");
+			}
+			other => panic!("no conformance replay for {other}"),
 		}
 		answered += 1;
 	}

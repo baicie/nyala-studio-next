@@ -12,7 +12,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+# `column_decltype`: the declared type of a result column (N-105/N-106).
+# `hooks`: SQLite's progress callback, which is how a query timeout ends a running statement.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "hooks"] }
 serde_json = "1.0.140"
 
 [dev-dependencies]

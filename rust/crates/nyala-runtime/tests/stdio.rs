@@ -106,6 +106,27 @@ fn sqlite_hello(id: &str) -> Vec<u8> {
 	)
 }
 
+/// `runtime.hello` that negotiates every feature the runtime advertises.
+fn full_hello(id: &str) -> Vec<u8> {
+	request(
+		id,
+		"runtime.hello",
+		json!({
+			"protocolMajor": 1,
+			"protocolMinor": 0,
+			"clientBuild": "test",
+			"supportedFeatures": [
+				"sqlite",
+				"metadata.listObjects",
+				"query.execute",
+				"query.cancel",
+				"result.fetchPage",
+				"result.release"
+			],
+		}),
+	)
+}
+
 /// `connection.test` or `connection.open` for `path`.
 fn connect(id: &str, method: &str, path: &str, read_only: bool) -> Vec<u8> {
 	request(
@@ -668,6 +689,248 @@ fn a_database_locked_by_another_process_fails_with_query_timeout() {
 	assert_eq!(result(&runtime.call(&list("rq_4")))["sessions"], json!([]));
 	holder.execute_batch("ROLLBACK").unwrap();
 
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
+}
+
+#[test]
+fn a_query_is_executed_paged_and_released_over_the_pipe() {
+	let dir = TempDir::new("query");
+	let database = dir.database("db.sqlite");
+	let path = path_param(&database);
+	let mut runtime = Live::start();
+	let hello = result(&runtime.call(&full_hello("rq_1"))).clone();
+	assert_eq!(hello["features"].as_array().unwrap().len(), 6, "{hello}");
+
+	let session = result(&runtime.call(&connect("rq_2", "connection.open", path, true))).clone();
+	let (id, generation) = (&session["sessionId"], &session["sessionGeneration"]);
+	let params = |sql: &str, mode: &str| {
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": sql,
+			"mode": mode,
+			"timeoutMs": 30_000,
+			"maxInitialRows": 200,
+		})
+	};
+
+	// Metadata: every object the fixture holds, tables and views before indexes.
+	let listed = result(&runtime.call(&request(
+		"rq_3",
+		"metadata.listObjects",
+		json!({"sessionId": id, "sessionGeneration": generation, "limit": 50}),
+	)))
+	.clone();
+	let names: Vec<(&str, &str)> = listed["objects"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|object| {
+			(
+				object["name"].as_str().unwrap(),
+				object["kind"].as_str().unwrap(),
+			)
+		})
+		.collect();
+	assert_eq!(
+		names,
+		[
+			("customers", "table"),
+			("recent_orders", "view"),
+			("customers_by_name", "index"),
+		],
+		"{listed}"
+	);
+	assert_eq!(listed["hasMore"], false);
+	let described = result(&runtime.call(&request(
+		"rq_4",
+		"metadata.describe",
+		json!({"sessionId": id, "sessionGeneration": generation, "object": {"schema": "main", "name": "customers"}}),
+	)))
+	.clone();
+	assert_eq!(
+		described["columns"][0]["name"], "id",
+		"the primary key comes first: {described}"
+	);
+
+	// A statement with columns: completed immediately, with one result handle.
+	let executed = result(&runtime.call(&request(
+		"rq_5",
+		"query.execute",
+		params("SELECT id, name FROM customers ORDER BY id", "statement"),
+	)))
+	.clone();
+	assert_eq!(executed["state"], "completed", "{executed}");
+	let execution_id = executed["executionId"].clone();
+	let state = result(&runtime.call(&request(
+		"rq_6",
+		"query.getState",
+		json!({"executionId": execution_id}),
+	)))
+	.clone();
+	assert_eq!(state["state"], "completed");
+	let result_id = state["resultIds"][0].clone();
+
+	let page = result(&runtime.call(&request(
+		"rq_7",
+		"result.fetchPage",
+		json!({"resultId": result_id, "cursor": null, "limit": 200}),
+	)))
+	.clone();
+	assert_eq!(
+		page["rows"],
+		json!([
+			[{"type": "int64", "text": "1"}, {"type": "string", "value": "Ada"}],
+			[{"type": "int64", "text": "2"}, {"type": "string", "value": "Grace"}],
+		]),
+		"{page}"
+	);
+	assert_eq!(page["hasMore"], false);
+	assert_eq!(page["rowCountEstimate"], 2);
+
+	// Releasing is idempotent and takes the handle away.
+	for request_id in ["rq_8", "rq_9"] {
+		assert_eq!(
+			result(&runtime.call(&request(
+				request_id,
+				"result.release",
+				json!({"resultId": result_id}),
+			))),
+			&json!({"released": true})
+		);
+	}
+	assert_eq!(
+		kind(&runtime.call(&request(
+			"rq_10",
+			"result.fetchPage",
+			json!({"resultId": result_id, "cursor": null, "limit": 200}),
+		))),
+		"RESULT_EXPIRED"
+	);
+
+	// Invalid SQL fails as SQL_SYNTAX and still names its execution, which getState reports.
+	let failed = runtime.call(&request(
+		"rq_11",
+		"query.execute",
+		params("SELECT FROM WHERE", "statement"),
+	));
+	assert_eq!(kind(&failed), "SQL_SYNTAX", "{failed}");
+	assert_eq!(failed["error"]["data"]["sessionId"], id.clone());
+	let failed_id = failed["error"]["data"]["executionId"].clone();
+	let failed_state = result(&runtime.call(&request(
+		"rq_12",
+		"query.getState",
+		json!({"executionId": failed_id}),
+	)))
+	.clone();
+	assert_eq!(failed_state["state"], "failed", "{failed_state}");
+	assert_eq!(failed_state["error"]["data"]["kind"], "SQL_SYNTAX");
+
+	// A write on a read-only session is refused by SQLite's mode, not by reading the SQL.
+	let denied = runtime.call(&request(
+		"rq_13",
+		"query.execute",
+		params("INSERT INTO customers(name) VALUES ('Turing')", "statement"),
+	));
+	assert_eq!(kind(&denied), "READ_ONLY_DENIED", "{denied}");
+	let after = result(&runtime.call(&request(
+		"rq_14",
+		"query.execute",
+		params("SELECT count(*) FROM customers", "statement"),
+	)))
+	.clone();
+	let count_id = result(&runtime.call(&request(
+		"rq_15",
+		"query.getState",
+		json!({"executionId": after["executionId"]}),
+	)))["resultIds"][0]
+		.clone();
+	let count = result(&runtime.call(&request(
+		"rq_16",
+		"result.fetchPage",
+		json!({"resultId": count_id, "cursor": null, "limit": 200}),
+	)))
+	.clone();
+	assert_eq!(
+		count["rows"],
+		json!([[{"type": "int64", "text": "2"}]]),
+		"{count}"
+	);
+
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
+}
+
+#[test]
+fn a_page_too_large_for_a_frame_is_paged_instead_of_ending_the_stream() {
+	let dir = TempDir::new("big-page");
+	let path = dir.join("rows.sqlite");
+	rusqlite::Connection::open(&path)
+		.unwrap()
+		.execute_batch(
+			"CREATE TABLE padded(payload TEXT);
+			WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 2500)
+			INSERT INTO padded SELECT hex(zeroblob(2000)) FROM n;",
+		)
+		.unwrap();
+	let path = path_param(&path);
+	let mut runtime = Live::start();
+	runtime.call(&full_hello("rq_1"));
+	let session = result(&runtime.call(&connect("rq_2", "connection.open", path, true))).clone();
+	let (id, generation) = (&session["sessionId"], &session["sessionGeneration"]);
+
+	let executed = result(&runtime.call(&request(
+		"rq_3",
+		"query.execute",
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": "SELECT payload FROM padded",
+			"mode": "statement",
+			"timeoutMs": 30_000,
+			"maxInitialRows": 2500,
+		}),
+	)))
+	.clone();
+	let result_id = result(&runtime.call(&request(
+		"rq_4",
+		"query.getState",
+		json!({"executionId": executed["executionId"]}),
+	)))
+	.clone()["resultIds"][0]
+		.clone();
+
+	// 2500 rows of ~4 KiB each are ~10 MiB of JSON: more than one frame. Asking for all of them at
+	// once must come back as a smaller page with a cursor, never as a frame the stream cannot carry
+	// (which would end the process and every session with it).
+	let mut pages = 0;
+	let mut rows = 0;
+	let mut cursor = Value::Null;
+	loop {
+		let page = result(&runtime.call(&request(
+			&format!("rq_p{pages}"),
+			"result.fetchPage",
+			json!({"resultId": result_id, "cursor": cursor, "limit": 1000}),
+		)))
+		.clone();
+		rows += page["rows"].as_array().unwrap().len();
+		pages += 1;
+		if page["hasMore"] != true {
+			assert_eq!(page["nextCursor"], Value::Null);
+			break;
+		}
+		cursor = page["nextCursor"].clone();
+	}
+	assert_eq!(rows, 2500, "every row crosses the pipe exactly once");
+	assert!(pages > 1, "{pages} pages");
+
+	// The connection is still healthy after the big result.
+	assert_eq!(
+		result(&runtime.call(&health("rq_h")))["status"],
+		"ok",
+		"the stream survived the paging"
+	);
 	let (code, stderr) = runtime.finish();
 	assert_eq!(code, Some(0), "{stderr}");
 }

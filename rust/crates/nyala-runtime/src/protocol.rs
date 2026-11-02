@@ -37,10 +37,20 @@ pub const V1_REQUEST_METHODS: &[&str] = &[
 	"result.release",
 ];
 
-/// v1 features this build implements. The runtime must not advertise capabilities it cannot
-/// serve: `sqlite` unlocks the `connection.*` methods (N-104), and the metadata, query and result
-/// features arrive with N-105..N-107.
-pub const RUNTIME_FEATURES: &[&str] = &["sqlite"];
+/// v1 features this build implements (`README.md` §3). The runtime must not advertise a capability
+/// it cannot serve: `sqlite` unlocks `connection.*` (N-104), `metadata.listObjects` unlocks
+/// `metadata.*` (N-105), and `query.execute`, `query.cancel`, `result.fetchPage` and
+/// `result.release` unlock the execution and result methods (N-106). `query.cancel` is implemented
+/// only insomuch as it reports a finished execution; interrupting a running one needs the async
+/// split of N-108.
+pub const RUNTIME_FEATURES: &[&str] = &[
+	"sqlite",
+	"metadata.listObjects",
+	"query.execute",
+	"query.cancel",
+	"result.fetchPage",
+	"result.release",
+];
 
 /// Resource limits advertised in the `runtime.hello` result (README §7 defaults).
 pub const MAX_INITIAL_ROWS: u32 = 200;
@@ -78,7 +88,9 @@ pub enum Incoming {
 pub struct Rejected {
 	/// The request id, when the payload carried a valid one; otherwise the reply uses `null`.
 	pub id: Option<String>,
-	pub error: RpcError,
+	/// Boxed because [`RpcError`] is comfortably larger than the whole `Incoming` it competes
+	/// with, and every call site returns the success case far more often than this one.
+	pub error: Box<RpcError>,
 }
 
 /// Parses one frame payload into an envelope.
@@ -88,7 +100,10 @@ pub struct Rejected {
 pub fn parse_message(payload: &[u8]) -> Result<Incoming, Rejected> {
 	let value: Value = serde_json::from_slice(payload).map_err(|_| Rejected {
 		id: None,
-		error: RpcError::with_detail(ErrorKind::ParseError, "payload is not valid UTF-8 JSON"),
+		error: Box::new(RpcError::with_detail(
+			ErrorKind::ParseError,
+			"payload is not valid UTF-8 JSON",
+		)),
 	})?;
 	let Value::Object(mut envelope) = value else {
 		return Err(invalid(None, "payload must be a JSON object"));
@@ -130,7 +145,7 @@ pub fn parse_message(payload: &[u8]) -> Result<Incoming, Rejected> {
 fn invalid(id: Option<String>, detail: &str) -> Rejected {
 	Rejected {
 		id,
-		error: RpcError::with_detail(ErrorKind::InvalidRequest, detail),
+		error: Box::new(RpcError::with_detail(ErrorKind::InvalidRequest, detail)),
 	}
 }
 

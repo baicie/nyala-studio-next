@@ -22,7 +22,7 @@
 | 阶段 | 当前状态 | 是否阻塞下一阶段 |
 |---|---|---|
 | P0 | 基本完成：1.142.0 macOS Electron Smoke 通过；1.143.0 Windows 原生冒烟 PASS 12/12（PR #24），Reload/Dispose 单元测试已合入（PR #23）；主线 17 步冒烟的两条出站路径修复已随 PR #34（`2b73f20285c`）合入，Windows 17/17 PASS；Linux/macOS 未用 1.143.0 复跑 | 核心 smoke 闭环必须补，不能当发行通过 |
-| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Runtime N-101/N-102（PR #25）与 N-104 SQLite Profile/Session（PR #33，`195475b84b3`）已合入；N-103 Electron Main Supervisor（PR #35，squash `24c3cc7aa23`）已合入；N-105–N-110 未交付 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
+| P1 | RPC v1.0 可执行合同已合并（`nyala/rpc/v1`）；Rust Runtime N-101/N-102（PR #25）与 N-104 SQLite Profile/Session（PR #33，`195475b84b3`）已合入；N-103 Electron Main Supervisor（PR #35，squash `24c3cc7aa23`）已合入；N-105/N-106/N-109 在分支 `feat/p1-sqlite-metadata-query` 交付（metadata、查询执行与只读强制）；N-107 部分、N-108 部分、N-110 未交付 | P2 正式接入之前至少要有真实 RPC 和查询结果 |
 | P2–P4、P6 | 未开始 | 按各自 Exit |
 | P5 | 仅有 Agent 设计研究（[27](27-agent-platform.md)–[30](30-agent-security-evaluation.md)），无实现 | **不得阻塞 P1–P4** |
 | EX | 不纳入主线 | 独立 ADR，受控时间盒 |
@@ -51,9 +51,9 @@ Exit：空工作区 Electron 启动、原生编辑器/命令可用、Nyala 命�
 
 **P1.2** SQLite ConnectionProfile/Session，open/test/close，凭证与路径安全（SQLite 不涉及密码）。
 
-**P1.3** SQLite metadata + query execute SELECT1 + invalid SQL + read-only/DML guard。
+**P1.3** SQLite metadata + query execute SELECT1 + invalid SQL + read-only/DML guard。**已交付**（N-105/N-106/N-109）：`metadata.listObjects/describe`、`query.execute/getState`、`result.fetchPage/release` 与只读强制在 Rust Runtime 内实现并有 headless 证据（DML / DDL / 带副作用语句均被 SQLite 只读模式拒绝）；剩余项见下一行。
 
-**P1.4** ResultHandle/fetchPage/release、cancel/timeout、异常子进程重启与未知执行状态。
+**P1.4** ResultHandle/fetchPage/release、cancel/timeout、异常子进程重启与未知执行状态。分页句柄、release、timeout 中断、分页的帧上限保护已随 P1.3 落地；`query.cancel` 对运行中执行的真实中断（N-108 剩余）与流式游标（N-107 剩余部分）仍待办。
 
 Exit：不通过 UI 也能跑集成测试；Rust 内核可复用，RPC 编解码/生命周期通过测试。
 
