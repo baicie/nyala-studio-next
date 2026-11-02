@@ -322,8 +322,18 @@ impl Server {
 	/// drives the server request by request use it. It does not wait for the executions to finish:
 	/// `query.stateChanged` notifications that come later belong to whoever sends the next request
 	/// (or to [`Server::settle`]).
+	///
+	/// The events the workers already reported are applied first. Their order against the request
+	/// is therefore "everything reported before it": a cancel is then dispatched with the state the
+	/// worker reached, not a `running` the client has already been told about.
 	pub fn round_trip(&mut self, payload: &[u8]) -> Reply {
-		let mut reply = self.handle_payload(payload);
+		let mut reply = Reply::none();
+		self.drain(&mut reply);
+		let produced = self.handle_payload(payload);
+		reply.messages.extend(produced.messages);
+		if reply.exit.is_none() {
+			reply.exit = produced.exit;
+		}
 		self.drain(&mut reply);
 		while !self.owed.is_empty() {
 			match self.input.recv() {

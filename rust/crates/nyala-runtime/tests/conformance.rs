@@ -325,6 +325,9 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 	let mut issued: HashMap<String, (Value, Value)> = HashMap::new();
 	// Sample executionId/resultId to the one this runtime issued, for the same replay reason.
 	let mut issued_ids: HashMap<String, Value> = HashMap::new();
+	// The last `sequence` each execution reported as a notification, so `query.getState` can be
+	// checked against it regardless of how the cancel raced with the statement.
+	let mut last_sequence: HashMap<String, u64> = HashMap::new();
 	let mut server = Server::new();
 	let mut answered_count = 0;
 	for (index, (line, sample)) in samples.iter().enumerate() {
@@ -378,6 +381,12 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 		let produced = notifications(&messages);
 		for notification in &produced {
 			assert_notification_conforms(&schema, notification);
+			if let (Some(execution), Some(sequence)) = (
+				notification["params"]["executionId"].as_str(),
+				notification["params"]["sequence"].as_u64(),
+			) {
+				last_sequence.insert(execution.to_owned(), sequence);
+			}
 		}
 		let expected = expected_response(&samples, &request);
 		match method {
@@ -541,42 +550,66 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 				let result = message
 					.get("result")
 					.unwrap_or_else(|| panic!("{method}: {message}"));
-				// rq_011: the sample cancels an execution while it runs, so the request is accepted
-				// and reported as `cancel_requested`. This replay dispatches the cancel before it
-				// applies the events the worker already queued, so the execution is still `running`
-				// here and the same holds.
-				assert_eq!(result["accepted"], true, "query.cancel: {message}");
-				assert_eq!(
-					result["state"], "cancel_requested",
-					"query.cancel: {message}"
-				);
+				// rq_011: the sample cancels an execution while it runs. Whether the interrupt still
+				// finds the statement depends on the machine: the reply reports what the registry held
+				// when the cancel arrived — `cancel_requested` when the worker had reported `running`,
+				// the terminal state when it had already reported the outcome, which §5 answers with
+				// `accepted: false`. Both are honest; the real interruption is proven deterministically
+				// in `tests/cancellation.rs`.
 				let execution = request["params"]["executionId"].as_str().unwrap();
-				let states = states(&messages, execution);
-				assert_eq!(states[0], "cancel_requested", "{messages:?}");
-				// The sample's statement was slow enough for the interrupt to win, so it recorded
-				// `cancelled`. `SELECT count(*) FROM customers` over the fixture's two rows is
-				// already past its last interruptible step when the cancel arrives, and §5 allows a
-				// `cancel_requested` execution to complete: both endings honour the contract. The
-				// real interruption is proven deterministically in `tests/stdio.rs`.
-				assert!(
-					matches!(
-						states.get(1).map(String::as_str),
-						Some("cancelled" | "completed")
-					),
-					"cancel_requested ends as cancelled or completed: {messages:?}"
-				);
+				// Every state the execution reported, including `running` from an earlier reply: the
+				// cancel's own notification is the last one when it was accepted.
+				let reported = states(&messages, execution);
+				match result["accepted"].as_bool() {
+					Some(true) => {
+						assert_eq!(
+							result["state"], "cancel_requested",
+							"query.cancel: {message}"
+						);
+						assert_eq!(reported[0], "cancel_requested", "{messages:?}");
+						// The sample's statement was slow enough for the interrupt to win, so it
+						// recorded `cancelled`. `SELECT count(*) FROM customers` over the fixture's two
+						// rows is already past its last interruptible step when the cancel arrives, and
+						// §5 allows `cancel_requested` to end as `completed`.
+						assert!(
+							matches!(
+								reported.get(1).map(String::as_str),
+								Some("cancelled" | "completed")
+							),
+							"cancel_requested ends as cancelled or completed: {messages:?}"
+						);
+					}
+					Some(false) => {
+						assert!(
+							matches!(result["state"].as_str(), Some("cancelled" | "completed")),
+							"a refused cancel reports the terminal state: {message}"
+						);
+						assert_eq!(
+							reported.last().map(String::as_str),
+							result["state"].as_str(),
+							"the reply repeats a state the worker reported: {messages:?}"
+						);
+					}
+					None => panic!("query.cancel accepted: {message}"),
+				}
 			}
 			"query.getState" => {
 				let result = message
 					.get("result")
 					.unwrap_or_else(|| panic!("{method}: {message}"));
 				// rq_012: the execution the sample cancelled reports its terminal state without an
-				// error, at the sequence its third state got.
+				// error, at the sequence the notification that reported it carried: three states
+				// when the cancel was accepted, two when the statement had already ended (§5).
 				assert!(
 					matches!(result["state"].as_str(), Some("cancelled" | "completed")),
 					"query.getState: {result}"
 				);
-				assert_eq!(result["sequence"], 3, "query.getState sequence");
+				let id = result["executionId"].as_str().unwrap();
+				let sequence = last_sequence.get(id).copied().unwrap_or(1);
+				assert_eq!(
+					result["sequence"], sequence,
+					"query.getState repeats the sequence its last notification reported"
+				);
 				assert!(
 					result.get("error").is_none(),
 					"a user cancellation carries no error: {result}"
