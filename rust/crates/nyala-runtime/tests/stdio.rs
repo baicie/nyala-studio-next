@@ -1007,6 +1007,58 @@ fn a_page_too_large_for_a_frame_is_paged_instead_of_ending_the_stream() {
 }
 
 #[test]
+fn a_row_wider_than_a_frame_is_refused_at_the_execution_not_at_the_page() {
+	let dir = TempDir::new("wide-row");
+	let path = dir.join("wide.sqlite");
+	rusqlite::Connection::open(&path)
+		.unwrap()
+		.execute_batch("CREATE TABLE chunks(payload BLOB);")
+		.unwrap();
+	let path = path_param(&path);
+	let mut runtime = Live::start();
+	runtime.call(&full_hello("rq_1"));
+	let session = result(&runtime.call(&connect("rq_2", "connection.open", path, true))).clone();
+	let (id, generation) = (&session["sessionId"], &session["sessionGeneration"]);
+
+	// Eight blobs of 1 MB in one row: each cell is within the cell limit and the row is within the
+	// result limit, but its cells are base64 in JSON, so one page carrying it would be ~11 MB and
+	// no frame could hold it. The execution has to say so; completing would hand the client a
+	// handle whose every `result.fetchPage` fails until it expires.
+	let executed = result(&runtime.call(&request(
+		"rq_3",
+		"query.execute",
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": "SELECT zeroblob(1000000), zeroblob(1000000), zeroblob(1000000), zeroblob(1000000), zeroblob(1000000), zeroblob(1000000), zeroblob(1000000), zeroblob(1000000)",
+			"mode": "statement",
+			"timeoutMs": 30_000,
+			"maxInitialRows": 200,
+		}),
+	)))
+	.clone();
+	assert_eq!(executed["state"], "queued", "{executed}");
+	let failed = runtime.wait_for_state(&executed["executionId"], "failed");
+	assert_eq!(
+		failed["params"]["error"]["data"]["kind"], "RESOURCE_LIMIT",
+		"{failed}"
+	);
+	assert!(
+		failed["params"].get("resultIds").is_none(),
+		"a refused result hands out no handle: {failed}"
+	);
+
+	// The session is still usable afterwards.
+	assert_eq!(
+		result(&runtime.call(&health("rq_h")))["status"],
+		"ok",
+		"{executed}"
+	);
+	let (code, stderr) = runtime.finish();
+	assert_eq!(code, Some(0), "{stderr}");
+}
+
+#[test]
 fn opening_beyond_the_session_limit_is_refused_and_the_connection_continues() {
 	let dir = TempDir::new("limit");
 	let database = dir.database("db.sqlite");

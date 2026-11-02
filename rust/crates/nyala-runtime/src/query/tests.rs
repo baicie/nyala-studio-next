@@ -631,3 +631,41 @@ fn a_worker_that_dies_does_not_notify_before_the_queued_reply() {
 		"an execution the client has not been told about has no state to report: {notifications:?}"
 	);
 }
+
+#[test]
+fn a_result_with_a_row_too_wide_for_a_frame_fails_instead_of_completing() {
+	// One row of several large cells is within every per-cell limit (`MAX_BLOB_BYTES`) and within
+	// `MAX_RESULT_BYTES`, so collection accepts it; its own JSON is still wider than the frame a
+	// `result.fetchPage` reply must fit, so no page could ever carry it. The execution reports the
+	// limit instead of completing with a handle whose every fetch fails (`README.md` §7).
+	let mut registry = ids("s_1");
+	let id = begun(&mut registry, "SELECT zeroblob(1000000)", "statement");
+	// Nine cells of about 1 MB: every one of them is under `MAX_BLOB_BYTES`, and the row is only
+	// 9 MB, well under `MAX_RESULT_BYTES`; its JSON is still wider than the 8 MiB frame.
+	let wide = Collected {
+		columns: vec![json!({"ordinal": 0, "name": "payload", "nativeType": "BLOB"})],
+		rows: vec![(0..9)
+			.map(|_| json!({"type": "bytes", "encoding": "base64", "data": "A".repeat(1_000_000)}))
+			.collect()],
+	};
+	let notifications = registry.finished(&id, completed_outcome(vec![wide]), TTL);
+	assert_eq!(notifications[0]["params"]["state"], "failed");
+	assert_eq!(
+		notifications[0]["params"]["error"]["data"]["kind"],
+		"RESOURCE_LIMIT"
+	);
+	assert!(notifications[0]["params"].get("resultIds").is_none());
+	assert_eq!(registry.pending_results(), 0, "no handle was installed");
+
+	// A row that fits is handed over as usual.
+	let fits = Collected {
+		columns: vec![json!({"ordinal": 0, "name": "payload", "nativeType": "BLOB"})],
+		rows: vec![vec![
+			json!({"type": "string", "value": "A".repeat(1_000_000)}),
+		]],
+	};
+	let id = begun(&mut registry, "SELECT payload", "statement");
+	let notifications = registry.finished(&id, completed_outcome(vec![fits]), TTL);
+	assert_eq!(notifications[0]["params"]["state"], "completed");
+	assert_eq!(registry.pending_results(), 1);
+}
