@@ -137,7 +137,7 @@ rust/
 8. ~~**N-109**：`readOnly: true` 只依赖 `SQLITE_OPEN_READONLY`，不检查 SQL 文本~~ 已完成（2026-11-02）：DML、DDL（`CREATE` / `DROP` / `ALTER`）与带副作用的语句都由 SQLite 的只读模式拒绝，回 `READ_ONLY_DENIED`，测试同时证明数据与 schema 未被修改、同一会话随后仍可读（`query::tests::a_read_only_session_lets_sqlite_refuse_every_kind_of_write`）。
 9. ~~**N-105 / N-108**：`supportsMetadata` 与 `cancel` 分别在 metadata 与中断实现后改为真实值~~ 已完成（N-105/N-106/N-108）：`supportsMetadata: true`，`cancel: "cooperative"`；`query.cancel` 经 `sqlite3_interrupt` 中断运行中的语句，`cancel_requested` 与 `cancelled` 分别是独立状态与序号，`tests/cancellation.rs` 在真实进程上验证。
 10. **N-106 留下的合同缺口**：`query.execute` 的结果没有“影响行数”字段，DML/DDL 执行成功时只能回 `{executionId, state: "completed", sequence}` 而无法告知写了几行；客户端需要另查。N-110 只做生成，不改变合同；留给下一次 minor 修订评估。
-11. **N-107**：结果在内存中整段保留（上限 `MAX_CONCURRENT_EXECUTIONS` 个执行、每个 `maxInitialRows` 行与 16 MiB），`result.fetchPage` 只做前向切片；真正的流式游标与 TTL 到期回收的完整验收属 N-107。当前 TTL（`maxResultTtlSecs`）在每次 fetch/execute 时清理过期句柄。
+11. **N-107**：结果在内存中整段保留（上限 `MAX_CONCURRENT_EXECUTIONS` 个执行、每个 `maxInitialRows` 行与 16 MiB），`result.fetchPage` 只做前向切片；真正的流式游标仍属 N-107。TTL 到期回收已实现并有测试：`maxResultTtlSecs` 在每次 `query.execute`、`result.fetchPage` 与安装句柄时清理过期句柄，`query::tests::a_handle_nobody_fetches_expires_after_its_ttl` 用零 TTL 证明句柄在过期后回 `RESULT_EXPIRED` 且从 `pendingResults` 消失（2026-11-02 补测）。
 12. **约束违例没有专用 kind**：v1 错误码表的 19 个 kind 里没有“约束违例”，而 `v1/` 冻结（README §8）。`UNIQUE` / `NOT NULL` / `CHECK` 失败与整数溢出一并报 `SQL_SYNTAX`，并回填 `data.sqlState`（SQLite 扩展结果码：`1555`、`2067`、`1299` 等，语法错误是 `1`），客户端据此区分“文本编译不了”与“数据被拒绝”；`sqlState` 字段 schema 与 README §7 本来就有，样例 rq_009 记录了 `"1"`。`CONSTRAINT_VIOLATION` 一类的新 kind 属后续 minor，需要单独合同 PR 与 ADR。（2026-11-02 决策。）
 13. ~~**`result.fetchPage` 受帧上限约束**~~ 已完成（2026-11-02）：回复必须能装进一帧，否则 `write_message` 失败会让整个 runtime 退出、所有会话一起丢失。页面在接近 `frameMaxBytes` 时提前结束并回 `hasMore: true` + `nextCursor`，这不是截断——行仍在句柄里，客户端按 cursor 继续取。单行本身超过一帧预算时，执行在**安装句柄时**就报 `RESOURCE_LIMIT`（`failed`，不交结果），而不是先 `completed` 再让每一页都失败：`Executions::finished` 用与 `fetch_page` 相同的预算（`row_budget`）逐行量 JSON。`MAX_BLOB_BYTES` = 1 MiB 与 `MAX_RESULT_BYTES` = 16 MiB 保护不了这一点——一行可以有多个 cell，8 个 1 MiB blob 只占 8 MiB。测试：`query::tests::a_result_with_a_row_too_wide_for_a_frame_fails_instead_of_completing`（注册表）与 `tests/stdio.rs` 的同名端到端用例（真实进程）。流式游标仍属 N-107。
 14. **被拒绝的结果收不回已经写下的数据**：`INSERT … RETURNING` 在客户端读完行之前已经应用写入，而且 SQLite 在自提交模式下会在语句自己的事务里结束它，`ROLLBACK` 无从下手。结果超过 `maxInitialRows` 时执行报 `failed` / `RESOURCE_LIMIT`，写入却已生效（N-108 复查确认，2026-11-02）。可行的修法是脚本与单语句都在执行外再包一层事务、只有结果被接受才提交，这改变语句的原子性语义，归入 N-107 与 N-402（事务所有权）一起决定。
@@ -210,7 +210,7 @@ git diff --check                                                 # PASS
   - `metadata.describe` 的 `nullable` 按 SQLite 真实语义判断：只有 rowid 别名主键（`PRAGMA index_list` 中没有 `origin = 'pk'` 的索引）允许 NULL；`TEXT PRIMARY KEY`、复合键、`WITHOUT ROWID`、`INTEGER PRIMARY KEY DESC` 都不允许。
   - 脚本失败清理句柄时改用结果序号（`ResultSet::sequence`），不再依赖运行前的句柄数量——期间过期的句柄会让计数失真、留下无法引用的句柄。
   - `connection.close` 在数据库关闭失败、会话被放回后调用 `Executions::resume()`，避免残留的 stop 让该会话之后所有语句都报 `QUERY_CANCELLED`。
-- **已知缺口**：`INSERT … RETURNING` 被拒绝时写入已生效、单行可以超过一帧，见后续项 13、14。
+- **已知缺口**：`INSERT … RETURNING` 被拒绝时写入已生效，见后续项 14；单行超过一帧已在后续项 13 关闭（PR #43）。
 - 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
 - **已合入**：PR #37，squash `b9f00ff4326`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41370054066`）。
 
@@ -244,6 +244,7 @@ git diff --check                                                 # PASS
 - 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
 - **已合入**：PR #41，squash `e90619d396b`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41422938946`，head `c67bdabc99f`）。
 - **后续修复（2026-11-02）**：单行超过一帧时执行改为在安装句柄时报 `RESOURCE_LIMIT`，见后续项 13；`cargo test --workspace --locked` 单元 123 + cancellation 6 + conformance 8 + contract 4 + stdio 20。
+- **后续补测（2026-11-02）**：`a_handle_nobody_fetches_expires_after_its_ttl` 用零 TTL 覆盖 `expire()` 的回收路径，后续项 11 的 TTL 验收据此关闭；`a_query_is_executed_paged_and_released_over_the_pipe` 收尾补上 `connection.close`。`cargo test --workspace --locked` 单元 124 + cancellation 6 + conformance 8 + contract 4 + stdio 20。
 
 ### N-110（2026-11-02）
 
@@ -271,6 +272,8 @@ git diff --check                                                 # PASS
 - 未验证：Node 24.18.0 指定版本（本机 24.16.0）、macOS、MSRV 1.82。
 
 ## 修订记录
+
+- **2026-11-02 · 状态文档追赶主线（N-107 后续）**：后续项 11 的 TTL 验收由零 TTL 测试关闭、13 已随 PR #43 关闭，证据节的 N-107 已知缺口改为只剩后续项 14；`row_budget` 增加文档注释，记下分页预算固定为 `DEFAULT_FRAME_MAX_BYTES`、与 `write_message` 一致，而 hello 的 params schema 没有覆盖 limits 的字段——以后若加覆盖，必须同时改这两处。`nyala/rpc/**` 未改。
 
 - **2026-11-02 · N-108 异步执行与取消**：§1 模块列表加入 `events.rs`、`worker.rs` 与 `tests/cancellation.rs`；§2 的“不引入 Tokio”改写为实际的 per-session 线程模型；§4 更新 `runtime.health` 计数、打开时的阻塞范围与 `capabilities.cancel`；后续项 5、9 关闭，后续项 13 修正（单行超过一帧不受 blob 上限保护），新增后续项 14（被拒绝的结果收不回已写数据）；证据，并在复查后补充会话关闭、取消、worker 死亡与脚本失败的行为。`nyala/rpc/**` 未改。
 
