@@ -143,7 +143,7 @@ Created → Queued → Running → Streaming → Completed
 
 - `v1/` 是冻结目录：只允许新增可选字段与新增 `features` 能力位。
 - 破坏性变更新建 `v2/`，并在 `runtime.hello` 走 major 协商；不在 v1 内改语义。
-- TypeScript 与 Rust 的类型必须从本 schema 生成或对照校验（N-110）；手写双份视为缺陷。
+- TypeScript 与 Rust 的类型必须从本 schema 生成或对照校验（N-110）；手写双份视为缺陷。生成入口：`npm run nyala:generate-rpc`（`scripts/nyala/generate-rpc-contract.ts`，只读 `v1/`），产物为 `src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts` 与 `rust/crates/nyala-runtime/src/contract.rs`；`npm run nyala:check-rpc-generated` 在 CI 中检出漂移。
 - 任何合同改动都要同步：schema、`error-codes.json`、`conformance.ndjson`、本 README，并保持 `npm run nyala:validate-rpc` 通过。
 - **v1.0 勘误（2026-10-30）**：`failure.id` 允许 `null`（无法识别请求 id 时），理由是 JSON-RPC 2.0 §5 的要求，原 schema 的 `$ref: #/$defs/id` 过严。这是勘误而非破坏性变更：不新增/删除字段，不放宽请求、成功响应、通知的 `id` 语义，客户端按 `data.kind` 分支的既有行为不受影响，故不构成 v2。
 

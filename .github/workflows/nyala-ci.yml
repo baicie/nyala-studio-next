@@ -38,6 +38,12 @@ jobs:
       - name: Validate RPC contract
         run: npm run nyala:validate-rpc
 
+      # N-110: the TS and Rust declarations are generated from nyala/rpc/v1/. A contract change
+      # without regenerating them fails here, before any client or runtime code can use it. The
+      # generator uses node: built-ins only, so this job needs no npm ci.
+      - name: Check generated RPC declarations
+        run: npm run nyala:check-rpc-generated
+
   client:
     name: Client typecheck and hygiene
     runs-on: ubuntu-latest
@@ -125,6 +131,7 @@ jobs:
           --run src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts
           --run src/vs/workbench/contrib/nyala/test/common/nyalaDisabledChat.test.ts
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeProtocol.test.ts
+          --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeContract.test.ts
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeSupervisor.test.ts
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeRealProcess.test.ts
 

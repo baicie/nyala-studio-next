@@ -15,6 +15,7 @@
 //! and `main.rs` only hands it stdin, stdout and stderr.
 
 pub mod connection;
+pub mod contract;
 pub mod error;
 pub mod framing;
 pub mod metadata;

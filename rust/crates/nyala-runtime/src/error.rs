@@ -5,12 +5,16 @@
 
 //! Structured errors (`nyala/rpc/README.md` §7).
 //!
-//! The table mirrors `nyala/rpc/v1/error-codes.json`; `tests/conformance.rs` compares the two
-//! entry by entry, so neither can change alone.
+//! `kind`, `code` and `retryable` come from [`crate::contract`], which is generated from
+//! `nyala/rpc/v1/error-codes.json` (N-110): a kind added to the contract without regenerating is a
+//! compile error here, and a kind removed from it leaves a dangling `contract::` path. Only the
+//! human-readable `message` is written in this file.
 
 use std::fmt;
 
 use serde_json::{json, Map, Value};
+
+use crate::contract::{self, ErrorKindSpec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
@@ -43,7 +47,7 @@ struct Spec {
 }
 
 impl ErrorKind {
-	pub const ALL: [ErrorKind; 19] = [
+	pub const ALL: [ErrorKind; contract::ERROR_KIND_COUNT] = [
 		ErrorKind::ParseError,
 		ErrorKind::InvalidRequest,
 		ErrorKind::MethodNotFound,
@@ -66,61 +70,41 @@ impl ErrorKind {
 	];
 
 	const fn spec(self) -> Spec {
-		const fn spec(
-			kind: &'static str,
-			code: i64,
-			retryable: bool,
-			message: &'static str,
-		) -> Spec {
+		const fn spec(contract: ErrorKindSpec, message: &'static str) -> Spec {
 			Spec {
-				kind,
-				code,
-				retryable,
+				kind: contract.kind,
+				code: contract.code,
+				retryable: contract.retryable,
 				message,
 			}
 		}
 		match self {
-			ErrorKind::ParseError => spec("PARSE_ERROR", -32700, false, "Parse error"),
-			ErrorKind::InvalidRequest => spec("INVALID_REQUEST", -32600, false, "Invalid request"),
-			ErrorKind::MethodNotFound => {
-				spec("METHOD_NOT_FOUND", -32601, false, "Method not found")
-			}
-			ErrorKind::InvalidParams => spec("INVALID_PARAMS", -32602, false, "Invalid params"),
-			ErrorKind::Internal => spec("INTERNAL", -32603, false, "Internal error"),
-			ErrorKind::AuthFailed => spec("AUTH_FAILED", -32001, false, "Authentication failed"),
+			ErrorKind::ParseError => spec(contract::PARSE_ERROR, "Parse error"),
+			ErrorKind::InvalidRequest => spec(contract::INVALID_REQUEST, "Invalid request"),
+			ErrorKind::MethodNotFound => spec(contract::METHOD_NOT_FOUND, "Method not found"),
+			ErrorKind::InvalidParams => spec(contract::INVALID_PARAMS, "Invalid params"),
+			ErrorKind::Internal => spec(contract::INTERNAL, "Internal error"),
+			ErrorKind::AuthFailed => spec(contract::AUTH_FAILED, "Authentication failed"),
 			ErrorKind::NetworkUnreachable => {
-				spec("NETWORK_UNREACHABLE", -32002, true, "Network unreachable")
+				spec(contract::NETWORK_UNREACHABLE, "Network unreachable")
 			}
-			ErrorKind::TlsError => spec("TLS_ERROR", -32003, false, "TLS error"),
-			ErrorKind::QueryTimeout => spec("QUERY_TIMEOUT", -32004, false, "Query timed out"),
-			ErrorKind::QueryCancelled => spec("QUERY_CANCELLED", -32005, false, "Query cancelled"),
-			ErrorKind::SqlSyntax => spec("SQL_SYNTAX", -32006, false, "SQL syntax error"),
+			ErrorKind::TlsError => spec(contract::TLS_ERROR, "TLS error"),
+			ErrorKind::QueryTimeout => spec(contract::QUERY_TIMEOUT, "Query timed out"),
+			ErrorKind::QueryCancelled => spec(contract::QUERY_CANCELLED, "Query cancelled"),
+			ErrorKind::SqlSyntax => spec(contract::SQL_SYNTAX, "SQL syntax error"),
 			ErrorKind::ReadOnlyDenied => spec(
-				"READ_ONLY_DENIED",
-				-32007,
-				false,
+				contract::READ_ONLY_DENIED,
 				"Read-only session denied the statement",
 			),
-			ErrorKind::PermissionDenied => {
-				spec("PERMISSION_DENIED", -32008, false, "Permission denied")
+			ErrorKind::PermissionDenied => spec(contract::PERMISSION_DENIED, "Permission denied"),
+			ErrorKind::ResultExpired => spec(contract::RESULT_EXPIRED, "Result handle expired"),
+			ErrorKind::InvalidSession => spec(contract::INVALID_SESSION, "Invalid session"),
+			ErrorKind::ProtocolMismatch => spec(contract::PROTOCOL_MISMATCH, "Protocol mismatch"),
+			ErrorKind::RuntimeLost => spec(contract::RUNTIME_LOST, "Runtime lost"),
+			ErrorKind::UnknownCommitStatus => {
+				spec(contract::UNKNOWN_COMMIT_STATUS, "Commit status unknown")
 			}
-			ErrorKind::ResultExpired => {
-				spec("RESULT_EXPIRED", -32009, false, "Result handle expired")
-			}
-			ErrorKind::InvalidSession => spec("INVALID_SESSION", -32010, false, "Invalid session"),
-			ErrorKind::ProtocolMismatch => {
-				spec("PROTOCOL_MISMATCH", -32011, false, "Protocol mismatch")
-			}
-			ErrorKind::RuntimeLost => spec("RUNTIME_LOST", -32012, true, "Runtime lost"),
-			ErrorKind::UnknownCommitStatus => spec(
-				"UNKNOWN_COMMIT_STATUS",
-				-32013,
-				false,
-				"Commit status unknown",
-			),
-			ErrorKind::ResourceLimit => {
-				spec("RESOURCE_LIMIT", -32014, false, "Resource limit exceeded")
-			}
+			ErrorKind::ResourceLimit => spec(contract::RESOURCE_LIMIT, "Resource limit exceeded"),
 		}
 	}
 
