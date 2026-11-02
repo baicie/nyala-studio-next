@@ -104,6 +104,10 @@ impl TempDir {
 	}
 
 	/// A SQLite database with a table, an index and a view, so that it spans several pages.
+	///
+	/// The object names are the ones `conformance.ndjson` lists in its `metadata.listObjects`
+	/// sample, so that the sample can be replayed against a real database without rewriting its
+	/// expected result.
 	pub fn database(&self, name: &str) -> PathBuf {
 		let path = self.join(name);
 		let connection = Connection::open(&path).expect("create a test database");
@@ -112,7 +116,7 @@ impl TempDir {
 				"CREATE TABLE customers(id INTEGER PRIMARY KEY, name TEXT NOT NULL);
 				INSERT INTO customers(name) VALUES ('Ada'), ('Grace');
 				CREATE INDEX customers_by_name ON customers(name);
-				CREATE VIEW recent_customers AS SELECT name FROM customers;",
+				CREATE VIEW recent_orders AS SELECT name FROM customers;",
 			)
 			.expect("fill the test database");
 		path

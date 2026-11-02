@@ -1,12 +1,12 @@
 # Nyala P0 Patch Ledger
 
-更新时间：2026-11-01。基线是 Code OSS `1.143.0`，SHA
+更新时间：2026-11-02。基线是 Code OSS `1.143.0`，SHA
 `2d0b7506a36c1d6db9a466440131a8e01eab2289`（2026-10-29 由 `1.142.0` /
-`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime 已有 `rust/` 下的 stdio 分帧、hello/health（N-101/N-102）与 SQLite Profile/Session（N-104，PR #33，`195475b84b3`），均不改上游文件。N-103 Supervisor 已随 PR #35（`24c3cc7aa23`）合入；查询执行与结果网格未交付。
+`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime 已有 `rust/` 下的 stdio 分帧、hello/health（N-101/N-102）、SQLite Profile/Session（N-104，PR #33，`195475b84b3`）、metadata、查询执行 + 结果句柄与只读强制（N-105/N-106/N-109），均不改上游文件。N-103 Supervisor 已随 PR #35（`24c3cc7aa23`）合入；Workbench 侧的结果网格尚未交付。
 
 ## 计数口径
 
-`nyala/upstream-base.json` 的 `patchCount` 为 `57`：51 个已跟踪的上游文件发生修改，另有 6
+`nyala/upstream-base.json` 的 `patchCount` 为 `61`：55 个已跟踪的上游文件发生修改，另有 6
 个 Nyala 源文件新增（2 个在 `src/vs/workbench/contrib/nyala/`，4 个在 `src/vs/platform/nyalaRuntime/`）。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
 `.github/workflows/nyala-ci.yml`、`scripts/nyala/`、`nyala/` 元数据和 Nyala 自有的 `rust/`
 Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runtime-workspace.md)）不计入
@@ -39,6 +39,8 @@ Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runt
 `feat/p1-runtime-supervisor`（N-103，PR #35）合并后 `patchCount` 由 `52` 变为 `57`：修改的上游跟踪文件 50 → 51，新增 1 个此前与 `1.143.0` 一致的 `src/vs/code/electron-main/app.ts`（1 行 import、1 行注释、1 行 `createInstance`）；新增的非测试 Nyala 源文件 2 → 6，新增的 4 个是 `src/vs/platform/nyalaRuntime/common/nyalaRuntimeProtocol.ts`、`src/vs/platform/nyalaRuntime/node/nyalaRuntimeProcess.ts`、`src/vs/platform/nyalaRuntime/node/nyalaRuntimeSupervisor.ts`、`src/vs/platform/nyalaRuntime/electron-main/nyalaRuntimeMainHandler.ts`。`src/vs/platform/nyalaRuntime/test/**`（含 `fixtures/`）是 Nyala 自有测试，`scripts/nyala/smoke-runtime.ts`、`docs/adr/0004-runtime-supervisor.md` 与 `.github/workflows/nyala-ci.yml` 按口径不计入。已以 squash `24c3cc7aa23` 合入 `nyala/main`（2026-11-01）。
 
 `57` 是 PR #33/#34/#35 全部合入后在 `nyala/main` `24c3cc7aa23` 上的实测值（2026-11-01）：以基线 `2d0b7506a36c` 对比，修改的上游跟踪文件 51 个（`git diff --diff-filter=M` 共 51 项，等于此前 48 个加上 #34 的 2 个与 #35 的 `app.ts`），新增的非测试 Nyala 源文件 6 个（`nyala.contribution.ts`、`nyalaConnectionsView.ts` 与 4 个 `src/vs/platform/nyalaRuntime/` 源文件）。`upstream-base.json` 已同步为 `57` 并把 `patchCountBasis` 改为 “Nyala source files”。
+
+`61` 是 PR #20（dependabot，四个 workflow 的 GitHub Actions 版本升级）合入后、`nyala/main` `4b5c38345b8` 上的实测值（2026-11-02）：修改的上游跟踪文件 51 → 55，新增的 4 个是 `.github/workflows/css-order-scan.yml`、`pr-darwin-test.yml`、`pr-linux-test.yml`、`pr-win32-test.yml`——它们此前与 `1.143.0` 一致，该 PR 把其中的 `actions/setup-node`、`actions/cache`、`actions/upload-artifact`、`actions/download-artifact` 升到新版本。同一 PR 也改了已计入的 `.github/workflows/nyala-ci.yml`；其余 9 个 workflow 已在补丁集内，不重复计数。没有新增或删除 Nyala 源文件，仍为 6 个。风险：上游再次升级这些 action 时会产生行级冲突，按上游版本重新套用即可，无产品语义；移除条件：Nyala 不再固定 action 版本，或上游自己完成同等升级时该差异自然消失。
 
 ## 改动清单
 

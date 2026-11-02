@@ -16,12 +16,13 @@ use std::collections::hash_map::RandomState;
 use std::collections::VecDeque;
 use std::hash::{BuildHasher, Hasher};
 use std::process;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
 use crate::error::{ErrorKind, RpcError};
-use crate::protocol::is_valid_id;
+use crate::protocol::{is_valid_id, MAX_RESULT_TTL_SECS};
+use crate::query::{self, Executions};
 use crate::sqlite::{self, Database};
 
 /// Sessions that may be open at once. `connection.open` beyond this fails with `RESOURCE_LIMIT`.
@@ -45,6 +46,8 @@ struct SessionKey {
 struct OpenSession {
 	key: SessionKey,
 	database: Database,
+	/// Created with the session so its ids start with the session id.
+	executions: Executions,
 }
 
 /// The sessions of one client connection. Dropping the registry closes every open session.
@@ -113,14 +116,21 @@ impl Sessions {
 			"capabilities": {
 				"driver": DRIVER,
 				"readOnly": database.read_only(),
-				// Interrupting a statement arrives with cancellation (N-108).
-				"cancel": "none",
-				// v1 has no transaction.* methods, and metadata.* arrives with N-105.
+				// A timeout ends the running statement from inside SQLite's VM (`query.rs`), which
+				// is cooperative cancellation; `query.cancel` still cannot reach a running one.
+				"cancel": "cooperative",
+				// v1 has no transaction.* methods.
 				"supportsTransactions": false,
-				"supportsMetadata": false,
+				// N-105 added metadata.*.
+				"supportsMetadata": true,
 			},
 		});
-		self.open.push(OpenSession { key, database });
+		let executions = Executions::new(&key.id);
+		self.open.push(OpenSession {
+			key,
+			database,
+			executions,
+		});
 		Ok(result)
 	}
 
@@ -131,10 +141,28 @@ impl Sessions {
 
 		if let Some(index) = self.open.iter().position(|session| session.key.id == id) {
 			check_generation(&self.open[index].key, generation)?;
-			let OpenSession { key, database } = self.open.remove(index);
+			let OpenSession {
+				key,
+				database,
+				executions,
+			} = self.open.remove(index);
+			// Ends a statement that is still running before the connection closes under it. v1
+			// serves one request at a time, so nothing is running here today; the request is what
+			// keeps this path correct once executions can overlap with a close.
+			executions.request_stop();
 			if let Err((database, error)) = database.close() {
-				// The connection is still open, so the session stays open.
-				self.open.insert(index, OpenSession { key, database });
+				// The connection is still open, so the session stays open — and stays usable:
+				// clearing the stop keeps every later statement of this session from failing as
+				// `QUERY_CANCELLED` although nothing is cancelling it.
+				executions.resume();
+				self.open.insert(
+					index,
+					OpenSession {
+						key,
+						database,
+						executions,
+					},
+				);
 				return Err(error.for_session(id));
 			}
 			self.closed.push_back(key);
@@ -151,6 +179,144 @@ impl Sessions {
 					.for_session(id),
 			),
 		}
+	}
+
+	/// The open session `(sessionId, sessionGeneration)` names. Every method that works on a
+	/// session's database goes through here, so ids from another process, another session or a
+	/// closed session never reach a connection.
+	fn open_session(&self, params: &Map<String, Value>) -> Result<&OpenSession, RpcError> {
+		let (id, generation) = session_key_from(params)?;
+		let session = self
+			.open
+			.iter()
+			.find(|session| session.key.id == id)
+			.ok_or_else(|| {
+				RpcError::with_detail(
+					ErrorKind::InvalidSession,
+					"sessionId is unknown, closed, or from another runtime process",
+				)
+				.for_session(id)
+			})?;
+		check_generation(&session.key, generation)?;
+		Ok(session)
+	}
+
+	/// `metadata.listObjects`.
+	pub fn list_objects(&self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+		self.open_session(params)?.database.list_objects(params)
+	}
+
+	/// `metadata.describe`.
+	pub fn describe(&self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+		self.open_session(params)?.database.describe(params)
+	}
+
+	/// `query.execute`.
+	pub fn execute(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+		let (id, generation) = session_key_from(params)?;
+		let index = self
+			.open
+			.iter()
+			.position(|session| session.key.id == id)
+			.ok_or_else(|| {
+				RpcError::with_detail(
+					ErrorKind::InvalidSession,
+					"sessionId is unknown, closed, or from another runtime process",
+				)
+				.for_session(id)
+			})?;
+		check_generation(&self.open[index].key, generation)?;
+		let session = &mut self.open[index];
+		let ttl = Duration::from_secs(u64::from(MAX_RESULT_TTL_SECS));
+		session
+			.executions
+			.execute(&session.database, params, ttl)
+			.map_err(|error| error.for_session(id))
+	}
+
+	// Execution and result ids start with the id of the session that issued them, so the methods
+	// below route on that prefix instead of trying every session: an error from the owning session
+	// must reach the client unchanged, not be replaced by a "not found" of the next one.
+
+	/// Index of the open session that issued `id`, if any.
+	///
+	/// Execution and result ids are `<sessionId>e<n>` and `<sessionId>r<n>`. Session ids end in a
+	/// decimal counter, so the character after a real session id is a marker, never a digit: the
+	/// id of session 1 (`s_…1`) is a textual prefix of the id of session 11 (`s_…11`), but the
+	/// character after it in `s_…11e1` is `1`, so the prefix alone must not claim the id.
+	fn owner(&self, id: &str) -> Option<usize> {
+		self.open.iter().position(|session| {
+			id.strip_prefix(session.key.id.as_str())
+				.is_some_and(|rest| {
+					// `<marker><digits>`, marker `e` for an execution or `r` for a result.
+					let Some((&marker, digits)) = rest.as_bytes().split_first() else {
+						return false;
+					};
+					matches!(marker, b'e' | b'r')
+						&& !digits.is_empty()
+						&& digits.iter().all(u8::is_ascii_digit)
+				})
+		})
+	}
+
+	fn id_param<'a>(
+		params: &'a Map<String, Value>,
+		field: &str,
+		method: &str,
+	) -> Result<&'a str, RpcError> {
+		params
+			.get(field)
+			.and_then(Value::as_str)
+			.filter(|id| is_valid_id(id))
+			.ok_or_else(|| invalid(format!("{field} of {method} must be a contract id")))
+	}
+
+	/// `query.getState`.
+	pub fn get_state(&self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+		let id = Self::id_param(params, "executionId", "query.getState")?;
+		match self.owner(id) {
+			Some(index) => self.open[index].executions.get_state(params),
+			None => Err(invalid("executionId is unknown")),
+		}
+	}
+
+	/// `query.cancel`.
+	pub fn cancel(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+		let id = Self::id_param(params, "executionId", "query.cancel")?;
+		match self.owner(id) {
+			Some(index) => self.open[index].executions.cancel(params),
+			None => Err(invalid("executionId is unknown")),
+		}
+	}
+
+	/// `result.fetchPage`.
+	pub fn fetch_page(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+		let id = Self::id_param(params, "resultId", "result.fetchPage")?;
+		match self.owner(id) {
+			Some(index) => self.open[index].executions.fetch_page(params),
+			None => Err(query::expired()),
+		}
+	}
+
+	/// `result.release`. An id of a closed session counts as released: its handles are gone.
+	pub fn release(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+		let id = Self::id_param(params, "resultId", "result.release")?;
+		match self.owner(id) {
+			Some(index) => self.open[index].executions.release(params),
+			None => Ok(json!({ "released": true })),
+		}
+	}
+
+	/// Counters for `runtime.health`, summed over the open sessions.
+	pub fn counters(&self) -> (usize, usize) {
+		self.open
+			.iter()
+			.fold((0, 0), |(executions, results), session| {
+				(
+					executions + session.executions.active(),
+					results + session.executions.pending_results(),
+				)
+			})
 	}
 
 	/// `connection.listSessions`: open and retained closed sessions, in the order they opened.
@@ -227,7 +393,8 @@ impl<'a> Target<'a> {
 	}
 }
 
-/// Checks `sessionId` and `sessionGeneration` against the method schema.
+/// Checks `sessionId` and `sessionGeneration` against the method schema, for methods whose only
+/// parameters are the session key.
 fn session_key<'a>(
 	params: &'a Map<String, Value>,
 	method: &str,
@@ -238,6 +405,12 @@ fn session_key<'a>(
 	{
 		return Err(invalid(format!("unexpected {method} parameter")));
 	}
+	session_key_from(params)
+}
+
+/// Reads and checks the session key of a method that has more parameters than the key; the
+/// method's own parser rejects unknown parameters.
+fn session_key_from(params: &Map<String, Value>) -> Result<(&str, u64), RpcError> {
 	let id = params
 		.get("sessionId")
 		.and_then(Value::as_str)
@@ -470,9 +643,9 @@ mod tests {
 				json!({
 					"driver": "sqlite",
 					"readOnly": read_only,
-					"cancel": "none",
+					"cancel": "cooperative",
 					"supportsTransactions": false,
-					"supportsMetadata": false,
+					"supportsMetadata": true,
 				})
 			);
 		}
@@ -526,6 +699,68 @@ mod tests {
 		// A closed session keeps checking its generation.
 		sessions.close(&key(&first)).unwrap();
 		assert_eq!(kind(sessions.close(&crossed)), ErrorKind::InvalidSession);
+	}
+
+	#[test]
+	fn an_id_is_owned_by_the_session_that_issued_it_even_when_ids_nest() {
+		let dir = TempDir::new("routing");
+		let path = dir.database("db.sqlite");
+		let mut sessions = Sessions::new();
+		// Session 1's id is a textual prefix of session 11's id: `s_<hex>1` and `s_<hex>11`.
+		let opened: Vec<Value> = (0..=11)
+			.map(|_| sessions.open(&target(&path, true)).unwrap())
+			.collect();
+		let first = opened[0]["sessionId"].as_str().unwrap().to_owned();
+		let eleventh = opened[10]["sessionId"].as_str().unwrap().to_owned();
+		assert!(
+			format!("{eleventh}e1").starts_with(&first),
+			"the eleventh session's id starts with the first session's id"
+		);
+
+		// Each execution and result id belongs to the session that issued it.
+		for index in [0usize, 10] {
+			let session = &opened[index];
+			let query = params(json!({
+				"sessionId": session["sessionId"],
+				"sessionGeneration": session["sessionGeneration"],
+				"sql": "SELECT 1 AS answer",
+				"mode": "statement",
+				"timeoutMs": 5_000,
+				"maxInitialRows": 10,
+			}));
+			let reply = sessions.execute(&query).unwrap();
+			let execution = reply["executionId"].as_str().unwrap().to_owned();
+			assert_eq!(
+				sessions.owner(&execution),
+				Some(index),
+				"{execution} belongs to session {index}"
+			);
+			let state = sessions
+				.get_state(&params(json!({"executionId": execution})))
+				.unwrap();
+			let result = state["resultIds"][0].as_str().unwrap().to_owned();
+			assert_eq!(sessions.owner(&result), Some(index), "{result}");
+			// `fetch_page` routes by the id alone, so the handle is reached through its owner.
+			let page = sessions
+				.fetch_page(&params(json!({"resultId": result, "limit": 1})))
+				.unwrap();
+			assert_eq!(page["rows"], json!([[{"type": "int64", "text": "1"}]]));
+			sessions
+				.release(&params(json!({"resultId": result})))
+				.unwrap();
+		}
+
+		// Ids that only look like they start with a session id are not owned by it.
+		for foreign in [
+			format!("{first}e"),   // no digits
+			format!("{first}x1"),  // wrong marker
+			format!("{first}e1x"), // not all digits
+			format!("{first}r"),   // no digits
+			first.clone(),         // the bare session id
+		] {
+			assert_eq!(sessions.owner(&foreign), None, "{foreign}");
+		}
+		assert_eq!(sessions.owner(&format!("{eleventh}e1")), Some(10));
 	}
 
 	#[test]

@@ -100,8 +100,16 @@ impl Database {
 		self.read_only
 	}
 
+	/// The connection, for the metadata and query modules of this crate.
+	pub(crate) fn connection(&self) -> &Connection {
+		&self.connection
+	}
+
 	/// Closes the connection. If closing fails, the database is still open and is returned
 	/// together with the error.
+	// The error carries the database back so the caller keeps it alive; boxing it would hide that
+	// ownership hand-back behind an allocation on the path that just failed.
+	#[allow(clippy::result_large_err)]
 	pub fn close(self) -> Result<(), (Database, RpcError)> {
 		let Database {
 			connection,
