@@ -5,17 +5,29 @@
 
 //! Request dispatch, the `runtime.hello` handshake (`nyala/rpc/README.md` §3) and the stream loop.
 //!
-//! [`Server`] maps one frame payload to at most one reply and performs no I/O. [`serve`] drives
-//! it over any `Read`/`Write` pair; `main.rs` passes stdin, stdout and stderr.
+//! [`Server`] owns the request loop's input queue (`crate::events`): frame payloads from the
+//! client and reports from the session workers arrive on the same queue, so the loop has a single
+//! order to follow and a `query.stateChanged` notification is written the moment its execution
+//! changes state — even while the client sends nothing. [`Server::step`] hands out one frame or
+//! one report at a time; [`serve`] writes what it produces. The server performs no I/O of its own
+//! except through the diagnostics sink it is given.
+//!
+//! `query.execute` answers in two steps. The request validates and hands the job to the session
+//! worker; its reply (`queued`, `sequence: 1`) is written when the worker reports that the first
+//! statement was prepared. A statement SQLite cannot compile is answered with the structured error
+//! instead (`conformance.ndjson` rq_009), and nothing runs (`crate::query`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read, Write};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
 use crate::connection::{self, Sessions};
 use crate::error::{ErrorKind, RpcError};
+use crate::events::{self, EndOfInput, Event, Input};
 use crate::framing::{
 	encode_frame, FrameDecoder, FrameError, DEFAULT_FRAME_MAX_BYTES, PRE_HELLO_FRAME_MAX_BYTES,
 };
@@ -24,6 +36,7 @@ use crate::protocol::{
 	MAX_PAGE_ROWS, MAX_RESULT_TTL_SECS, PROTOCOL_MAJOR, PROTOCOL_MINOR, RUNTIME_BUILD,
 	RUNTIME_FEATURES, V1_REQUEST_METHODS,
 };
+use crate::worker::MetadataCall;
 
 /// Process exit status. Only [`ExitStatus::ProtocolMismatch`] (2) is fixed by the contract
 /// (README §3); the other codes are this implementation's choice (see `docs/adr/0002-rust-runtime-workspace.md`).
@@ -48,19 +61,42 @@ impl ExitStatus {
 	}
 }
 
+/// What one frame or one worker report produced.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reply {
-	/// Envelope to send back; `None` for notifications, which get no response.
-	pub message: Option<Value>,
-	/// Set when the process must exit once `message` has been written.
+	/// Envelopes to send back, in order. Empty for notifications, which get no response, and for
+	/// a `query.execute` whose reply waits for its worker.
+	pub messages: Vec<Value>,
+	/// Set when the process must exit once `messages` have been written.
 	pub exit: Option<ExitStatus>,
 }
 
 impl Reply {
+	fn none() -> Self {
+		Reply {
+			messages: Vec::new(),
+			exit: None,
+		}
+	}
+
 	fn send(message: Value) -> Self {
 		Reply {
-			message: Some(message),
+			messages: vec![message],
 			exit: None,
+		}
+	}
+
+	fn send_all(messages: Vec<Value>) -> Self {
+		Reply {
+			messages,
+			exit: None,
+		}
+	}
+
+	fn end(status: ExitStatus) -> Self {
+		Reply {
+			messages: Vec::new(),
+			exit: Some(status),
 		}
 	}
 }
@@ -85,14 +121,37 @@ pub fn frame_error_reply(error: &FrameError) -> Value {
 	failure(None, &RpcError::with_detail(kind, error.to_string()))
 }
 
-/// Connection state for one client. Dropping it closes every open session.
+/// A `query.execute` whose reply is owed to the client.
 #[derive(Debug)]
+struct Pending {
+	session: String,
+	request: String,
+	execution: String,
+}
+
+/// Connection state for one client. Dropping it closes every open session.
 pub struct Server {
 	started: Instant,
 	hello_completed: bool,
 	/// Features both sides support, fixed by `runtime.hello`.
 	features: HashSet<&'static str>,
 	sessions: Sessions,
+	/// `query.execute` requests whose worker has not reported the first statement yet.
+	pending: Vec<Pending>,
+	/// Request ids whose reply is still owed by a session worker, with the session that owes it:
+	/// the deferred `query.execute` replies and the `metadata.*` calls queued behind them.
+	/// [`Server::round_trip`] waits for these; the stream loop does not, because a blocked request
+	/// loop is what it exists to avoid.
+	owed: HashMap<String, String>,
+	/// Frames and worker reports, in arrival order.
+	input: mpsc::Receiver<Input>,
+	/// Handed to the input reader thread and to every session worker.
+	sender: events::Sender,
+	decoder: FrameDecoder,
+	/// Payloads decoded from the last chunk and not handled yet.
+	frames: VecDeque<Vec<u8>>,
+	/// Log lines go here (stderr in production) and never include payload content.
+	diagnostics: Box<dyn Write + Send>,
 }
 
 impl Default for Server {
@@ -101,13 +160,140 @@ impl Default for Server {
 	}
 }
 
+impl std::fmt::Debug for Server {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("Server")
+			.field("hello_completed", &self.hello_completed)
+			.field("open_sessions", &self.sessions.open_count())
+			.finish_non_exhaustive()
+	}
+}
+
 impl Server {
+	/// A server whose log lines are discarded; the integration tests and the unit tests use it.
 	pub fn new() -> Self {
-		Server {
+		Self::with_diagnostics(io::sink())
+	}
+
+	/// A server logging to `diagnostics`, which never receives payload content: it can carry SQL,
+	/// paths or credentials.
+	pub fn with_diagnostics(diagnostics: impl Write + Send + 'static) -> Self {
+		let (sender, input) = mpsc::channel();
+		let mut server = Server {
 			started: Instant::now(),
 			hello_completed: false,
 			features: HashSet::new(),
-			sessions: Sessions::new(),
+			sessions: Sessions::new(sender.clone()),
+			pending: Vec::new(),
+			owed: HashMap::new(),
+			input,
+			sender,
+			decoder: FrameDecoder::new(PRE_HELLO_FRAME_MAX_BYTES),
+			frames: VecDeque::new(),
+			diagnostics: Box::new(diagnostics),
+		};
+		server.log(format_args!(
+			"{RUNTIME_BUILD} serving protocol {PROTOCOL_MAJOR}.{PROTOCOL_MINOR}"
+		));
+		server
+	}
+
+	/// Reads `input` on a thread of its own and feeds the queue. A blocked read would otherwise
+	/// hold back every notification the session workers report in the meantime.
+	pub fn read_from(&mut self, mut input: impl Read + Send + 'static) {
+		let sender = self.sender.clone();
+		thread::Builder::new()
+			.name("nyala-input".into())
+			.spawn(move || {
+				let mut chunk = vec![0; READ_CHUNK_BYTES];
+				loop {
+					match input.read(&mut chunk) {
+						Ok(0) => {
+							let _ = sender.send(Input::Ended(EndOfInput::Input));
+							return;
+						}
+						Ok(read) => {
+							if sender.send(Input::Bytes(chunk[..read].to_vec())).is_err() {
+								return;
+							}
+						}
+						Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+						Err(error) => {
+							let _ = sender.send(Input::Ended(EndOfInput::Read(error)));
+							return;
+						}
+					}
+				}
+			})
+			.expect("the input reader thread could not be started");
+	}
+
+	/// Waits for the next frame or worker report and handles it. Blocks; a frame that arrives in
+	/// pieces is completed from later reads. Frame decode errors end the stream.
+	///
+	/// Frames are decoded one at a time and with the limit in force at that moment, so two frames
+	/// that arrive in one read are still handled in order: `runtime.hello` widens the limit before
+	/// the frame behind it is looked at.
+	pub fn step(&mut self) -> Reply {
+		loop {
+			if let Some(payload) = self.frames.pop_front() {
+				let reply = self.handle_payload(&payload);
+				if !reply.messages.is_empty() || reply.exit.is_some() {
+					return reply;
+				}
+				// A deferred reply leaves this frame unanswered; the loop keeps going, because the
+				// buffered chunk may hold the next frame.
+				continue;
+			}
+			if let Some(reply) = self.decode_one() {
+				return reply;
+			}
+			// `decode_one` leaves the frame it completed on the queue; handle it now, so that a
+			// frame decoded with the pre-hello limit is only ever a `runtime.hello`-shaped one.
+			if !self.frames.is_empty() {
+				continue;
+			}
+			match self.input.recv() {
+				Ok(Input::Bytes(bytes)) => self.decoder.push(&bytes),
+				Ok(Input::Ended(EndOfInput::Input)) => {
+					if self.decoder.pending_bytes() == 0 {
+						return Reply::end(ExitStatus::Clean);
+					}
+					self.log(format_args!(
+						"input ended inside a frame ({} bytes pending)",
+						self.decoder.pending_bytes()
+					));
+					return Reply::end(ExitStatus::StreamError);
+				}
+				Ok(Input::Ended(EndOfInput::Read(error))) => {
+					self.log(format_args!("input read failed: {error}"));
+					return Reply::end(ExitStatus::StreamError);
+				}
+				Ok(Input::Event(event)) => return self.handle_event(event),
+				// The server holds a sender itself, so this cannot happen; ending cleanly beats
+				// spinning if it ever does.
+				Err(_) => return Reply::end(ExitStatus::Clean),
+			}
+		}
+	}
+
+	/// Queues at most one complete frame from the buffered bytes. Returns the reply that ends the
+	/// stream on a framing error.
+	fn decode_one(&mut self) -> Option<Reply> {
+		self.decoder.set_max_frame_bytes(self.frame_max_bytes());
+		match self.decoder.next_frame() {
+			Ok(Some(payload)) => {
+				self.frames.push_back(payload);
+				None
+			}
+			Ok(None) => None,
+			Err(error) => {
+				self.log(format_args!("closing the stream: {error}"));
+				Some(Reply {
+					messages: vec![frame_error_reply(&error)],
+					exit: Some(ExitStatus::StreamError),
+				})
+			}
 		}
 	}
 
@@ -121,19 +307,236 @@ impl Server {
 		}
 	}
 
+	/// Dispatches one frame payload.
 	pub fn handle_payload(&mut self, payload: &[u8]) -> Reply {
 		match parse_message(payload) {
 			Ok(Incoming::Request(request)) => self.dispatch(&request),
 			// v1 defines no client-to-runtime notifications, and notifications get no response.
-			Ok(Incoming::Notification) => Reply {
-				message: None,
-				exit: None,
-			},
+			Ok(Incoming::Notification) => Reply::none(),
 			Err(rejected) => Reply::send(failure(rejected.id.as_deref(), &rejected.error)),
 		}
 	}
 
+	/// Dispatches `payload` and waits until every reply it made the session workers owe has been
+	/// written, collecting the notifications that arrive in between. The tests and an embedder that
+	/// drives the server request by request use it. It does not wait for the executions to finish:
+	/// `query.stateChanged` notifications that come later belong to whoever sends the next request
+	/// (or to [`Server::settle`]).
+	pub fn round_trip(&mut self, payload: &[u8]) -> Reply {
+		let mut reply = self.handle_payload(payload);
+		self.drain(&mut reply);
+		while !self.owed.is_empty() {
+			match self.input.recv() {
+				Ok(Input::Event(event)) => {
+					let produced = self.handle_event(event);
+					reply.messages.extend(produced.messages);
+				}
+				// The stream loop owns frames; they are only buffered here for `step` to handle.
+				Ok(Input::Bytes(bytes)) => {
+					self.decoder.push(&bytes);
+					if let Some(produced) = self.decode_one() {
+						reply.messages.extend(produced.messages);
+						if reply.exit.is_none() {
+							reply.exit = produced.exit;
+						}
+					}
+				}
+				Ok(Input::Ended(_)) | Err(_) => break,
+			}
+		}
+		reply
+	}
+
+	/// Waits for the next worker report and applies it, together with the reports already queued.
+	/// Blocks until one arrives, so a test can follow an execution's notifications one state at a
+	/// time; the stream loop gets the same reports through [`Server::step`].
+	pub fn wait_report(&mut self) -> Reply {
+		let mut reply = Reply::none();
+		loop {
+			match self.input.recv() {
+				Ok(Input::Event(event)) => {
+					let produced = self.handle_event(event);
+					reply.messages.extend(produced.messages);
+					break;
+				}
+				// Frames are buffered for `step`; the caller asked for a report.
+				Ok(Input::Bytes(bytes)) => self.decoder.push(&bytes),
+				Ok(Input::Ended(_)) | Err(_) => break,
+			}
+		}
+		self.drain(&mut reply);
+		reply
+	}
+
+	/// Applies the worker reports already queued, appending what they produce. Does not block: a
+	/// report that has not arrived yet is the worker's business, not this call's.
+	pub fn drain(&mut self, reply: &mut Reply) {
+		while let Ok(Input::Event(event)) = self.input.try_recv() {
+			let produced = self.handle_event(event);
+			reply.messages.extend(produced.messages);
+			if reply.exit.is_none() {
+				reply.exit = produced.exit;
+			}
+		}
+	}
+
+	/// Waits until no execution is active and no reply is owed, applying the reports that arrive
+	/// in between. Tests use it to read a terminal notification; the stream loop gets the same
+	/// reports through [`Server::step`] instead.
+	pub fn settle(&mut self) -> Reply {
+		let mut reply = Reply::none();
+		self.drain(&mut reply);
+		loop {
+			let (active, _) = self.sessions.counters();
+			if active == 0 && self.owed.is_empty() {
+				return reply;
+			}
+			match self.input.recv() {
+				Ok(Input::Event(event)) => {
+					let produced = self.handle_event(event);
+					reply.messages.extend(produced.messages);
+				}
+				// The stream loop owns frames; they are only buffered here for `step` to handle.
+				Ok(Input::Bytes(bytes)) => {
+					self.decoder.push(&bytes);
+					if let Some(produced) = self.decode_one() {
+						reply.messages.extend(produced.messages);
+						if reply.exit.is_none() {
+							reply.exit = produced.exit;
+						}
+					}
+				}
+				Ok(Input::Ended(_)) | Err(_) => return reply,
+			}
+		}
+	}
+
+	fn log(&mut self, args: std::fmt::Arguments<'_>) {
+		// Losing a log line must not stop the runtime.
+		let _ = writeln!(self.diagnostics, "nyala-runtime: {args}");
+	}
+
+	/// Applies one report from a session worker: the notifications it produces, and the reply of
+	/// a `query.execute` it prepared.
+	fn handle_event(&mut self, event: Event) -> Reply {
+		match event {
+			Event::Prepared {
+				session,
+				execution,
+				error,
+			} => {
+				let Some(pending) = self.take_pending(&execution) else {
+					return Reply::none();
+				};
+				let Some(prepared) = self.sessions.prepared(&session, &execution, error) else {
+					return Reply::none();
+				};
+				self.owed.remove(&pending.request);
+				let mut messages = Vec::with_capacity(prepared.notifications.len() + 1);
+				messages.push(match prepared.result {
+					Ok(result) => success(&pending.request, result),
+					Err(error) => failure(Some(&pending.request), &error),
+				});
+				messages.extend(prepared.notifications);
+				Reply::send_all(messages)
+			}
+			Event::Metadata {
+				request, result, ..
+			} => {
+				self.owed.remove(&request);
+				// The request id is echoed back as the worker received it, so a metadata call
+				// queued behind a running statement is answered when it finally runs.
+				Reply::send(match result {
+					Ok(result) => success(&request, result),
+					Err(error) => failure(Some(&request), &error),
+				})
+			}
+			Event::WorkerGone { session } => {
+				let mut messages = self.sessions.worker_gone(&session);
+				// A request whose worker died before preparing is still owed an answer.
+				let mut index = 0;
+				while index < self.pending.len() {
+					if self.pending[index].session != session {
+						index += 1;
+						continue;
+					}
+					let pending = self.pending.remove(index);
+					let error = RpcError::with_detail(
+						ErrorKind::Internal,
+						"the session worker stopped before the statement ran",
+					);
+					messages.push(failure(Some(&pending.request), &error));
+				}
+				// A metadata call queued on the worker dies with it.
+				self.owed.retain(|_, owner| owner != &session);
+				Reply::send_all(messages)
+			}
+			Event::Started { .. } | Event::Finished { .. } => {
+				Reply::send_all(self.sessions.apply_event(event))
+			}
+		}
+	}
+
+	fn take_pending(&mut self, execution: &str) -> Option<Pending> {
+		let index = self
+			.pending
+			.iter()
+			.position(|pending| pending.execution == execution)?;
+		Some(self.pending.remove(index))
+	}
+
 	fn dispatch(&mut self, request: &Request) -> Reply {
+		// `query.cancel` answers with its reply first, then with the notification it produced.
+		if request.method == "query.cancel" && self.ready_for("query.cancel") {
+			return match self.sessions.cancel(&request.params) {
+				Ok(outcome) => {
+					let mut messages = Vec::with_capacity(outcome.notifications.len() + 1);
+					messages.push(success(&request.id, outcome.reply));
+					messages.extend(outcome.notifications);
+					Reply::send_all(messages)
+				}
+				Err(error) => Reply::send(failure(Some(&request.id), &error)),
+			};
+		}
+		// `query.execute` answers once its worker has prepared the statement; see the module
+		// comment.
+		if request.method == "query.execute" && self.ready_for("query.execute") {
+			return match self.sessions.begin_execution(&request.params) {
+				Ok(started) => {
+					self.owed
+						.insert(request.id.clone(), started.session.clone());
+					self.pending.push(Pending {
+						session: started.session,
+						request: request.id.clone(),
+						execution: started.execution,
+					});
+					Reply::none()
+				}
+				Err(error) => Reply::send(failure(Some(&request.id), &error)),
+			};
+		}
+		// `metadata.*` runs on the session worker too, so that a call queued behind a running
+		// statement cannot hold the request loop and keep `query.cancel` from reaching it. Its
+		// reply follows as `Event::Metadata`.
+		if matches!(
+			request.method.as_str(),
+			"metadata.listObjects" | "metadata.describe"
+		) && self.ready_for(&request.method)
+		{
+			let call = if request.method == "metadata.listObjects" {
+				MetadataCall::ListObjects
+			} else {
+				MetadataCall::Describe
+			};
+			return match self.sessions.metadata(&request.params, call, &request.id) {
+				Ok(session) => {
+					self.owed.insert(request.id.clone(), session);
+					Reply::none()
+				}
+				Err(error) => Reply::send(failure(Some(&request.id), &error)),
+			};
+		}
+
 		let result = match request.method.as_str() {
 			"runtime.hello" => return self.hello(request),
 			"runtime.health" => self.health(&request.params),
@@ -156,17 +559,29 @@ impl Server {
 			}
 			"connection.test" => connection::test(&request.params),
 			"connection.open" => self.sessions.open(&request.params),
-			"connection.close" => self.sessions.close(&request.params),
+			"connection.close" => {
+				// A close that stopped an execution owes its `cancel_requested` notification too, and
+				// sends the reply first.
+				return match self.sessions.close(&request.params) {
+					Ok((closed, notifications)) => {
+						let mut messages = Vec::with_capacity(notifications.len() + 1);
+						messages.push(success(&request.id, closed));
+						messages.extend(notifications);
+						Reply::send_all(messages)
+					}
+					Err(error) => Reply::send(failure(Some(&request.id), &error)),
+				};
+			}
 			"connection.listSessions" => self.sessions.list(&request.params),
-			"metadata.listObjects" => self.sessions.list_objects(&request.params),
-			"metadata.describe" => self.sessions.describe(&request.params),
-			"query.execute" => self.sessions.execute(&request.params),
-			"query.cancel" => self.sessions.cancel(&request.params),
+			"metadata.listObjects" | "metadata.describe" => Err(RpcError::with_detail(
+				ErrorKind::Internal,
+				"metadata is dispatched on the session worker",
+			)),
 			"query.getState" => self.sessions.get_state(&request.params),
 			"result.fetchPage" => self.sessions.fetch_page(&request.params),
 			"result.release" => self.sessions.release(&request.params),
-			// required_feature names only methods with a handler above; this arm keeps a future
-			// mismatch between the two from panicking.
+			// `query.cancel` and `query.execute` were answered above; `required_feature` names only
+			// methods with a handler, and this arm keeps a future mismatch from panicking.
 			_ => Err(RpcError::with_detail(
 				ErrorKind::Internal,
 				"negotiated method has no handler",
@@ -176,6 +591,14 @@ impl Server {
 			Ok(result) => success(&request.id, result),
 			Err(error) => failure(Some(&request.id), &error),
 		})
+	}
+
+	/// Whether the method is in the catalog, the handshake is done and the client negotiated the
+	/// feature it needs — the three gates `dispatch` applies before a handler runs.
+	fn ready_for(&self, method: &str) -> bool {
+		V1_REQUEST_METHODS.contains(&method)
+			&& self.hello_completed
+			&& required_feature(method).is_some_and(|feature| self.features.contains(&feature))
 	}
 
 	fn hello(&mut self, request: &Request) -> Reply {
@@ -196,7 +619,7 @@ impl Server {
 				format!("runtime speaks protocolMajor {PROTOCOL_MAJOR}"),
 			);
 			return Reply {
-				message: Some(failure(Some(&request.id), &error)),
+				messages: vec![failure(Some(&request.id), &error)],
 				exit: Some(ExitStatus::ProtocolMismatch),
 			};
 		}
@@ -329,66 +752,24 @@ const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// `output` receives protocol frames only. `diagnostics` receives log lines (stderr in
 /// production); they never include payload content, which can carry SQL, paths or credentials.
 pub fn serve(
-	mut input: impl Read,
+	input: impl Read + Send + 'static,
 	mut output: impl Write,
-	mut diagnostics: impl Write,
+	diagnostics: impl Write + Send + 'static,
 ) -> ExitStatus {
-	let mut log = |args: std::fmt::Arguments<'_>| {
-		// Losing a log line must not stop the runtime.
-		let _ = writeln!(diagnostics, "nyala-runtime: {args}");
-	};
-	log(format_args!(
-		"{RUNTIME_BUILD} serving protocol {PROTOCOL_MAJOR}.{PROTOCOL_MINOR}"
-	));
-
-	let mut server = Server::new();
-	let mut decoder = FrameDecoder::new(server.frame_max_bytes());
-	let mut chunk = vec![0; READ_CHUNK_BYTES];
+	let mut server = Server::with_diagnostics(diagnostics);
+	server.read_from(input);
 	loop {
-		decoder.set_max_frame_bytes(server.frame_max_bytes());
-		match decoder.next_frame() {
-			Ok(Some(payload)) => {
-				let reply = server.handle_payload(&payload);
-				if let Some(message) = &reply.message {
-					if let Err(error) = write_message(&mut output, message) {
-						log(format_args!("output write failed: {error}"));
-						return ExitStatus::StreamError;
-					}
-				}
-				if let Some(exit) = reply.exit {
-					log(format_args!(
-						"protocol mismatch, exiting with code {}",
-						exit.code()
-					));
-					return exit;
-				}
-				continue;
-			}
-			Ok(None) => {}
-			Err(error) => {
-				log(format_args!("closing the stream: {error}"));
-				if let Err(write_error) = write_message(&mut output, &frame_error_reply(&error)) {
-					log(format_args!("output write failed: {write_error}"));
-				}
+		let reply = server.step();
+		for message in &reply.messages {
+			if let Err(error) = write_message(&mut output, message) {
+				// The diagnostics stream is owned by the server; a failed stdout ends the stream
+				// either way.
+				let _ = error;
 				return ExitStatus::StreamError;
 			}
 		}
-
-		match input.read(&mut chunk) {
-			Ok(0) if decoder.pending_bytes() == 0 => return ExitStatus::Clean,
-			Ok(0) => {
-				log(format_args!(
-					"input ended inside a frame ({} bytes pending)",
-					decoder.pending_bytes()
-				));
-				return ExitStatus::StreamError;
-			}
-			Ok(read) => decoder.push(&chunk[..read]),
-			Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-			Err(error) => {
-				log(format_args!("input read failed: {error}"));
-				return ExitStatus::StreamError;
-			}
+		if let Some(exit) = reply.exit {
+			return exit;
 		}
 	}
 }
@@ -403,10 +784,17 @@ fn write_message(output: &mut impl Write, message: &Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::sqlite::test_files::{text, TempDir};
 
 	fn call(server: &mut Server, method: &str, params: Value) -> Reply {
 		let request = json!({"jsonrpc": "2.0", "id": "rq_1", "method": method, "params": params});
 		server.handle_payload(request.to_string().as_bytes())
+	}
+
+	/// Sends a request and waits for every reply its workers owe, keeping the notifications that
+	/// arrive in between. `round_trip` answers for the requests a worker completes.
+	fn answered(server: &mut Server, request: Value) -> Reply {
+		server.round_trip(request.to_string().as_bytes())
 	}
 
 	fn hello_params(major: i64, minor: i64) -> Value {
@@ -418,12 +806,35 @@ mod tests {
 		})
 	}
 
-	fn message(reply: &Reply) -> &Value {
-		reply.message.as_ref().expect("reply must carry a message")
+	fn reply_to<'a>(reply: &'a Reply, id: &str) -> &'a Value {
+		reply
+			.messages
+			.iter()
+			.find(|message| message["id"] == id)
+			.unwrap_or_else(|| panic!("no reply for {id}: {:?}", reply.messages))
+	}
+
+	fn notifications(reply: &Reply) -> Vec<&Value> {
+		reply
+			.messages
+			.iter()
+			.filter(|message| message.get("id").is_none())
+			.collect()
+	}
+
+	fn states(reply: &Reply) -> Vec<&str> {
+		notifications(reply)
+			.iter()
+			.map(|notification| {
+				notification["params"]["state"]
+					.as_str()
+					.expect("a state notification")
+			})
+			.collect()
 	}
 
 	fn error_kind(reply: &Reply) -> &str {
-		message(reply)["error"]["data"]["kind"]
+		reply_to(reply, "rq_1")["error"]["data"]["kind"]
 			.as_str()
 			.expect("reply must be a failure")
 	}
@@ -433,7 +844,7 @@ mod tests {
 		let mut server = Server::new();
 		let reply = call(&mut server, "runtime.hello", hello_params(1, 0));
 		assert_eq!(reply.exit, None);
-		let result = &message(&reply)["result"];
+		let result = &reply_to(&reply, "rq_1")["result"];
 		assert_eq!(result["protocolMajor"], 1);
 		assert_eq!(result["protocolMinor"], 0);
 		assert_eq!(result["runtimeBuild"], RUNTIME_BUILD);
@@ -470,11 +881,12 @@ mod tests {
 	#[test]
 	fn hello_is_accepted_once() {
 		let mut server = Server::new();
-		assert!(
-			message(&call(&mut server, "runtime.hello", hello_params(1, 0)))
-				.get("result")
-				.is_some()
-		);
+		assert!(reply_to(
+			&call(&mut server, "runtime.hello", hello_params(1, 0)),
+			"rq_1"
+		)
+		.get("result")
+		.is_some());
 		let again = call(&mut server, "runtime.hello", hello_params(1, 0));
 		assert_eq!(error_kind(&again), "INVALID_REQUEST");
 		assert_eq!(again.exit, None);
@@ -529,7 +941,7 @@ mod tests {
 			let mut server = Server::new();
 			let reply = call(&mut server, "runtime.hello", params.clone());
 			assert_eq!(error_kind(&reply), "PROTOCOL_MISMATCH", "{params}");
-			assert_eq!(message(&reply)["id"], "rq_1");
+			assert_eq!(reply_to(&reply, "rq_1")["id"], "rq_1");
 			assert_eq!(reply.exit, Some(ExitStatus::ProtocolMismatch));
 			assert_eq!(ExitStatus::ProtocolMismatch.code(), 2);
 		}
@@ -541,7 +953,7 @@ mod tests {
 		let mut params = hello_params(1, 7);
 		params["supportedFeatures"] = json!(["sqlite", "blob.readChunk"]);
 		let reply = call(&mut server, "runtime.hello", params);
-		let result = &message(&reply)["result"];
+		let result = &reply_to(&reply, "rq_1")["result"];
 		assert_eq!(result["protocolMinor"], PROTOCOL_MINOR);
 		assert!(!result["features"]
 			.as_array()
@@ -553,7 +965,7 @@ mod tests {
 	fn health_works_before_hello_and_takes_no_params() {
 		let mut server = Server::new();
 		let reply = call(&mut server, "runtime.health", json!({}));
-		let result = &message(&reply)["result"];
+		let result = &reply_to(&reply, "rq_1")["result"];
 		assert_eq!(result["status"], "ok");
 		assert!(result["uptimeMs"].is_u64());
 		for counter in ["activeSessions", "activeExecutions", "pendingResults"] {
@@ -622,6 +1034,44 @@ mod tests {
 		params
 	}
 
+	/// The server past the handshake, with every feature this build serves negotiated.
+	fn negotiated() -> Server {
+		let mut server = Server::new();
+		call(&mut server, "runtime.hello", hello_with(&FEATURES));
+		server
+	}
+
+	/// Opens a read-only session on `path` and returns its `(sessionId, sessionGeneration)`.
+	fn open(server: &mut Server, path: &std::path::Path) -> Value {
+		let reply = call(
+			server,
+			"connection.open",
+			json!({"driver": "sqlite", "path": text(path), "readOnly": true}),
+		);
+		reply_to(&reply, "rq_1")["result"].clone()
+	}
+
+	/// A `query.execute` request for `sql` on `session`.
+	fn execute_request(id: &str, session: &Value, sql: &str, timeout_ms: u64) -> Value {
+		json!({
+			"jsonrpc": "2.0",
+			"id": id,
+			"method": "query.execute",
+			"params": {
+				"sessionId": session["sessionId"],
+				"sessionGeneration": session["sessionGeneration"],
+				"sql": sql,
+				"mode": "statement",
+				"timeoutMs": timeout_ms,
+				"maxInitialRows": 10,
+			},
+		})
+	}
+
+	/// A statement that steps until something stops it.
+	const FOREVER: &str =
+		"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n";
+
 	#[test]
 	fn sqlite_alone_unlocks_only_the_connection_methods() {
 		let mut server = Server::new();
@@ -635,7 +1085,8 @@ mod tests {
 				"connection.test" | "connection.open" | "connection.close" => "INVALID_PARAMS",
 				_ => "PROTOCOL_MISMATCH",
 			};
-			let outcome = message(&reply)["error"]["data"]["kind"]
+			let message = reply_to(&reply, "rq_1");
+			let outcome = message["error"]["data"]["kind"]
 				.as_str()
 				.unwrap_or("result");
 			assert_eq!(outcome, expected, "{method}");
@@ -651,7 +1102,8 @@ mod tests {
 			let reply = call(&mut server, method, json!({}));
 			// Empty params fail for every method except the one that takes none; nothing may be
 			// refused for want of a feature.
-			let outcome = message(&reply)["error"]["data"]["kind"]
+			let message = reply_to(&reply, "rq_1");
+			let outcome = message["error"]["data"]["kind"]
 				.as_str()
 				.unwrap_or("result");
 			assert_ne!(outcome, "PROTOCOL_MISMATCH", "{method} after negotiating");
@@ -671,7 +1123,8 @@ mod tests {
 			call(&mut server, "runtime.hello", hello_with(&offered));
 			for method in &V1_REQUEST_METHODS[2..] {
 				let reply = call(&mut server, method, json!({}));
-				let outcome = message(&reply)["error"]["data"]["kind"]
+				let message = reply_to(&reply, "rq_1");
+				let outcome = message["error"]["data"]["kind"]
 					.as_str()
 					.unwrap_or("result");
 				if needs(method) == Some(withheld) {
@@ -688,46 +1141,30 @@ mod tests {
 
 	#[test]
 	fn health_counts_open_sessions() {
-		let directory = std::env::temp_dir().join(format!(
-			"nyala-server-health-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_nanos()
-		));
-		std::fs::create_dir_all(&directory).unwrap();
-		let path = directory.join("health.sqlite");
-		rusqlite::Connection::open(&path)
-			.unwrap()
-			.execute_batch("CREATE TABLE t(x)")
-			.unwrap();
+		let dir = TempDir::new("server-health");
+		let path = dir.database("health.sqlite");
 
-		let mut server = Server::new();
-		call(&mut server, "runtime.hello", hello_params(1, 0));
+		let mut server = negotiated();
 		let open = |server: &mut Server| {
 			call(
 				server,
 				"connection.open",
-				json!({"driver": "sqlite", "path": path.to_str().unwrap(), "readOnly": true}),
+				json!({"driver": "sqlite", "path": text(&path), "readOnly": true}),
 			)
 		};
 		let first = open(&mut server);
 		open(&mut server);
 		let health = call(&mut server, "runtime.health", json!({}));
-		assert_eq!(message(&health)["result"]["activeSessions"], 2);
+		assert_eq!(reply_to(&health, "rq_1")["result"]["activeSessions"], 2);
 
-		let session = &message(&first)["result"];
+		let session = &reply_to(&first, "rq_1")["result"];
 		call(
 			&mut server,
 			"connection.close",
 			json!({"sessionId": session["sessionId"], "sessionGeneration": session["sessionGeneration"]}),
 		);
 		let health = call(&mut server, "runtime.health", json!({}));
-		assert_eq!(message(&health)["result"]["activeSessions"], 1);
-
-		drop(server);
-		std::fs::remove_dir_all(&directory).unwrap();
+		assert_eq!(reply_to(&health, "rq_1")["result"]["activeSessions"], 1);
 	}
 
 	#[test]
@@ -737,8 +1174,8 @@ mod tests {
 		assert_eq!(
 			server.handle_payload(notification.to_string().as_bytes()),
 			Reply {
-				message: None,
-				exit: None
+				messages: Vec::new(),
+				exit: None,
 			}
 		);
 	}
@@ -747,8 +1184,9 @@ mod tests {
 	fn unreadable_payloads_reply_with_a_null_id() {
 		let mut server = Server::new();
 		let reply = server.handle_payload(b"{\"jsonrpc\":\"2.0\",");
-		assert_eq!(error_kind(&reply), "PARSE_ERROR");
-		assert_eq!(message(&reply)["id"], Value::Null);
+		let message = &reply.messages[0];
+		assert_eq!(message["error"]["data"]["kind"], "PARSE_ERROR");
+		assert_eq!(message["id"], Value::Null);
 		assert_eq!(
 			reply.exit, None,
 			"a bad payload inside a good frame keeps the stream in sync"
@@ -763,5 +1201,204 @@ mod tests {
 		let oversize = frame_error_reply(&FrameError::Oversize { length: 9, max: 8 });
 		assert_eq!(oversize["error"]["code"], -32014);
 		assert_eq!(oversize["error"]["data"]["kind"], "RESOURCE_LIMIT");
+	}
+
+	#[test]
+	fn a_query_is_answered_queued_and_then_reported_by_its_worker() {
+		let dir = TempDir::new("server-query");
+		let path = dir.database("db.sqlite");
+		let mut server = negotiated();
+		let session = open(&mut server, &path);
+
+		// The reply waits for the worker's prepared report, so the first round trip carries it.
+		let reply = answered(
+			&mut server,
+			execute_request(
+				"rq_2",
+				&session,
+				"SELECT id FROM customers ORDER BY id",
+				30_000,
+			),
+		);
+		let queued = &reply_to(&reply, "rq_2")["result"];
+		assert_eq!(queued["state"], "queued");
+		assert_eq!(queued["sequence"], 1);
+		let execution = queued["executionId"].as_str().unwrap().to_owned();
+
+		// The notifications follow, one state each, until the execution ends. A fast statement may
+		// report `running` (or even `completed`) before `answered` returns, so both replies are read.
+		let settled = server.settle();
+		assert_eq!(settled.exit, None);
+		let reported: Vec<&Value> = notifications(&reply)
+			.into_iter()
+			.chain(notifications(&settled))
+			.collect();
+		let states: Vec<&str> = reported
+			.iter()
+			.map(|notification| notification["params"]["state"].as_str().unwrap())
+			.collect();
+		assert_eq!(states, ["running", "completed"]);
+		let sequences: Vec<u64> = reported
+			.iter()
+			.map(|notification| notification["params"]["sequence"].as_u64().unwrap())
+			.collect();
+		assert_eq!(sequences, [2, 3]);
+		let last = reported[1]["params"].clone();
+		assert_eq!(last["executionId"], execution.as_str());
+		let result_id = last["resultIds"][0].as_str().unwrap().to_owned();
+
+		let page = call(
+			&mut server,
+			"result.fetchPage",
+			json!({"resultId": result_id, "limit": 10}),
+		);
+		assert_eq!(
+			reply_to(&page, "rq_1")["result"]["rows"],
+			json!([[{"type": "int64", "text": "1"}], [{"type": "int64", "text": "2"}]])
+		);
+		assert!(notifications(&page).is_empty(), "no execution was started");
+	}
+
+	#[test]
+	fn a_cancel_reaches_a_running_statement_through_the_request_loop() {
+		let dir = TempDir::new("server-cancel");
+		let path = dir.database("db.sqlite");
+		let mut server = negotiated();
+		let session = open(&mut server, &path);
+		let reply = answered(
+			&mut server,
+			execute_request("rq_2", &session, FOREVER, 600_000),
+		);
+		let execution = reply_to(&reply, "rq_2")["result"]["executionId"]
+			.as_str()
+			.unwrap()
+			.to_owned();
+		// The worker reports `running` while the statement steps; the cancel can only arrive after
+		// that, because the request loop is free while the statement runs.
+		let running = server.wait_report();
+		assert_eq!(states(&running), ["running"]);
+
+		let cancel = answered(
+			&mut server,
+			json!({
+				"jsonrpc": "2.0",
+				"id": "rq_3",
+				"method": "query.cancel",
+				"params": {"executionId": execution},
+			}),
+		);
+		assert_eq!(
+			reply_to(&cancel, "rq_3")["result"],
+			json!({"accepted": true, "state": "cancel_requested"})
+		);
+		// The interrupt can stop the statement before the reply is drained, so the terminal
+		// notification is read from either reply.
+		let settled = server.settle();
+		let reported: Vec<&str> = states(&cancel)
+			.into_iter()
+			.chain(states(&settled))
+			.collect();
+		assert_eq!(
+			reported,
+			["cancel_requested", "cancelled"],
+			"the statement stopped at the interrupt, not at its deadline"
+		);
+		let state = call(
+			&mut server,
+			"query.getState",
+			json!({"executionId": execution}),
+		);
+		assert_eq!(reply_to(&state, "rq_1")["result"]["state"], "cancelled");
+	}
+
+	#[test]
+	fn a_statement_that_does_not_compile_is_answered_with_the_error() {
+		let dir = TempDir::new("server-syntax");
+		let path = dir.database("db.sqlite");
+		let mut server = negotiated();
+		let session = open(&mut server, &path);
+		let reply = answered(
+			&mut server,
+			execute_request("rq_2", &session, "SELECT FROM WHERE", 30_000),
+		);
+		let error = &reply_to(&reply, "rq_2")["error"]["data"];
+		assert_eq!(error["kind"], "SQL_SYNTAX");
+		assert_eq!(error["sqlState"], "1");
+		assert_eq!(error["sessionId"], session["sessionId"]);
+		assert!(
+			error["executionId"].as_str().is_some(),
+			"the error names the execution it was prepared for"
+		);
+		// Nothing runs, so the execution reports no state of its own.
+		assert!(notifications(&reply).is_empty());
+
+		// The failed execution still answers `query.getState`, so a client can follow it up.
+		let state = call(
+			&mut server,
+			"query.getState",
+			json!({"executionId": error["executionId"]}),
+		);
+		assert_eq!(reply_to(&state, "rq_1")["result"]["state"], "failed");
+	}
+
+	#[test]
+	fn a_metadata_call_queued_behind_a_running_statement_is_answered_after_it() {
+		let dir = TempDir::new("server-metadata");
+		let path = dir.database("db.sqlite");
+		let mut server = negotiated();
+		let session = open(&mut server, &path);
+		let reply = answered(
+			&mut server,
+			execute_request("rq_2", &session, FOREVER, 600_000),
+		);
+		let execution = reply_to(&reply, "rq_2")["result"]["executionId"]
+			.as_str()
+			.unwrap()
+			.to_owned();
+		server.wait_report();
+
+		// The metadata call waits behind the statement on the session's one connection. The request
+		// loop stays free while it waits, which is what lets the cancel reach the statement at all.
+		let cancel = answered(
+			&mut server,
+			json!({
+				"jsonrpc": "2.0",
+				"id": "rq_3",
+				"method": "query.cancel",
+				"params": {"executionId": execution},
+			}),
+		);
+		assert_eq!(
+			reply_to(&cancel, "rq_3")["result"]["state"],
+			"cancel_requested"
+		);
+		let settled = server.settle();
+		let reported: Vec<&str> = states(&cancel)
+			.into_iter()
+			.chain(states(&settled))
+			.collect();
+		assert_eq!(reported, ["cancel_requested", "cancelled"]);
+
+		let metadata = answered(
+			&mut server,
+			json!({
+				"jsonrpc": "2.0",
+				"id": "rq_4",
+				"method": "metadata.listObjects",
+				"params": {
+					"sessionId": session["sessionId"],
+					"sessionGeneration": session["sessionGeneration"],
+					"limit": 100,
+				},
+			}),
+		);
+		let objects = reply_to(&metadata, "rq_4")["result"]["objects"]
+			.as_array()
+			.unwrap_or_else(|| panic!("metadata reply: {:?}", metadata.messages));
+		assert!(
+			objects.iter().any(|object| object["name"] == "customers"),
+			"{:?}",
+			metadata.messages
+		);
 	}
 }

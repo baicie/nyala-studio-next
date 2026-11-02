@@ -11,6 +11,12 @@
 //! so a client that confuses two sessions, or kept ids from an earlier runtime process, never
 //! reaches the wrong database. The allocation and retention rules are recorded in
 //! `docs/adr/0002-rust-runtime-workspace.md`.
+//!
+//! Since N-108 every session owns a [`Worker`] thread: rusqlite's `Connection` is `Send` but not
+//! `Sync`, so the connection moves to that thread and the registry keeps only what the request
+//! loop may touch — the executions with their states and result handles. A `metadata.*` call runs
+//! on the worker and is answered when the worker returns it; `query.execute` is answered when the
+//! worker reports that the first statement was prepared (`crate::query`).
 
 use std::collections::hash_map::RandomState;
 use std::collections::VecDeque;
@@ -21,9 +27,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 
 use crate::error::{ErrorKind, RpcError};
+use crate::events::{self, Event};
 use crate::protocol::{is_valid_id, MAX_RESULT_TTL_SECS};
-use crate::query::{self, Executions};
+use crate::query::{self, CancelOutcome, Executions};
 use crate::sqlite::{self, Database};
+use crate::worker::{MetadataCall, Worker};
 
 /// Sessions that may be open at once. `connection.open` beyond this fails with `RESOURCE_LIMIT`.
 pub const MAX_OPEN_SESSIONS: usize = 32;
@@ -35,6 +43,11 @@ pub const MAX_CLOSED_SESSIONS: usize = 32;
 /// The only driver in protocol v1.
 const DRIVER: &str = "sqlite";
 
+/// Result handles expire after `maxResultTtlSecs` (`nyala/rpc/README.md` §7).
+fn result_ttl() -> Duration {
+	Duration::from_secs(u64::from(MAX_RESULT_TTL_SECS))
+}
+
 /// The `sessionId` and `sessionGeneration` a session was issued.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionKey {
@@ -45,8 +58,20 @@ struct SessionKey {
 #[derive(Debug)]
 struct OpenSession {
 	key: SessionKey,
-	database: Database,
+	read_only: bool,
 	/// Created with the session so its ids start with the session id.
+	executions: Executions,
+	/// The thread that owns the connection.
+	worker: Worker,
+}
+
+/// A session that was closed while one of its executions was still stopping. Its worker is joined
+/// and its connection closed, but its registry stays so that the terminal `query.stateChanged`
+/// notification can be written and `query.getState` keeps answering (`README.md` §5: `cancelled`
+/// follows `cancel_requested`).
+#[derive(Debug)]
+struct ClosingSession {
+	key: SessionKey,
 	executions: Executions,
 }
 
@@ -58,23 +83,39 @@ pub struct Sessions {
 	/// Sessions opened so far. The n-th session gets the id `<id_prefix><n>` and generation n.
 	opened: u64,
 	open: Vec<OpenSession>,
+	/// Sessions whose close interrupted an execution; dropped once it reports its terminal state.
+	closing: Vec<ClosingSession>,
 	/// Oldest first.
 	closed: VecDeque<SessionKey>,
+	/// Where workers report what they ran; the request loop holds the receiving end.
+	events: events::Sender,
 }
 
-impl Default for Sessions {
-	fn default() -> Self {
-		Self::new()
-	}
+/// The answer to a `query.execute` whose worker has prepared the job.
+pub(crate) struct PreparedReply {
+	/// The `result` for the deferred success reply, or the error for the failure reply.
+	pub(crate) result: Result<Value, RpcError>,
+	/// Notifications that are due before the reply is written (a cancel that arrived first).
+	pub(crate) notifications: Vec<Value>,
+}
+
+/// An execution whose job reached its session worker.
+pub struct StartedExecution {
+	/// The session that owns the execution.
+	pub session: String,
+	/// The execution id the reply will name.
+	pub execution: String,
 }
 
 impl Sessions {
-	pub fn new() -> Self {
+	pub(crate) fn new(events: events::Sender) -> Self {
 		Sessions {
 			id_prefix: process_id_prefix(),
 			opened: 0,
 			open: Vec::new(),
+			closing: Vec::new(),
 			closed: VecDeque::new(),
+			events,
 		}
 	}
 
@@ -110,14 +151,16 @@ impl Sessions {
 			id: format!("{}{}", self.id_prefix, self.opened),
 			generation: self.opened,
 		};
+		let worker = Worker::spawn(&key.id, database, self.events.clone())?;
 		let result = json!({
 			"sessionId": key.id,
 			"sessionGeneration": key.generation,
 			"capabilities": {
 				"driver": DRIVER,
-				"readOnly": database.read_only(),
-				// A timeout ends the running statement from inside SQLite's VM (`query.rs`), which
-				// is cooperative cancellation; `query.cancel` still cannot reach a running one.
+				"readOnly": target.read_only,
+				// A timeout ends the running statement from inside SQLite's VM, and `query.cancel`
+				// interrupts it through `sqlite3_interrupt`; both are cooperative, because SQLite
+				// finishes its own VM step before it gives up. See `query.rs`.
 				"cancel": "cooperative",
 				// v1 has no transaction.* methods.
 				"supportsTransactions": false,
@@ -128,52 +171,62 @@ impl Sessions {
 		let executions = Executions::new(&key.id);
 		self.open.push(OpenSession {
 			key,
-			database,
+			read_only: target.read_only,
 			executions,
+			worker,
 		});
 		Ok(result)
 	}
 
 	/// `connection.close`. Closing a closed session again returns the same result.
-	pub fn close(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+	///
+	/// A close that interrupted an execution also returns the `cancel_requested` notifications the
+	/// registry owes, so the reply and the notification leave the request loop together.
+	pub(crate) fn close(
+		&mut self,
+		params: &Map<String, Value>,
+	) -> Result<(Value, Vec<Value>), RpcError> {
 		let (id, generation) = session_key(params, "connection.close")?;
 		let closed = json!({"closed": true});
 
 		if let Some(index) = self.open.iter().position(|session| session.key.id == id) {
 			check_generation(&self.open[index].key, generation)?;
-			let OpenSession {
-				key,
-				database,
-				executions,
-			} = self.open.remove(index);
-			// Ends a statement that is still running before the connection closes under it. v1
-			// serves one request at a time, so nothing is running here today; the request is what
-			// keeps this path correct once executions can overlap with a close.
-			executions.request_stop();
-			if let Err((database, error)) = database.close() {
-				// The connection is still open, so the session stays open — and stays usable:
-				// clearing the stop keeps every later statement of this session from failing as
-				// `QUERY_CANCELLED` although nothing is cancelling it.
-				executions.resume();
-				self.open.insert(
-					index,
-					OpenSession {
-						key,
-						database,
-						executions,
-					},
-				);
+			let session = &mut self.open[index];
+			// Ends whatever runs on the connection before it closes under it; a running execution
+			// is reported `cancel_requested` first, then `cancelled` when the statement stops.
+			let (notifications, interrupt) = session.executions.request_stop();
+			if interrupt {
+				session.worker.interrupt();
+			}
+			let worker = session.worker.shutdown();
+			if let Err(error) = worker {
+				// The connection is still open, so the session stays open and usable: its later
+				// executions get their own stop flags, and only the cancelled ones report
+				// `cancelled`.
 				return Err(error.for_session(id));
+			}
+			let OpenSession {
+				key, executions, ..
+			} = self.open.remove(index);
+			// The registry keeps answering `query.getState` for what it ran, exactly as a closed
+			// session stays listed. A close that stopped an execution has notifications in flight
+			// that only this registry can turn into `cancelled`.
+			self.closing.push(ClosingSession {
+				key: key.clone(),
+				executions,
+			});
+			if self.closing.len() > MAX_CLOSED_SESSIONS {
+				self.closing.remove(0);
 			}
 			self.closed.push_back(key);
 			if self.closed.len() > MAX_CLOSED_SESSIONS {
 				self.closed.pop_front();
 			}
-			return Ok(closed);
+			return Ok((closed, notifications));
 		}
 
 		match self.closed.iter().find(|key| key.id == id) {
-			Some(key) => check_generation(key, generation).map(|()| closed),
+			Some(key) => check_generation(key, generation).map(|()| (closed, Vec::new())),
 			None => Err(
 				RpcError::with_detail(ErrorKind::InvalidSession, "sessionId is unknown")
 					.for_session(id),
@@ -201,18 +254,29 @@ impl Sessions {
 		Ok(session)
 	}
 
-	/// `metadata.listObjects`.
-	pub fn list_objects(&self, params: &Map<String, Value>) -> Result<Value, RpcError> {
-		self.open_session(params)?.database.list_objects(params)
+	/// `metadata.listObjects` and `metadata.describe`: the call is queued on the session worker and
+	/// its reply follows as [`Event::Metadata`] (`server.rs`). Returns the session that owes the
+	/// answer.
+	pub(crate) fn metadata(
+		&self,
+		params: &Map<String, Value>,
+		call: MetadataCall,
+		request: &str,
+	) -> Result<String, RpcError> {
+		let session = self.open_session(params)?;
+		session
+			.worker
+			.metadata(request.to_owned(), call, params.clone())
+			.map_err(|error| error.for_session(session.key.id.clone()))?;
+		Ok(session.key.id.clone())
 	}
 
-	/// `metadata.describe`.
-	pub fn describe(&self, params: &Map<String, Value>) -> Result<Value, RpcError> {
-		self.open_session(params)?.database.describe(params)
-	}
-
-	/// `query.execute`.
-	pub fn execute(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+	/// `query.execute`: checks the session, validates the parameters and hands the job to the
+	/// worker. The reply follows with [`Sessions::prepared`].
+	pub fn begin_execution(
+		&mut self,
+		params: &Map<String, Value>,
+	) -> Result<StartedExecution, RpcError> {
 		let (id, generation) = session_key_from(params)?;
 		let index = self
 			.open
@@ -227,11 +291,59 @@ impl Sessions {
 			})?;
 		check_generation(&self.open[index].key, generation)?;
 		let session = &mut self.open[index];
-		let ttl = Duration::from_secs(u64::from(MAX_RESULT_TTL_SECS));
-		session
+		let job = session
 			.executions
-			.execute(&session.database, params, ttl)
-			.map_err(|error| error.for_session(id))
+			.begin(params, session.read_only)
+			.map_err(|error| error.for_session(id))?;
+		let execution = job.execution().to_owned();
+		if let Err(error) = session.worker.execute(job) {
+			// The worker is gone; the execution provably ran nothing.
+			session.executions.worker_gone();
+			return Err(error.for_session(id));
+		}
+		Ok(StartedExecution {
+			session: id.to_owned(),
+			execution,
+		})
+	}
+
+	/// The open session that `session` names. Worker reports carry the session id itself, not an
+	/// execution or result id, so they cannot go through [`Sessions::owner`].
+	fn session_index(&self, session: &str) -> Option<usize> {
+		self.open.iter().position(|open| open.key.id == session)
+	}
+
+	/// The reply to the `query.execute` of `execution`, once its worker reports the outcome of
+	/// preparing the first statement.
+	pub(crate) fn prepared(
+		&mut self,
+		session: &str,
+		execution: &str,
+		error: Option<RpcError>,
+	) -> Option<PreparedReply> {
+		let index = self.session_index(session)?;
+		let registry = &mut self.open[index].executions;
+		match error {
+			Some(error) => {
+				// The reply names the execution and the session, so the client can follow it with
+				// `query.getState` even though the statement never ran.
+				let error = error.for_session(session).for_execution(execution);
+				// The execution is retained as `failed`, so `query.getState` answers for it exactly
+				// as for one that failed while running (`conformance.ndjson` rq_009).
+				registry.fail_prepared(execution, &error);
+				Some(PreparedReply {
+					result: Err(error),
+					notifications: Vec::new(),
+				})
+			}
+			None => {
+				let result = registry.queued(execution)?;
+				Some(PreparedReply {
+					notifications: registry.mark_replied(execution),
+					result: Ok(result),
+				})
+			}
+		}
 	}
 
 	// Execution and result ids start with the id of the session that issued them, so the methods
@@ -271,20 +383,38 @@ impl Sessions {
 			.ok_or_else(|| invalid(format!("{field} of {method} must be a contract id")))
 	}
 
-	/// `query.getState`.
+	/// `query.getState`. A session that was closed while an execution stopped still answers, so the
+	/// client can read the terminal state the notification reported (`README.md` §4, "补偿读").
 	pub fn get_state(&self, params: &Map<String, Value>) -> Result<Value, RpcError> {
 		let id = Self::id_param(params, "executionId", "query.getState")?;
-		match self.owner(id) {
-			Some(index) => self.open[index].executions.get_state(params),
-			None => Err(invalid("executionId is unknown")),
+		if let Some(index) = self.owner(id) {
+			return self.open[index].executions.get_state(params);
 		}
+		if let Some(closing) = self
+			.closing
+			.iter()
+			.find(|session| id.starts_with(&session.key.id))
+		{
+			// The registry itself checks that the id is one it issued.
+			return closing.executions.get_state(params);
+		}
+		Err(invalid("executionId is unknown"))
 	}
 
-	/// `query.cancel`.
-	pub fn cancel(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
+	/// `query.cancel`. `interrupt` tells the caller to stop the statement on the worker.
+	pub(crate) fn cancel(
+		&mut self,
+		params: &Map<String, Value>,
+	) -> Result<CancelOutcome, RpcError> {
 		let id = Self::id_param(params, "executionId", "query.cancel")?;
 		match self.owner(id) {
-			Some(index) => self.open[index].executions.cancel(params),
+			Some(index) => {
+				let outcome = self.open[index].executions.cancel(params)?;
+				if outcome.interrupt {
+					self.open[index].worker.interrupt();
+				}
+				Ok(outcome)
+			}
 			None => Err(invalid("executionId is unknown")),
 		}
 	}
@@ -343,6 +473,75 @@ impl Sessions {
 			})
 			.collect();
 		Ok(json!({ "sessions": sessions }))
+	}
+
+	/// Applies one report from a session worker and returns the notifications to write. A report
+	/// naming a session this process does not know is dropped: its executions went with it.
+	pub(crate) fn apply_event(&mut self, event: Event) -> Vec<Value> {
+		if let Some(index) = self.session_index(event.session()) {
+			let registry = &mut self.open[index].executions;
+			return match event {
+				// Answered by `Sessions::prepared`; the request loop holds the pending request.
+				Event::Prepared { .. } => Vec::new(),
+				// Answered by `server::Server::handle_event`; the reply names no session state.
+				Event::Metadata { .. } => Vec::new(),
+				Event::Started { execution, .. } => registry.started(&execution),
+				Event::Finished {
+					execution, outcome, ..
+				} => registry.finished(&execution, outcome, result_ttl()),
+				Event::WorkerGone { .. } => registry.worker_gone(),
+			};
+		}
+
+		// A session that closed while its execution was stopping: the terminal notification is
+		// still owed to the client, and its registry stays until nothing is active in it.
+		let Some(index) = self
+			.closing
+			.iter()
+			.position(|session| session.key.id == event.session())
+		else {
+			return Vec::new();
+		};
+		let registry = &mut self.closing[index].executions;
+		let notifications = match event {
+			Event::Finished {
+				execution, outcome, ..
+			} => registry.finished(&execution, outcome, result_ttl()),
+			Event::Started { execution, .. } => registry.started(&execution),
+			Event::WorkerGone { .. } => registry.worker_gone(),
+			Event::Prepared { .. } | Event::Metadata { .. } => Vec::new(),
+		};
+		// The registry stays so that `query.getState` answers for the executions it holds; it is
+		// forgotten like a closed session once a later session takes its place.
+		if self.closing.len() > MAX_CLOSED_SESSIONS {
+			self.closing.remove(0);
+		}
+		notifications
+	}
+
+	/// The worker of `session` panicked: its open executions end as `unknown` or `cancelled`, and
+	/// the session itself stays listed so `query.getState` keeps answering for them.
+	pub(crate) fn worker_gone(&mut self, session: &str) -> Vec<Value> {
+		match self.session_index(session) {
+			Some(index) => self.open[index].executions.worker_gone(),
+			None => Vec::new(),
+		}
+	}
+}
+
+impl Drop for Sessions {
+	fn drop(&mut self) {
+		// The request loop is going away; end what runs on every connection and close it. The
+		// workers are joined so that the process leaves no thread behind.
+		for session in &mut self.open {
+			let (_, interrupt) = session.executions.request_stop();
+			if interrupt {
+				session.worker.interrupt();
+			}
+		}
+		for session in &mut self.open {
+			session.worker.stop();
+		}
 	}
 }
 
@@ -456,8 +655,10 @@ fn invalid(detail: impl Into<String>) -> RpcError {
 #[cfg(test)]
 mod tests {
 	use std::path::Path;
+	use std::sync::mpsc::{self, Receiver};
 
 	use super::*;
+	use crate::events::Input;
 	use crate::sqlite::test_files::{text, TempDir};
 
 	fn params(value: Value) -> Map<String, Value> {
@@ -467,14 +668,27 @@ mod tests {
 		}
 	}
 
-	fn kind(result: Result<Value, RpcError>) -> ErrorKind {
+	fn kind<T: std::fmt::Debug>(result: Result<T, RpcError>) -> ErrorKind {
 		result.expect_err("expected a failure").kind
+	}
+
+	/// A registry whose worker reports are dropped: enough for the methods that answer without a
+	/// worker.
+	fn registry() -> Sessions {
+		let (sender, _reports) = mpsc::channel();
+		Sessions::new(sender)
+	}
+
+	/// A registry and the receiving end of its worker reports.
+	fn paired() -> (Sessions, Receiver<Input>) {
+		let (sender, reports) = mpsc::channel();
+		(Sessions::new(sender), reports)
 	}
 
 	#[test]
 	fn session_ids_match_the_contract_pattern_and_differ_between_registries() {
-		let first = Sessions::new();
-		let second = Sessions::new();
+		let first = registry();
+		let second = registry();
 		assert_ne!(first.id_prefix, second.id_prefix);
 		for registry in [&first, &second] {
 			let prefix = registry.id_prefix.strip_prefix("s_").unwrap();
@@ -512,7 +726,7 @@ mod tests {
 			with("readOnly", json!(1)),
 			with("debug", json!(true)),
 		];
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 		for case in &cases {
 			assert_eq!(
 				kind(test(&params(case.clone()))),
@@ -541,7 +755,7 @@ mod tests {
 
 	#[test]
 	fn close_params_follow_the_method_schema() {
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 		for case in [
 			json!({}),
 			json!({"sessionId": "s_1"}),
@@ -565,19 +779,19 @@ mod tests {
 
 	#[test]
 	fn closing_an_unknown_session_names_it_in_the_error() {
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 		let error = sessions
 			.close(&params(
 				json!({"sessionId": "s_001", "sessionGeneration": 1}),
 			))
-			.unwrap_err();
+			.expect_err("the session was never opened");
 		assert_eq!(error.kind, ErrorKind::InvalidSession);
 		assert_eq!(error.to_json()["data"]["sessionId"], "s_001");
 	}
 
 	#[test]
 	fn list_starts_empty_and_takes_no_params() {
-		let sessions = Sessions::new();
+		let sessions = registry();
 		assert_eq!(sessions.list(&Map::new()).unwrap(), json!({"sessions": []}));
 		assert_eq!(
 			kind(sessions.list(&params(json!({"all": true})))),
@@ -596,6 +810,17 @@ mod tests {
 		}))
 	}
 
+	fn query(opened: &Value, sql: &str) -> Map<String, Value> {
+		params(json!({
+			"sessionId": opened["sessionId"],
+			"sessionGeneration": opened["sessionGeneration"],
+			"sql": sql,
+			"mode": "statement",
+			"timeoutMs": 600_000,
+			"maxInitialRows": 10,
+		}))
+	}
+
 	fn states(sessions: &Sessions) -> Vec<(String, String)> {
 		sessions.list(&Map::new()).unwrap()["sessions"]
 			.as_array()
@@ -608,6 +833,39 @@ mod tests {
 				)
 			})
 			.collect()
+	}
+
+	/// Applies the worker's reports for one execution and returns the result handle it produced.
+	fn complete(sessions: &mut Sessions, reports: &Receiver<Input>, execution: &str) -> String {
+		loop {
+			let event = match reports.recv().expect("the worker reports") {
+				Input::Event(event) => event,
+				other => panic!("expected a worker report: {other:?}"),
+			};
+			if let Event::Prepared {
+				session,
+				execution: prepared,
+				error,
+			} = &event
+			{
+				let reply = sessions
+					.prepared(session, prepared, error.clone())
+					.expect("the reply of a prepared execution");
+				reply.result.expect("the statement prepared");
+			}
+			let finished = matches!(event, Event::Finished { .. });
+			sessions.apply_event(event);
+			if finished {
+				break;
+			}
+		}
+		let state = sessions
+			.get_state(&params(json!({"executionId": execution})))
+			.unwrap();
+		state["resultIds"][0]
+			.as_str()
+			.expect("a completed execution hands over a result")
+			.to_owned()
 	}
 
 	#[test]
@@ -627,7 +885,7 @@ mod tests {
 	fn open_list_and_close_follow_the_session_lifecycle() {
 		let dir = TempDir::new("lifecycle");
 		let path = dir.database("db.sqlite");
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 
 		let first = sessions.open(&target(&path, true)).unwrap();
 		let mut with_profile = target(&path, false);
@@ -636,7 +894,7 @@ mod tests {
 		assert_eq!(first["sessionGeneration"], 1);
 		assert_eq!(second["sessionGeneration"], 2);
 		assert_ne!(first["sessionId"], second["sessionId"]);
-		// Only readOnly follows the request; the rest stays false or "none" until N-105/N-108.
+		// Only readOnly follows the request; the rest is what this build serves (N-105, N-108).
 		for (session, read_only) in [(&first, true), (&second, false)] {
 			assert_eq!(
 				session["capabilities"],
@@ -662,12 +920,12 @@ mod tests {
 		);
 
 		assert_eq!(
-			sessions.close(&key(&first)).unwrap(),
+			sessions.close(&key(&first)).unwrap().0,
 			json!({"closed": true})
 		);
 		// Closing again is idempotent.
 		assert_eq!(
-			sessions.close(&key(&first)).unwrap(),
+			sessions.close(&key(&first)).unwrap().0,
 			json!({"closed": true})
 		);
 		assert_eq!(sessions.open_count(), 1);
@@ -681,7 +939,7 @@ mod tests {
 	fn a_generation_that_does_not_match_is_refused_and_changes_nothing() {
 		let dir = TempDir::new("generation");
 		let path = dir.database("db.sqlite");
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 		let first = sessions.open(&target(&path, true)).unwrap();
 		let second = sessions.open(&target(&path, true)).unwrap();
 
@@ -691,7 +949,7 @@ mod tests {
 			"sessionGeneration".into(),
 			second["sessionGeneration"].clone(),
 		);
-		let error = sessions.close(&crossed).unwrap_err();
+		let error = sessions.close(&crossed).expect_err("the pair is refused");
 		assert_eq!(error.kind, ErrorKind::InvalidSession);
 		assert_eq!(error.to_json()["data"]["sessionId"], first["sessionId"]);
 		assert_eq!(sessions.open_count(), 2, "the open session stays open");
@@ -705,7 +963,7 @@ mod tests {
 	fn an_id_is_owned_by_the_session_that_issued_it_even_when_ids_nest() {
 		let dir = TempDir::new("routing");
 		let path = dir.database("db.sqlite");
-		let mut sessions = Sessions::new();
+		let (mut sessions, reports) = paired();
 		// Session 1's id is a textual prefix of session 11's id: `s_<hex>1` and `s_<hex>11`.
 		let opened: Vec<Value> = (0..=11)
 			.map(|_| sessions.open(&target(&path, true)).unwrap())
@@ -719,26 +977,16 @@ mod tests {
 
 		// Each execution and result id belongs to the session that issued it.
 		for index in [0usize, 10] {
-			let session = &opened[index];
-			let query = params(json!({
-				"sessionId": session["sessionId"],
-				"sessionGeneration": session["sessionGeneration"],
-				"sql": "SELECT 1 AS answer",
-				"mode": "statement",
-				"timeoutMs": 5_000,
-				"maxInitialRows": 10,
-			}));
-			let reply = sessions.execute(&query).unwrap();
-			let execution = reply["executionId"].as_str().unwrap().to_owned();
+			let started = sessions
+				.begin_execution(&query(&opened[index], "SELECT 1 AS answer"))
+				.unwrap();
+			let execution = started.execution;
 			assert_eq!(
 				sessions.owner(&execution),
 				Some(index),
 				"{execution} belongs to session {index}"
 			);
-			let state = sessions
-				.get_state(&params(json!({"executionId": execution})))
-				.unwrap();
-			let result = state["resultIds"][0].as_str().unwrap().to_owned();
+			let result = complete(&mut sessions, &reports, &execution);
 			assert_eq!(sessions.owner(&result), Some(index), "{result}");
 			// `fetch_page` routes by the id alone, so the handle is reached through its owner.
 			let page = sessions
@@ -767,7 +1015,7 @@ mod tests {
 	fn open_sessions_are_limited_and_the_registry_stays_usable() {
 		let dir = TempDir::new("limit");
 		let path = dir.database("db.sqlite");
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 		let opened: Vec<Value> = (0..MAX_OPEN_SESSIONS)
 			.map(|_| sessions.open(&target(&path, true)).unwrap())
 			.collect();
@@ -785,7 +1033,7 @@ mod tests {
 	fn the_oldest_closed_session_is_forgotten_beyond_the_retention_limit() {
 		let dir = TempDir::new("retention");
 		let path = dir.database("db.sqlite");
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 		let closed: Vec<Value> = (0..=MAX_CLOSED_SESSIONS)
 			.map(|_| {
 				let opened = sessions.open(&target(&path, true)).unwrap();
@@ -802,9 +1050,66 @@ mod tests {
 	}
 
 	#[test]
+	fn a_close_while_a_statement_runs_reports_its_terminal_state() {
+		let dir = TempDir::new("close-running");
+		let path = dir.database("db.sqlite");
+		let (mut sessions, reports) = paired();
+		let opened = sessions.open(&target(&path, true)).unwrap();
+		let started = sessions
+			.begin_execution(&query(
+				&opened,
+				"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n",
+			))
+			.unwrap();
+		// The worker prepared the statement; the close therefore interrupts one that runs.
+		match reports.recv().expect("the worker reports") {
+			Input::Event(Event::Prepared {
+				session,
+				execution,
+				error,
+			}) => {
+				assert!(error.is_none());
+				sessions
+					.prepared(&session, &execution, error)
+					.expect("the reply of a prepared execution")
+					.result
+					.expect("the statement prepared");
+			}
+			other => panic!("expected a prepared report: {other:?}"),
+		}
+
+		let (closed, notifications) = sessions.close(&key(&opened)).unwrap();
+		assert_eq!(closed, json!({"closed": true}));
+		assert_eq!(notifications.len(), 1);
+		assert_eq!(notifications[0]["params"]["state"], "cancel_requested");
+		assert_eq!(notifications[0]["params"]["executionId"], started.execution);
+
+		// The worker interrupts the statement and reports `cancelled`; the closed session's
+		// registry still turns that into a notification, and `query.getState` keeps answering.
+		let terminal = loop {
+			let event = match reports.recv().expect("the worker reports") {
+				Input::Event(event) => event,
+				other => panic!("expected a worker report: {other:?}"),
+			};
+			let finished = matches!(event, Event::Finished { .. });
+			let produced = sessions.apply_event(event);
+			if finished {
+				break produced;
+			}
+		};
+		assert_eq!(terminal[0]["params"]["state"], "cancelled");
+		assert_eq!(terminal[0]["params"]["executionId"], started.execution);
+		let state = sessions
+			.get_state(&params(json!({"executionId": started.execution})))
+			.unwrap();
+		assert_eq!(state["state"], "cancelled");
+		assert_eq!(sessions.open_count(), 0);
+	}
+
+	#[test]
 	fn a_failed_open_creates_no_session() {
 		let dir = TempDir::new("failed-open");
-		let mut sessions = Sessions::new();
+		let mut sessions = registry();
 		let error = sessions
 			.open(&target(&dir.text_file("notes.txt"), true))
 			.unwrap_err();

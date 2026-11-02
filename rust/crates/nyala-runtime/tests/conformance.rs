@@ -6,6 +6,11 @@
 //! Contract conformance: the runtime against `nyala/rpc/v1/`, the same files that
 //! `npm run nyala:validate-rpc` checks on the Node side. Nothing here copies a sample or a code;
 //! every expectation is read from the contract files.
+//!
+//! Since N-108 `query.execute` is answered asynchronously: the worker prepares the first statement
+//! and reports back, and `query.stateChanged` notifications follow as the execution moves through
+//! the state machine. A replay therefore handles a request, then reads the reports its worker
+//! queued, in the order the client would have received them ([`Reply`] carries them all).
 
 mod support;
 
@@ -17,7 +22,7 @@ use nyala_runtime::framing::{
 	encode_frame, FrameDecoder, FrameError, DEFAULT_FRAME_MAX_BYTES, FRAME_PREFIX_BYTES,
 };
 use nyala_runtime::protocol::V1_REQUEST_METHODS;
-use nyala_runtime::server::{failure, frame_error_reply, Server};
+use nyala_runtime::server::{failure, frame_error_reply, Reply, Server};
 use serde_json::{json, Value};
 use support::{
 	conformance_samples, path_param, read_json, Schema, TempDir, CONFORMANCE_PATH, ERROR_CODES_PATH,
@@ -79,6 +84,57 @@ fn assert_conforms(schema: &Schema, registry: &Value, request: &Value, reply: &V
 	if let Some(error) = reply.get("error") {
 		assert_registered(registry, error);
 	}
+}
+
+/// Checks a `query.stateChanged` notification against the contract schema.
+fn assert_notification_conforms(schema: &Schema, notification: &Value) {
+	let errors = schema.envelope_errors(notification);
+	assert!(
+		errors.is_empty(),
+		"notification violates the envelope schema: {errors:?}\n{notification}"
+	);
+	assert_eq!(notification["method"], "query.stateChanged");
+}
+
+/// The reply to `request` produced by one round trip: its own answer, then the reports its worker
+/// queued. Fails unless the request was answered exactly once.
+fn answered(server: &mut Server, request: &Value) -> Value {
+	let reply = server.round_trip(request.to_string().as_bytes());
+	assert_eq!(reply.exit, None, "{request}");
+	let id = &request["id"];
+	let mut answers = reply
+		.messages
+		.iter()
+		.filter(|message| !is_notification(message) && message.get("id") == Some(id));
+	assert_eq!(
+		answers.clone().count(),
+		1,
+		"every request gets exactly one reply: {request}\n{}",
+		serde_json::to_string(&reply.messages).unwrap()
+	);
+	answers.next().unwrap().clone()
+}
+
+/// The notifications `messages` holds.
+fn notifications(messages: &[Value]) -> Vec<&Value> {
+	messages
+		.iter()
+		.filter(|message| is_notification(message))
+		.collect()
+}
+
+/// The state sequence of `execution` in `messages`.
+fn states(messages: &[Value], execution: &str) -> Vec<String> {
+	notifications(messages)
+		.iter()
+		.filter(|notification| notification["params"]["executionId"] == execution)
+		.map(|notification| {
+			notification["params"]["state"]
+				.as_str()
+				.expect("a state")
+				.to_owned()
+		})
+		.collect()
 }
 
 #[test]
@@ -227,6 +283,36 @@ fn schema_evaluator_accepts_the_samples_and_rejects_the_negative_controls() {
 	}
 }
 
+/// The expected response of `request` in the sample stream.
+fn expected_response(samples: &[(String, Value)], request: &Value) -> Value {
+	samples
+		.iter()
+		.find(|(_, later)| later["id"] == request["id"] && !is_request(later))
+		.expect("every request is followed by its response")
+		.1
+		.clone()
+}
+
+/// Whether a later sample cancels the execution `request` produces, i.e. the sample treats it as
+/// still running when the next request arrives (rq_010 → rq_011). Such an execution must not be
+/// waited for: it is `SELECT count(*) FROM customers` without `cancel_requested` in the sample, and
+/// here it is the statement the cancel interrupts.
+fn cancelled_later(samples: &[(String, Value)], request: &Value) -> bool {
+	let Some(response) = samples
+		.iter()
+		.map(|(_, value)| value)
+		.find(|value| value["id"] == request["id"] && !is_request(value))
+	else {
+		return false;
+	};
+	let Some(execution) = response["result"]["executionId"].as_str() else {
+		return false;
+	};
+	samples.iter().any(|(_, value)| {
+		value["method"] == "query.cancel" && value["params"]["executionId"] == execution
+	})
+}
+
 #[test]
 fn every_sample_request_gets_exactly_one_conforming_reply() {
 	let schema = Schema::load();
@@ -240,39 +326,13 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 	// Sample executionId/resultId to the one this runtime issued, for the same replay reason.
 	let mut issued_ids: HashMap<String, Value> = HashMap::new();
 	let mut server = Server::new();
-	let mut answered = 0;
+	let mut answered_count = 0;
 	for (index, (line, sample)) in samples.iter().enumerate() {
 		if is_notification(sample) {
-			let reply = server.handle_payload(line.as_bytes());
-			assert_eq!(reply.message, None, "notifications get no reply: {line}");
-			assert_eq!(reply.exit, None);
-			// A notification naming result ids tells this test which of its ids stand for the
-			// sample's, exactly as a client would learn them (`README.md` §4). `getState` is the
-			// compensation read for a notification this build never sends.
-			if let (Some(sample_execution), Some(sample_results)) = (
-				sample["params"]["executionId"].as_str(),
-				sample["params"]["resultIds"].as_array(),
-			) {
-				if let Some(execution) = issued_ids.get(sample_execution) {
-					let state = server
-						.handle_payload(
-							json!({"jsonrpc": "2.0", "id": "rq_state", "method": "query.getState", "params": {"executionId": execution}})
-								.to_string()
-								.as_bytes(),
-						)
-						.message
-						.unwrap();
-					let results = state["result"]["resultIds"]
-						.as_array()
-						.cloned()
-						.unwrap_or_default();
-					for (sample_id, result) in sample_results.iter().zip(results) {
-						if let Some(sample_id) = sample_id.as_str() {
-							issued_ids.insert(sample_id.to_owned(), result);
-						}
-					}
-				}
-			}
+			// The sample's notifications are produced by this build's own executions (its
+			// `query.stateChanged` lines are checked against the sequence the runtime emitted when
+			// it ran rq_006, below). `runtime.restarted` is emitted by the client-facing supervisor,
+			// not by this process, so it is not replayed.
 			continue;
 		}
 		if !is_request(sample) {
@@ -302,15 +362,24 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 			}
 		}
 
-		let reply = server.handle_payload(request.to_string().as_bytes());
+		let reply = server.round_trip(request.to_string().as_bytes());
 		assert_eq!(reply.exit, None, "{line}");
-		let message = reply.message.expect("every request gets a response");
-		assert_conforms(&schema, &registry, &request, &message);
+		let message = answered_from(&reply, &request, &schema, &registry);
 		let method = request["method"].as_str().unwrap();
-		let (_, expected) = samples[index..]
-			.iter()
-			.find(|(_, later)| later["id"] == sample["id"] && !is_request(later))
-			.expect("every request is followed by its response");
+		let mut messages = reply.messages;
+		// `query.stateChanged` notifications follow the reply asynchronously. The replay reads
+		// them where the sample reads them too: an execution the sample cancels later (rq_010) is
+		// left running, and every other execution is settled before the next request.
+		if method == "query.cancel"
+			|| (method == "query.execute" && !cancelled_later(&samples, &request))
+		{
+			messages.extend(server.settle().messages);
+		}
+		let produced = notifications(&messages);
+		for notification in &produced {
+			assert_notification_conforms(&schema, notification);
+		}
+		let expected = expected_response(&samples, &request);
 		match method {
 			"runtime.hello" | "runtime.health" | "connection.test" | "connection.open"
 			| "connection.close" => {
@@ -370,21 +439,90 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 					let result = message
 						.get("result")
 						.unwrap_or_else(|| panic!("{method}: {message}"));
-					// The sample was recorded against a runtime that answers before the statement runs
-					// and reports `queued`; this build runs to the terminal state inside the request,
-					// so the state is the terminal one. The fields are the same.
+					// rq_006: the reply is `queued`, then `running` and `completed` arrive as
+					// notifications, exactly as the sample records them.
 					assert_eq!(keys(result), keys(expected), "query.execute result fields");
 					let sample_id = expected["executionId"]
 						.as_str()
 						.expect("the sample names its execution")
 						.to_owned();
-					issued_ids.insert(sample_id, result["executionId"].clone());
-					let sample_state = expected["state"].as_str().expect("state");
-					if sample_state == "queued" {
-						assert_eq!(
-							result["state"], "completed",
-							"a successful statement completes"
-						);
+					let execution = result["executionId"].clone();
+					issued_ids.insert(sample_id.clone(), execution.clone());
+					if expected["state"] == "queued" {
+						assert_eq!(result["state"], "queued", "the reply names queued");
+						assert_eq!(result["sequence"], 1);
+						// The notifications the sample records for this execution, in order. They
+						// arrive asynchronously, so an execution the sample cancels later (rq_010)
+						// only gets them from `query.cancel`'s reply.
+						if !cancelled_later(&samples, &request) {
+							let expected_states: Vec<String> = samples[index..]
+								.iter()
+								.map(|(_, later)| later)
+								.filter(|later| is_notification(later))
+								.filter(|later| {
+									later["params"]["executionId"] == expected["executionId"]
+								})
+								.map(|later| later["params"]["state"].as_str().unwrap().to_owned())
+								.collect();
+							assert_eq!(
+								states(&messages, result["executionId"].as_str().unwrap()),
+								expected_states,
+								"the state sequence the sample records"
+							);
+							let sequences: Vec<&Value> = notifications(&messages)
+								.iter()
+								.map(|notification| &notification["params"]["sequence"])
+								.collect();
+							let expected_sequences: Vec<&Value> = samples[index..]
+								.iter()
+								.map(|(_, later)| later)
+								.filter(|later| is_notification(later))
+								.filter(|later| {
+									later["params"]["executionId"] == expected["executionId"]
+								})
+								.map(|later| &later["params"]["sequence"])
+								.collect();
+							assert_eq!(sequences, expected_sequences, "sequences");
+							// The sample's notifications name its result ids; ours name the ones
+							// this process issued, so the sample's `result.fetchPage` can be replayed.
+							let sample_results: Vec<Value> = samples[index..]
+								.iter()
+								.map(|(_, later)| later)
+								.filter(|later| is_notification(later))
+								.filter(|later| {
+									later["params"]["executionId"] == expected["executionId"]
+								})
+								.flat_map(|later| {
+									later["params"]["resultIds"]
+										.as_array()
+										.cloned()
+										.unwrap_or_default()
+								})
+								.collect();
+							let issued_results: Vec<Value> = notifications(&messages)
+								.iter()
+								.filter(|notification| {
+									notification["params"]["executionId"] == execution
+								})
+								.flat_map(|notification| {
+									notification["params"]["resultIds"]
+										.as_array()
+										.cloned()
+										.unwrap_or_default()
+								})
+								.collect();
+							assert_eq!(
+								issued_results.len(),
+								sample_results.len(),
+								"the result handles the sample records"
+							);
+							for (sample_id, issued) in sample_results.iter().zip(issued_results) {
+								issued_ids.insert(
+									sample_id.as_str().expect("a result id").to_owned(),
+									issued,
+								);
+							}
+						}
 					}
 				} else {
 					assert_eq!(
@@ -403,21 +541,45 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 				let result = message
 					.get("result")
 					.unwrap_or_else(|| panic!("{method}: {message}"));
-				// Nothing runs while this reply is built (v1 handles one request at a time), so the
-				// request is refused and the terminal state is reported instead of accepted.
-				assert_eq!(result["accepted"], false, "query.cancel");
-				assert_eq!(result["state"], "completed", "query.cancel");
+				// rq_011: the sample cancels an execution while it runs, so the request is accepted
+				// and reported as `cancel_requested`. This replay dispatches the cancel before it
+				// applies the events the worker already queued, so the execution is still `running`
+				// here and the same holds.
+				assert_eq!(result["accepted"], true, "query.cancel: {message}");
+				assert_eq!(
+					result["state"], "cancel_requested",
+					"query.cancel: {message}"
+				);
+				let execution = request["params"]["executionId"].as_str().unwrap();
+				let states = states(&messages, execution);
+				assert_eq!(states[0], "cancel_requested", "{messages:?}");
+				// The sample's statement was slow enough for the interrupt to win, so it recorded
+				// `cancelled`. `SELECT count(*) FROM customers` over the fixture's two rows is
+				// already past its last interruptible step when the cancel arrives, and §5 allows a
+				// `cancel_requested` execution to complete: both endings honour the contract. The
+				// real interruption is proven deterministically in `tests/stdio.rs`.
+				assert!(
+					matches!(
+						states.get(1).map(String::as_str),
+						Some("cancelled" | "completed")
+					),
+					"cancel_requested ends as cancelled or completed: {messages:?}"
+				);
 			}
 			"query.getState" => {
 				let result = message
 					.get("result")
 					.unwrap_or_else(|| panic!("{method}: {message}"));
-				assert_eq!(result["state"], "completed", "query.getState");
+				// rq_012: the execution the sample cancelled reports its terminal state without an
+				// error, at the sequence its third state got.
 				assert!(
-					result["resultIds"]
-						.as_array()
-						.is_some_and(|ids| !ids.is_empty()),
-					"a completed execution names its results: {result}"
+					matches!(result["state"].as_str(), Some("cancelled" | "completed")),
+					"query.getState: {result}"
+				);
+				assert_eq!(result["sequence"], 3, "query.getState sequence");
+				assert!(
+					result.get("error").is_none(),
+					"a user cancellation carries no error: {result}"
 				);
 			}
 			"result.fetchPage" => {
@@ -453,22 +615,19 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 			}
 			other => panic!("no conformance replay for {other}"),
 		}
-		answered += 1;
+		answered_count += 1;
 	}
 	let requests = samples
 		.iter()
 		.filter(|(_, value)| is_request(value))
 		.count();
 	assert!(requests > 0);
-	assert_eq!(answered, requests);
+	assert_eq!(answered_count, requests);
 	assert_eq!(issued.len(), 1, "the sample session opens one session");
 
 	// conformance.ndjson has no connection.listSessions sample; its reply is checked here.
 	let request = json!({"jsonrpc": "2.0", "id": "rq_list", "method": "connection.listSessions", "params": {}});
-	let message = server
-		.handle_payload(request.to_string().as_bytes())
-		.message
-		.unwrap();
+	let message = answered(&mut server, &request);
 	assert_conforms(&schema, &registry, &request, &message);
 	let states: Vec<&Value> = message["result"]["sessions"]
 		.as_array()
@@ -477,6 +636,24 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 		.map(|session| &session["state"])
 		.collect();
 	assert_eq!(states, [&json!("closed")], "the sample session closes it");
+}
+
+/// The one reply to `request` inside `reply`, checked against the contract.
+fn answered_from(reply: &Reply, request: &Value, schema: &Schema, registry: &Value) -> Value {
+	let id = &request["id"];
+	let mut answers = reply
+		.messages
+		.iter()
+		.filter(|message| !is_notification(message) && message.get("id") == Some(id));
+	assert_eq!(
+		answers.clone().count(),
+		1,
+		"every request gets exactly one reply: {request}\n{:?}",
+		reply.messages
+	);
+	let message = answers.next().unwrap().clone();
+	assert_conforms(schema, registry, request, &message);
+	message
 }
 
 fn keys(value: &Value) -> BTreeSet<&str> {
@@ -500,10 +677,7 @@ fn connection_failures_conform_to_the_contract_and_name_no_path() {
 	let mut call = |server: &mut Server, method: &str, params: Value| {
 		next += 1;
 		let request = json!({"jsonrpc": "2.0", "id": format!("rq_{next}"), "method": method, "params": params});
-		let message = server
-			.handle_payload(request.to_string().as_bytes())
-			.message
-			.unwrap();
+		let message = answered(server, &request);
 		assert_conforms(&schema, &registry, &request, &message);
 		assert!(!message.to_string().contains(MARKER), "{message}");
 		message
@@ -561,10 +735,9 @@ fn hello_reply_agrees_with_the_sample_session() {
 		.find(|(_, value)| value["id"] == request["id"] && value.get("result").is_some())
 		.unwrap();
 
-	let reply = Server::new()
-		.handle_payload(line.as_bytes())
-		.message
-		.unwrap();
+	let reply = Server::new().round_trip(line.as_bytes());
+	assert_eq!(reply.exit, None);
+	let reply = &reply.messages[0];
 	let (result, expected) = (&reply["result"], &expected["result"]);
 	assert_eq!(result["protocolMajor"], expected["protocolMajor"]);
 	assert_eq!(result["protocolMinor"], expected["protocolMinor"]);
@@ -595,7 +768,7 @@ fn every_error_reply_uses_a_registered_kind_and_the_contract_shape() {
 	}
 
 	// Replies to payloads that carry no readable request id.
-	let reply = |payload: &[u8]| Server::new().handle_payload(payload).message.unwrap();
+	let reply = |payload: &[u8]| Server::new().handle_payload(payload).messages[0].clone();
 	let id_less = [
 		("PARSE_ERROR", reply(b"{not json")),
 		("PARSE_ERROR", reply(&[0xff, 0xfe])),

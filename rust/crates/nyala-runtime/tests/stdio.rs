@@ -150,11 +150,18 @@ fn list(id: &str) -> Vec<u8> {
 
 /// A runtime process driven one request at a time, for requests that use ids from earlier
 /// replies.
+///
+/// Since N-108 an execution reports its progress through `query.stateChanged` notifications, and
+/// the `query.execute` reply itself waits until the worker prepared the statement. [`Live::call`]
+/// therefore reads until the reply carrying an `id` arrives and keeps the notifications it passed
+/// in `notifications`; [`Live::wait_for_state`] reads on until the state it expects shows up.
 struct Live {
 	child: Child,
 	stdin: ChildStdin,
 	stdout: ChildStdout,
 	decoder: FrameDecoder,
+	/// Notifications read while waiting for a reply, in arrival order.
+	notifications: Vec<Value>,
 	stderr: JoinHandle<String>,
 }
 
@@ -175,16 +182,57 @@ impl Live {
 			stdin,
 			stdout,
 			decoder: FrameDecoder::new(DEFAULT_FRAME_MAX_BYTES),
+			notifications: Vec::new(),
 			stderr,
 		}
 	}
 
-	/// Sends one request frame and waits for its reply.
+	/// Sends one request frame and waits for its reply, keeping the notifications that arrive
+	/// first. A request is answered exactly once, so the first frame with an `id` is its reply.
 	fn call(&mut self, frame: &[u8]) -> Value {
 		self.stdin
 			.write_all(frame)
 			.and_then(|()| self.stdin.flush())
 			.expect("write a request");
+		loop {
+			let message = self.read_message();
+			if message.get("id").is_some() {
+				return message;
+			}
+			self.notifications.push(message);
+		}
+	}
+
+	/// Waits for the `query.stateChanged` notification that reports `state` for `execution`. The
+	/// notification stays in `notifications`, so a test can still check the whole sequence after.
+	fn wait_for_state(&mut self, execution: &Value, state: &str) -> Value {
+		let matches = |notification: &Value| {
+			notification["params"]["executionId"] == *execution
+				&& notification["params"]["state"] == state
+		};
+		if let Some(found) = self
+			.notifications
+			.iter()
+			.find(|notification| matches(notification))
+		{
+			return found.clone();
+		}
+		loop {
+			let message = self.read_message();
+			assert!(
+				message.get("id").is_none(),
+				"a reply nobody asked for while waiting for {state}: {message}"
+			);
+			let found = matches(&message);
+			self.notifications.push(message.clone());
+			if found {
+				return message;
+			}
+		}
+	}
+
+	/// Reads one frame from stdout.
+	fn read_message(&mut self) -> Value {
 		let mut chunk = [0; 4096];
 		loop {
 			if let Some(payload) = self.decoder.next_frame().expect("replies are valid frames") {
@@ -196,7 +244,7 @@ impl Live {
 		}
 	}
 
-	/// Closes stdin, checks that nothing but the replies was written to stdout, and returns the
+	/// Closes stdin, checks that no reply nobody asked for was written to stdout, and returns the
 	/// exit code and stderr.
 	fn finish(self) -> (Option<i32>, String) {
 		let Live {
@@ -204,6 +252,7 @@ impl Live {
 			stdin,
 			mut stdout,
 			mut decoder,
+			notifications,
 			stderr,
 		} = self;
 		drop(stdin);
@@ -212,8 +261,17 @@ impl Live {
 			.read_to_end(&mut rest)
 			.expect("read stdout to the end");
 		decoder.push(&rest);
-		assert_eq!(decoder.next_frame(), Ok(None), "a reply nobody asked for");
+		let mut trailing = Vec::new();
+		while let Some(payload) = decoder.next_frame().expect("stdout holds whole frames") {
+			trailing.push(serde_json::from_slice::<Value>(&payload).expect("frames are JSON"));
+		}
 		assert_eq!(decoder.pending_bytes(), 0, "stdout holds a partial frame");
+		for message in notifications.iter().chain(&trailing) {
+			assert!(
+				message.get("id").is_none(),
+				"a reply nobody asked for: {message}"
+			);
+		}
 		let status = child.wait().expect("wait for nyala-runtime");
 		(status.code(), stderr.join().unwrap())
 	}
@@ -406,6 +464,16 @@ fn result(message: &Value) -> &Value {
 	message
 		.get("result")
 		.unwrap_or_else(|| panic!("expected a result: {message}"))
+}
+
+/// The states `messages` reports for `execution`, in order.
+fn states<'a>(messages: &'a [Value], execution: &Value) -> Vec<&'a str> {
+	messages
+		.iter()
+		.filter(|message| message.get("id").is_none())
+		.filter(|message| message["params"]["executionId"] == *execution)
+		.map(|message| message["params"]["state"].as_str().expect("a state"))
+		.collect()
 }
 
 #[test]
@@ -754,23 +822,25 @@ fn a_query_is_executed_paged_and_released_over_the_pipe() {
 		"the primary key comes first: {described}"
 	);
 
-	// A statement with columns: completed immediately, with one result handle.
+	// A statement with columns: the reply is `queued`, then `running` and `completed` arrive as
+	// notifications (N-108).
 	let executed = result(&runtime.call(&request(
 		"rq_5",
 		"query.execute",
 		params("SELECT id, name FROM customers ORDER BY id", "statement"),
 	)))
 	.clone();
-	assert_eq!(executed["state"], "completed", "{executed}");
+	assert_eq!(executed["state"], "queued", "{executed}");
+	assert_eq!(executed["sequence"], 1);
 	let execution_id = executed["executionId"].clone();
-	let state = result(&runtime.call(&request(
-		"rq_6",
-		"query.getState",
-		json!({"executionId": execution_id}),
-	)))
-	.clone();
-	assert_eq!(state["state"], "completed");
-	let result_id = state["resultIds"][0].clone();
+	let completed = runtime.wait_for_state(&execution_id, "completed");
+	let result_id = completed["params"]["resultIds"][0].clone();
+	assert_eq!(
+		states(&runtime.notifications, &execution_id),
+		["running", "completed"],
+		"the state machine of one execution: {:?}",
+		runtime.notifications
+	);
 
 	let page = result(&runtime.call(&request(
 		"rq_7",
@@ -827,24 +897,29 @@ fn a_query_is_executed_paged_and_released_over_the_pipe() {
 	assert_eq!(failed_state["state"], "failed", "{failed_state}");
 	assert_eq!(failed_state["error"]["data"]["kind"], "SQL_SYNTAX");
 
-	// A write on a read-only session is refused by SQLite's mode, not by reading the SQL.
-	let denied = runtime.call(&request(
+	// A write on a read-only session is refused by SQLite's mode, not by reading the SQL. The
+	// statement compiles, so the reply is `queued` and the refusal is the execution's `failed`
+	// state (README §5), carrying `READ_ONLY_DENIED`.
+	let denied = result(&runtime.call(&request(
 		"rq_13",
 		"query.execute",
 		params("INSERT INTO customers(name) VALUES ('Turing')", "statement"),
-	));
-	assert_eq!(kind(&denied), "READ_ONLY_DENIED", "{denied}");
+	)))
+	.clone();
+	assert_eq!(denied["state"], "queued", "{denied}");
+	let failed = runtime.wait_for_state(&denied["executionId"], "failed");
+	assert_eq!(
+		failed["params"]["error"]["data"]["kind"], "READ_ONLY_DENIED",
+		"{failed}"
+	);
 	let after = result(&runtime.call(&request(
 		"rq_14",
 		"query.execute",
 		params("SELECT count(*) FROM customers", "statement"),
 	)))
 	.clone();
-	let count_id = result(&runtime.call(&request(
-		"rq_15",
-		"query.getState",
-		json!({"executionId": after["executionId"]}),
-	)))["resultIds"][0]
+	let count_id = runtime.wait_for_state(&after["executionId"], "completed")["params"]
+		["resultIds"][0]
 		.clone();
 	let count = result(&runtime.call(&request(
 		"rq_16",
@@ -893,12 +968,8 @@ fn a_page_too_large_for_a_frame_is_paged_instead_of_ending_the_stream() {
 		}),
 	)))
 	.clone();
-	let result_id = result(&runtime.call(&request(
-		"rq_4",
-		"query.getState",
-		json!({"executionId": executed["executionId"]}),
-	)))
-	.clone()["resultIds"][0]
+	let result_id = runtime.wait_for_state(&executed["executionId"], "completed")["params"]
+		["resultIds"][0]
 		.clone();
 
 	// 2500 rows of ~4 KiB each are ~10 MiB of JSON: more than one frame. Asking for all of them at

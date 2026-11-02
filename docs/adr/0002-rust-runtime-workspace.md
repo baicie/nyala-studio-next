@@ -21,8 +21,9 @@ rust/
   Cargo.lock          # 二进制 crate，锁文件入库
   rustfmt.toml        # hard_tabs，与 cli/rustfmt.toml、.editorconfig 一致
   crates/nyala-runtime/
-    src/{framing,protocol,error,server,connection,sqlite,metadata,query,value}.rs、lib.rs、main.rs
-    tests/{conformance,stdio}.rs、tests/support/mod.rs
+    src/{framing,protocol,error,server,connection,sqlite,metadata,query,value,events,worker}.rs、lib.rs、main.rs
+    src/{query,worker}/tests.rs
+    tests/{conformance,stdio,cancellation}.rs、tests/support/mod.rs
 ```
 
 路径来自已有设计：[03-architecture-ownership](../nyala-governance/03-architecture-ownership.md) 的目录责任表把 `rust/crates/nyala-*` 列为 Runtime/Driver 的规划位置，[03-architecture](../nyala-kickoff/docs/03-architecture.md) 写的是 `rust/crates/{nyala-core,nyala-runtime,nyala-driver-sqlite,...}`，[16-upstream-trimming](../nyala-kickoff/docs/16-upstream-trimming.md) 把 `rust/*` 列为产品修改空间。
@@ -34,7 +35,7 @@ rust/
 ### 2. 依赖与运行时中立
 
 - 运行依赖：`serde_json`；N-104 起加入 `rusqlite`（`bundled`，见 §6），N-105/N-106 起再启用它的 `column_decltype`（结果列的声明类型）与 `hooks`（`progress_handler`，超时靠它结束运行中的语句）两个 feature。测试依赖只有 `regex`（测试里的 JSON Schema 子集求值器用它执行 `pattern`）；集成测试用运行依赖里的 `rusqlite` 生成临时数据库。
-- 不引入 Tokio：N-101/N-102/N-104 没有并发工作，阻塞式读循环足够。异步运行时随执行、取消与超时（N-106/N-108）引入，届时修订本 ADR。
+- 不引入 Tokio（N-108 修订）：执行、取消与超时确实需要并发，但需要的只是“一个连接一个线程”，不需要异步运行时。每个 Session 把 `Database` 移进一个 `Worker` 线程（rusqlite 的 `Connection` 是 `Send` 不是 `Sync`），请求循环只保留 `sqlite3_interrupt` 的句柄；客户端字节、输入结束与 worker 报告走同一个 `mpsc` 通道（`events.rs`），所以请求循环仍是一条阻塞式循环（`Server::step`），却能在语句运行时收到并处理 `query.cancel`。stdin 由 `nyala-input` 线程读取，否则阻塞的 `read` 会把通知压到下一次请求。引入 Tokio 会带来多线程 reactor 与取消安全性的额外约束，换不到这里的任何能力。
 - 领域代码不依赖 Electron、Tauri 或具体流：`server::serve` 接受任意 `Read`/`Write`，`main.rs` 只把 stdin、stdout、stderr 交给它。
 - workspace lint：`unsafe_code = "forbid"`；clippy `print_stdout = "deny"`、`dbg_macro = "deny"`，防止日志混入协议流。日志写入注入的 diagnostics 流（生产为 stderr），且不含任何 payload 内容。
 
@@ -64,11 +65,11 @@ rust/
 | 无 `id` 的消息 | §2：通知无响应；v1 没有客户端到 Runtime 的通知 | 静默忽略 |
 | 读不出合法 `id` 的 payload（非法 JSON、非 object、id 不符合 pattern、帧错误） | JSON-RPC 2.0 用 `"id": null` | 回 `"id": null`。v1 `failure` 已通过 2026-10-30 勘误允许该值（`$defs/failureId`，见 [ADR 0001](0001-rpc-contract-v1.md)） |
 | `runtimeBuild` | §2 | crate 版本 `0.1.0-dev.0`，与样例一致 |
-| `runtime.health` 计数 | §4 | `status: "ok"`；`activeSessions` 是当前 open 的 Session 数（N-104 起）；`activeExecutions` 为 0（v1 在 `query.execute` 内跑到终态，回复构造时没有运行中的执行，样例会话在 `pendingResults: 1` 时也报 0）；`pendingResults` 是尚未 release 的结果句柄数（N-106 起，样例 rq_002 为 1） |
+| `runtime.health` 计数 | §4 | `status: "ok"`；`activeSessions` 是当前 open 的 Session 数（N-104 起）；`activeExecutions` 是仍在 queued / running / cancel_requested 的执行数（N-108 起；此前执行在 `query.execute` 内跑到终态，恒为 0）；`pendingResults` 是尚未 release 的结果句柄数（N-106 起，样例 rq_002 为 1） |
 | `connection.*` 的能力位 | §3：v1 能力位含 `sqlite`，方法目录未写每个方法对应哪个能力位 | 四个 `connection.*` 方法都要求协商出 `sqlite`；hello 前或未协商时回 `PROTOCOL_MISMATCH`，连接继续 |
 | 文件级失败的 error kind | 错误码表没有“文件不存在 / 不是 SQLite / 已损坏”；§8 冻结 v1，不能新增 kind | 相对路径、`:memory:`、`file:` URI、不存在、目录或非普通文件、0 字节文件、非 SQLite（`SQLITE_NOTADB`）、损坏（`SQLITE_CORRUPT`）→ `INVALID_PARAMS`。这扩展了表里“params 未通过方法 schema 校验”的含义，见后续项 6 |
 | 操作系统拒绝访问 | 同上 | 读文件被拒（`io::ErrorKind::PermissionDenied`）或 SQLite 回 `SQLITE_PERM` / `SQLITE_READONLY` → `PERMISSION_DENIED` |
-| 打开探测时库被锁 | 同上；`QUERY_TIMEOUT` 描述为“超过 deadlineMs 或驱动超时” | busy timeout（`OPEN_BUSY_TIMEOUT` = 2 s）到期仍拿不到锁（`SQLITE_BUSY` / `SQLITE_LOCKED`）→ `QUERY_TIMEOUT`。Runtime 一次只处理一个请求，这 2 s 也是其他请求最多被阻塞的时间 |
+| 打开探测时库被锁 | 同上；`QUERY_TIMEOUT` 描述为“超过 deadlineMs 或驱动超时” | busy timeout（`OPEN_BUSY_TIMEOUT` = 2 s）到期仍拿不到锁（`SQLITE_BUSY` / `SQLITE_LOCKED`）→ `QUERY_TIMEOUT`。打开在请求循环上同步进行，所以这 2 s 也是同一时刻其他 `connection.*` 请求最多被阻塞的时间（N-108 起 `query.execute`、`metadata.*` 在 Session worker 上运行，不再阻塞请求循环） |
 | 文件级错误的 `retryable` | 错误码表给出默认值 | 一律用表中默认值（以上三个 kind 都是 `false`），`tests/conformance.rs` 逐项比对 |
 | `safeDetail` 内容 | §7：不得含文件系统路径中的用户名 | 只写原因（如 `file does not exist`），不含路径，也不转发 SQLite 原文（rusqlite 会把路径拼进 `SQLITE_CANTOPEN` 的消息）。stderr 日志同样不含路径 |
 | `connection.test` 打不开库 | §4：结果是 `ok`、`serverVersion?`、`elapsedMs`；`ok:false` 没有原因字段 | 回与 `connection.open` 完全相同的错误响应；成功时 `ok` 恒为 `true`，v1 实现里不会出现 `ok:false`。`serverVersion` 是内置 SQLite 库版本 |
@@ -86,7 +87,7 @@ rust/
 | Session 上限 | §7 只列帧/行/结果限额 | 最多 32 个 open Session（`MAX_OPEN_SESSIONS`），第 33 个 `open` 回 `RESOURCE_LIMIT`，连接继续可用；§1 的“回复后终止进程”只适用于超限帧 |
 | `connection.listSessions` | §4：`state` 取 `open` / `closed` / `lost` | 列出 open 与保留的 closed Session，按 generation 排序。v1 实现没有断线重连，不会出现 `lost` |
 | `profileId` | §4：`open` 的可选参数，结果不回传 | 按 schema 校验（非空字符串），不保存 |
-| `capabilities` | §4 | `driver: "sqlite"`；`readOnly` 为实际打开模式；`cancel: "cooperative"`（N-106 起超时经 SQLite progress callback 结束运行中的语句；`query.cancel` 仍到不了运行中的执行，见下）；`supportsTransactions: false`（v1 没有 `transaction.*`）；`supportsMetadata: true`（N-105 起 `metadata.*` 已实现）。不按一致性样例里的值声明尚未实现的能力 |
+| `capabilities` | §4 | `driver: "sqlite"`；`readOnly` 为实际打开模式；`cancel: "cooperative"`（超时经 SQLite progress callback 结束运行中的语句；N-108 起 `query.cancel` 经 `sqlite3_interrupt` 中断运行中的语句，两者都是协作式的：SQLite 走完当前 VM 步才放弃）；`supportsTransactions: false`（v1 没有 `transaction.*`）；`supportsMetadata: true`（N-105 起 `metadata.*` 已实现）。不按一致性样例里的值声明尚未实现的能力 |
 | Session 生命周期 | — | `Server` 拥有 Session 注册表；进程退出或 `Server` 被丢弃时关闭全部连接 |
 
 ### 5. 工具链
@@ -110,7 +111,7 @@ rust/
 - **一次拆出 `nyala-protocol` / `nyala-core` / `nyala-runtime`**：现在只有一个使用方，拆分只增加样板；设计包也建议先单 crate。
 - **serde derive DTO**：手写类型与合同并存即两个事实源，违背 README §8。N-110 生成后仍不采用：运行时的 envelope 校验是显式代码（`protocol.rs`），再生成一套 serde DTO 会引入第二套校验语义；生成范围只覆盖“作为数据使用”的合同事实。
 - **从 schema 生成完整的 TS 运行时校验器**：需要生成器实现 schema 的求值语义，体积与风险都超过手写 `isNyalaRuntimeHelloResult` 等四个检查函数，且这些检查覆盖的仅是客户端消费的 hello/health/restarted 三个结果。
-- **Tokio + 异步 stdio**：此阶段没有并发需求，留到执行与取消落地时再引入。
+- **Tokio + 异步 stdio**：N-108 评估后仍不采用。并发单位是“一个连接一个线程”，`mpsc` 加阻塞式请求循环已经足够；异步运行时会让 SQLite 的阻塞调用、取消与超时都需要另一层适配，且多线程 reactor 的取消安全性不是这里要解决的问题。
 - **rusqlite 0.41.x**：需要 Rust 1.89 与 edition 2024，超出 workspace MSRV。
 - **系统 SQLite（不用 `bundled`）**：各平台版本与编译选项不同，Windows 没有现成的系统库，行为无法统一测试。
 - **为文件级失败新增 error kind（如 `DATABASE_UNAVAILABLE`）**：§8 冻结 v1，只允许新增可选字段与能力位，合同也没定义客户端遇到未知 kind 时怎么处理；N-104 用现有 kind，缺口记为后续项 6。
@@ -130,11 +131,11 @@ rust/
 2. **合同**：为“重复 hello”“hello 前调用其他方法”写明错误 kind，确认或替换上表的选择。
 3. **CI**：Rust job 已随本 PR 加入，只覆盖 `ubuntu-latest` + stable。Windows / macOS runner 与 MSRV 1.82 构建仍未覆盖。
 4. **N-103**：Electron Main Supervisor 按上表的退出码区分“流错误”与“版本不匹配”（后者不得重启同一版本）。
-5. **N-106 起**：请求 id 复用检测、并发执行、取消竞态；引入异步运行时时修订本 ADR。
+5. ~~**N-106 起**：取消竞态；引入异步运行时时修订本 ADR~~ 已完成（N-108）：执行移到 per-session worker 线程，取消、超时与会话关闭经 stop 标志与 `sqlite3_interrupt` 到达运行中的语句；异步运行时的取舍见 §2。仍待办：请求 id 复用检测（同一连接内重复的 `id` 目前各自独立作答），以及同一 Session 内的多执行并发——一个连接一次只跑一个语句，后来的 `query.execute` 在 worker 的命令队列里排队。
 6. **合同**：错误码表缺文件级 kind。`INVALID_PARAMS` 现在也用于“文件不存在 / 不是 SQLite / 已损坏”，`QUERY_TIMEOUT` 也用于打开时的锁等待，都超出了表中描述。`DATABASE_UNAVAILABLE` 一类的新 kind 是后续 minor 修订的候选，需要单独的合同 PR 与 ADR，并先定义客户端遇到未知 kind 的降级规则。
 7. **路径安全的已知缺口**：Windows 上映射到网络位置的盘符（`net use Z: \\server\share`）和指向共享的符号链接或 junction，规范化结果可能仍是盘符形式，无法从路径判定为网络位置；`SQLITE_OPEN_NOFOLLOW` 只在 Unix 上生效，Windows 上检查与打开之间存在替换为链接的窗口。需要时可改为打开句柄后用 `GetFinalPathNameByHandle` / `GetFileInformationByHandle` 核对。
 8. ~~**N-109**：`readOnly: true` 只依赖 `SQLITE_OPEN_READONLY`，不检查 SQL 文本~~ 已完成（2026-11-02）：DML、DDL（`CREATE` / `DROP` / `ALTER`）与带副作用的语句都由 SQLite 的只读模式拒绝，回 `READ_ONLY_DENIED`，测试同时证明数据与 schema 未被修改、同一会话随后仍可读（`query::tests::a_read_only_session_lets_sqlite_refuse_every_kind_of_write`）。
-9. ~~**N-105 / N-108**：`supportsMetadata` 与 `cancel` 分别在 metadata 与中断实现后改为真实值~~ 已完成（N-105/N-106）：`supportsMetadata: true`，`cancel: "cooperative"`。`query.cancel` 本身仍无法中断运行中的执行——v1 逐请求处理，收到 `query.cancel` 时语句已经结束，所以它回 `accepted: false` 与终态；真正的中断（跨线程取消）随 N-108 的异步执行落地。
+9. ~~**N-105 / N-108**：`supportsMetadata` 与 `cancel` 分别在 metadata 与中断实现后改为真实值~~ 已完成（N-105/N-106/N-108）：`supportsMetadata: true`，`cancel: "cooperative"`；`query.cancel` 经 `sqlite3_interrupt` 中断运行中的语句，`cancel_requested` 与 `cancelled` 分别是独立状态与序号，`tests/cancellation.rs` 在真实进程上验证。
 10. **N-106 留下的合同缺口**：`query.execute` 的结果没有“影响行数”字段，DML/DDL 执行成功时只能回 `{executionId, state: "completed", sequence}` 而无法告知写了几行；客户端需要另查。N-110 只做生成，不改变合同；留给下一次 minor 修订评估。
 11. **N-107**：结果在内存中整段保留（上限 `MAX_CONCURRENT_EXECUTIONS` 个执行、每个 `maxInitialRows` 行与 16 MiB），`result.fetchPage` 只做前向切片；真正的流式游标与 TTL 到期回收的完整验收属 N-107。当前 TTL（`maxResultTtlSecs`）在每次 fetch/execute 时清理过期句柄。
 12. **约束违例没有专用 kind**：v1 错误码表的 19 个 kind 里没有“约束违例”，而 `v1/` 冻结（README §8）。`UNIQUE` / `NOT NULL` / `CHECK` 失败与整数溢出一并报 `SQL_SYNTAX`，并回填 `data.sqlState`（SQLite 扩展结果码：`1555`、`2067`、`1299` 等，语法错误是 `1`），客户端据此区分“文本编译不了”与“数据被拒绝”；`sqlState` 字段 schema 与 README §7 本来就有，样例 rq_009 记录了 `"1"`。`CONSTRAINT_VIOLATION` 一类的新 kind 属后续 minor，需要单独合同 PR 与 ADR。（2026-11-02 决策。）
@@ -211,6 +212,33 @@ git diff --check                                                 # PASS
 - 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
 - **已合入**：PR #37，squash `b9f00ff4326`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41370054066`）。
 
+### N-108（2026-11-02）
+
+环境同上（Windows 11，cargo 1.96.0；Node v24.16.0）。
+
+```bash
+cd rust
+cargo fmt --all --check                                          # PASS
+cargo clippy --workspace --all-targets --locked -- -D warnings   # PASS
+cargo test --workspace --locked                                  # PASS：单元 110 + cancellation 6 + conformance 8 + contract 4 + stdio 19
+cd ..
+npm run nyala:check-rpc-generated                                # PASS（合同未改，2 files up to date）
+git diff --check                                                 # PASS
+```
+
+- **线程划分**：每个 Session 的 `Database` 移进一个 `nyala-session-<id>` worker 线程（`src/worker.rs`）；请求循环保留 `sqlite3_interrupt` 句柄与 `Executions` 注册表（`src/query.rs`），从不持有连接。`events.rs` 定义一个 `mpsc` 通道承载三类输入：客户端字节、输入结束、worker 报告，所以 `Server::step` 是一条单序阻塞循环，通知在语句运行期间就能写出，`query.cancel` 也能在语句运行期间被处理。stdin 由 `nyala-input` 线程读取。
+- **执行与回复分离**：`query.execute` 校验参数、分配 id、把 job 交给 worker，回复要等 worker 报告“第一条语句已 prepare”才写出（`queued`，`sequence: 1`）。SQLite 编译不了的语句由 worker 报告失败，回复是错误 envelope（rq_009），执行以 `failed` 留在注册表里供 `query.getState` 补偿读。
+- **取消**：`query.cancel` 立即回 `{"accepted": true, "state": "cancel_requested"}` 并写 `cancel_requested` 通知（独立序号），同时设置该执行的 stop 标志并调用 `sqlite3_interrupt`。注意 `CancelRequested ≠ Cancelled`：语句可能已经过了最后一个可中断点，终态是 `cancelled` 还是 `completed` 由 worker 报告。用户取消的 `cancelled` 不带 `error`（rq_012）。
+- **超时**：`progress_handler`（每 `PROGRESS_OPS` = 1000 步）检查 stop 标志与 deadline；超时写入 `Stop::TimedOut`，终态 `cancelled` + `QUERY_TIMEOUT`。每个执行有自己的标志，所以超时与会话关闭同时发生时原因不会串。
+- **worker 死亡**：`catch_unwind` 捕获 panic 后报告 `WorkerGone`；运行过语句的执行以 `unknown` 结束（是否已提交无法证明），没开始的以 `cancelled` 结束；worker 死前未 prepare 的 `query.execute` 与排队中的 `metadata.*` 都会收到 `INTERNAL` 失败回复，不会悬空。
+- **会话关闭**：`connection.close` 先对未终态的执行发 `cancel_requested`、中断、再等 worker 关闭连接；关闭后的注册表进入 `closing` 保留区，终态通知与 `query.getState` 仍可用。数据库关闭失败时会话保持 open 并回 `INTERNAL`，之后的语句不受残留 stop 影响。
+- **`metadata.*` 移到 worker**：metadata 与语句共用同一条连接，一次只能用一个；把它排队到 worker 后，请求循环不会因为一个排队中的 metadata 调用而卡住、进而让 `query.cancel` 无法到达运行中的语句。
+- **结果上限**：`maxConcurrentExecutions` 仍是 4（执行 + 未释放结果），脚本额外收到“本会话还能放几个结果”，超出回 `RESOURCE_LIMIT` 而不是静默丢弃最旧句柄。
+- **测试**：`tests/cancellation.rs` 在真实子进程上验证取消打断运行中的语句、迟到的取消回 `completed`、超时回 `QUERY_TIMEOUT`、关闭会话后的终态与 `getState`、取消先于执行到达、排队的执行按序运行；`src/{query,worker,server,connection}/...` 的单元测试覆盖注册表状态机、worker 的 SQL 行为与超时/中断、服务端的延迟回复与元数据排队；`tests/conformance.rs` 与 `tests/stdio.rs` 改为按通知跟踪状态。
+- **一致性说明**：`conformance.ndjson` rq_010 的 `SELECT count(*)` 只有两行，取消到达前语句通常已结束，本构建在重放里报 `completed`；README §5 允许 `cancel_requested → completed`，真实中断由 `tests/cancellation.rs` 确定性证明。rq_011 / rq_012 的取消样例断言接受 `cancelled` 或 `completed`，并核对其余字段。
+- **未做**：N-107 流式游标（结果仍在内存里整段保留）；同一 Session 的多执行并发（一个连接一次一个语句）；请求 id 复用检测。
+- 未验证：MSRV 1.82 构建、macOS；Linux 以 CI `Rust runtime` job 为准。
+
 ### N-110（2026-11-02）
 
 环境同上（Windows 11，cargo 1.96.0；Node v24.16.0）。
@@ -237,6 +265,8 @@ git diff --check                                                 # PASS
 - 未验证：Node 24.18.0 指定版本（本机 24.16.0）、macOS、MSRV 1.82。
 
 ## 修订记录
+
+- **2026-11-02 · N-108 异步执行与取消**：§1 模块列表加入 `events.rs`、`worker.rs` 与 `tests/cancellation.rs`；§2 的“不引入 Tokio”改写为实际的 per-session 线程模型；§4 更新 `runtime.health` 计数、打开时的阻塞范围与 `capabilities.cancel`；后续项 5、9 关闭；证据。`nyala/rpc/**` 未改。
 
 - **2026-11-02 · N-110 合同生成声明**：§3 的“不手写 DTO”改写为生成范围与绊线说明（生成器、两侧产物、`error.rs` 从 `contract::` 取 kind/code/retryable、两层检测）；“未采纳的替代方案”改写 serde DTO 一条并新增“不生成运行时校验器”；后续项 10 注明 N-110 不改合同；证据。`nyala/rpc/**` 未改。实测发现合并后的 PR #19（`@vscode/markdown-editor` 升级）把修改的上游跟踪文件从 55 增加到 57（`extensions/markdown-language-features/package.json` 与 `package-lock.json`），而 `upstream-base.json` 仍停在 #20 时的 `61`；本 PR 按现有口径把它更正为 `63`（57 + 6）。`src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts` 是新增的非测试 Nyala 源文件，合并后新增数由 6 变为 7、`patchCount` 由 `63` 变为 `64`（合并后实测 `64`，`upstream-base.json` 已更新）；生成器、`rust/` 与文档不计入。已随 PR #39（squash `113a170be69`）合入 `nyala/main`，四项必需检查 PASS（run `41375212220`）。
 
