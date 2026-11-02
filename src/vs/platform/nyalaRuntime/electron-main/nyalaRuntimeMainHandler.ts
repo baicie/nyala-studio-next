@@ -15,6 +15,7 @@ import { ILoggerMainService } from '../../log/electron-main/loggerService.js';
 import { IProductService } from '../../product/common/productService.js';
 import { LoadReason } from '../../window/electron-main/window.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
+import { INyalaRuntimeSupervisors, NyalaRuntimeChannel } from './nyalaRuntimeChannel.js';
 import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, stageNyalaRuntimeExecutable } from '../node/nyalaRuntimeProcess.js';
 import { NyalaRuntimeSupervisor, NyalaRuntimeWindowSupervisors } from '../node/nyalaRuntimeSupervisor.js';
 
@@ -30,7 +31,7 @@ import { NyalaRuntimeSupervisor, NyalaRuntimeWindowSupervisors } from '../node/n
  * would kill the processes before they can exit in order. It disposes itself once its shutdown join
  * has settled.
  */
-export class NyalaRuntimeMainHandler extends Disposable {
+export class NyalaRuntimeMainHandler extends Disposable implements INyalaRuntimeSupervisors {
 
 	private readonly logger: ILogger;
 	private readonly supervisors: NyalaRuntimeWindowSupervisors;
@@ -57,6 +58,16 @@ export class NyalaRuntimeMainHandler extends Disposable {
 		this._register(lifecycleMainService.onWillShutdown(e => {
 			e.join('nyalaRuntime', this.supervisors.shutdown().finally(() => this.dispose()));
 		}));
+	}
+
+	/** The supervisor of `windowId`, for the renderer bridge. */
+	get(windowId: number): NyalaRuntimeSupervisor | undefined {
+		return this.supervisors.get(windowId);
+	}
+
+	/** The channel the renderer talks to (`nyalaRuntimeChannel.ts`). */
+	createChannel(): NyalaRuntimeChannel {
+		return NyalaRuntimeChannel.withLogger(this, this.logger);
 	}
 
 	private createSupervisor(windowId: number): NyalaRuntimeSupervisor {

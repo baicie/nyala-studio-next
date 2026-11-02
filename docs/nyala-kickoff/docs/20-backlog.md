@@ -46,7 +46,7 @@
 
 | ID | Priority | Depends | 任务 | 验收/证据 |
 |---|---|---|---|---|
-| N-201 | P0 | N-105,N-005 | Connections Tree | 加载/错误/Refresh/离线 |
+| N-201 | P0 | N-105,N-005 | Connections Tree | 加载/错误/Refresh/离线 · **首轮交付**（`feat/p2-connections-foundation`，PR B）：受控 IPC 桥（六命令白名单、Main 侧参数校验、按窗口绑定）、Profile/Session/Generation 身份、`WorkbenchAsyncDataTree` 的 Connections 视图（连接/断开/刷新/展开表列/`lost` 状态）。未做：profile 删除与编辑、catalog 分页加载更多、桌面原生 E2E；见 [ADR 0006](../../adr/0006-p2-workbench-runtime-bridge.md) |
 | N-202 | P0 | N-106,N-005 | Query EditorInput + Context | 两 Tab 不串 profile/session |
 | N-203 | P0 | N-202 | Commands & Keybindings | 当前语句/选区、键位冲突测试 |
 | N-204 | P0 | N-107 | Basic Result Panel | NULL/类型/截断/耗时/错误 |

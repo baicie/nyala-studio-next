@@ -120,6 +120,7 @@ import { IExtensionsProfileScannerService } from '../../platform/extensionManage
 import { IExtensionsScannerService } from '../../platform/extensionManagement/common/extensionsScannerService.js';
 import { ExtensionsScannerService } from '../../platform/extensionManagement/node/extensionsScannerService.js';
 import { UserDataProfilesHandler } from '../../platform/userDataProfile/electron-main/userDataProfilesHandler.js';
+import { NYALA_RUNTIME_CHANNEL } from '../../platform/nyalaRuntime/common/nyalaRuntimeIpc.js';
 import { NyalaRuntimeMainHandler } from '../../platform/nyalaRuntime/electron-main/nyalaRuntimeMainHandler.js';
 import { ProfileStorageChangesListenerChannel } from '../../platform/userDataProfile/electron-main/userDataProfileStorageIpc.js';
 import { Promises, RunOnceScheduler, runWhenGlobalIdle } from '../../base/common/async.js';
@@ -781,11 +782,11 @@ export class CodeApplication extends Disposable {
 		this._register(appInstantiationService.createInstance(UserDataProfilesHandler));
 
 		// Nyala runtime, one process per window. Not registered: it self-disposes after its lifecycle join.
-		appInstantiationService.createInstance(NyalaRuntimeMainHandler);
+		const nyalaRuntimeMainHandler = appInstantiationService.createInstance(NyalaRuntimeMainHandler);
 
 		// Init Channels
 		mark('code/willInitChannels');
-		appInstantiationService.invokeFunction(accessor => this.initChannels(accessor, mainProcessElectronServer, sharedProcessClient));
+		appInstantiationService.invokeFunction(accessor => this.initChannels(accessor, mainProcessElectronServer, sharedProcessClient, nyalaRuntimeMainHandler));
 		mark('code/didInitChannels');
 
 		// Setup Protocol URL Handlers
@@ -1377,7 +1378,7 @@ export class CodeApplication extends Disposable {
 		return this.mainInstantiationService.createChild(services);
 	}
 
-	private initChannels(accessor: ServicesAccessor, mainProcessElectronServer: ElectronIPCServer, sharedProcessClient: Promise<MessagePortClient>): void {
+	private initChannels(accessor: ServicesAccessor, mainProcessElectronServer: ElectronIPCServer, sharedProcessClient: Promise<MessagePortClient>, nyalaRuntimeMainHandler: NyalaRuntimeMainHandler): void {
 
 		// Channels registered to node.js are exposed to second instances
 		// launching because that is the only way the second instance
@@ -1385,6 +1386,10 @@ export class CodeApplication extends Disposable {
 		// across apps until `requestSingleInstance` APIs are adopted.
 
 		const disposables = this._register(new DisposableStore());
+
+		// Nyala runtime bridge: the renderer reaches only its own window's runtime process
+		// (`docs/adr/0006-p2-workbench-runtime-bridge.md`).
+		mainProcessElectronServer.registerChannel(NYALA_RUNTIME_CHANNEL, nyalaRuntimeMainHandler.createChannel());
 
 		const launchChannel = ProxyChannel.fromService(accessor.get(ILaunchMainService), disposables, { disableMarshalling: true });
 		this.mainProcessNodeIpcServer.registerChannel('launch', launchChannel);
