@@ -325,8 +325,11 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 	let mut issued: HashMap<String, (Value, Value)> = HashMap::new();
 	// Sample executionId/resultId to the one this runtime issued, for the same replay reason.
 	let mut issued_ids: HashMap<String, Value> = HashMap::new();
-	// The last `sequence` each execution reported as a notification, so `query.getState` can be
-	// checked against it regardless of how the cancel raced with the statement.
+	// The states each execution reported, in order across the whole replay, and the `sequence` it
+	// last carried. A statement may finish while `query.execute` is answered, so which reply carries
+	// a notification depends on the machine; the cancel and `query.getState` assertions read this
+	// instead of one reply's messages.
+	let mut reported_states: HashMap<String, Vec<&'static str>> = HashMap::new();
 	let mut last_sequence: HashMap<String, u64> = HashMap::new();
 	let mut server = Server::new();
 	let mut answered_count = 0;
@@ -381,11 +384,25 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 		let produced = notifications(&messages);
 		for notification in &produced {
 			assert_notification_conforms(&schema, notification);
-			if let (Some(execution), Some(sequence)) = (
-				notification["params"]["executionId"].as_str(),
-				notification["params"]["sequence"].as_u64(),
-			) {
+			let params = &notification["params"];
+			let Some(execution) = params["executionId"].as_str() else {
+				continue;
+			};
+			if let Some(sequence) = params["sequence"].as_u64() {
 				last_sequence.insert(execution.to_owned(), sequence);
+			}
+			if let Some(state) = params["state"].as_str() {
+				let all = reported_states.entry(execution.to_owned()).or_default();
+				all.push(match state {
+					"queued" => "queued",
+					"running" => "running",
+					"completed" => "completed",
+					"failed" => "failed",
+					"cancelled" => "cancelled",
+					"cancel_requested" => "cancel_requested",
+					"unknown" => "unknown",
+					other => panic!("a state the contract does not define: {other}"),
+				});
 			}
 		}
 		let expected = expected_response(&samples, &request);
@@ -551,32 +568,35 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 					.get("result")
 					.unwrap_or_else(|| panic!("{method}: {message}"));
 				// rq_011: the sample cancels an execution while it runs. Whether the interrupt still
-				// finds the statement depends on the machine: the reply reports what the registry held
-				// when the cancel arrived — `cancel_requested` when the worker had reported `running`,
-				// the terminal state when it had already reported the outcome, which §5 answers with
+				// finds the statement depends on the machine: the reply reports the state the client
+				// last heard about — `cancel_requested` when the execution was still running, the
+				// terminal state once the worker had reported the outcome, which §5 answers with
 				// `accepted: false`. Both are honest; the real interruption is proven deterministically
 				// in `tests/cancellation.rs`.
 				let execution = request["params"]["executionId"].as_str().unwrap();
-				// Every state the execution reported, including `running` from an earlier reply: the
-				// cancel's own notification is the last one when it was accepted.
-				let reported = states(&messages, execution);
+				let reported = reported_states.get(execution).cloned().unwrap_or_default();
 				match result["accepted"].as_bool() {
 					Some(true) => {
 						assert_eq!(
 							result["state"], "cancel_requested",
 							"query.cancel: {message}"
 						);
-						assert_eq!(reported[0], "cancel_requested", "{messages:?}");
-						// The sample's statement was slow enough for the interrupt to win, so it
-						// recorded `cancelled`. `SELECT count(*) FROM customers` over the fixture's two
-						// rows is already past its last interruptible step when the cancel arrives, and
-						// §5 allows `cancel_requested` to end as `completed`.
+						// The cancel is reported after the state that preceded it, and §5 allows it to
+						// end as `cancelled` or, when the statement was already past its last
+						// interruptible step, as `completed`.
+						let position = reported
+							.iter()
+							.rposition(|state| *state == "cancel_requested")
+							.expect("the cancel was accepted, so it reported cancel_requested");
+						let after: Vec<&str> = reported[position..].to_vec();
 						assert!(
 							matches!(
-								reported.get(1).map(String::as_str),
-								Some("cancelled" | "completed")
+								after.as_slice(),
+								["cancel_requested"]
+									| ["cancel_requested", "cancelled"]
+									| ["cancel_requested", "completed"]
 							),
-							"cancel_requested ends as cancelled or completed: {messages:?}"
+							"cancel_requested ends as cancelled or completed: {after:?}"
 						);
 					}
 					Some(false) => {
@@ -585,9 +605,9 @@ fn every_sample_request_gets_exactly_one_conforming_reply() {
 							"a refused cancel reports the terminal state: {message}"
 						);
 						assert_eq!(
-							reported.last().map(String::as_str),
+							reported.last().copied(),
 							result["state"].as_str(),
-							"the reply repeats a state the worker reported: {messages:?}"
+							"the reply repeats the state the client was last told about: {reported:?}"
 						);
 					}
 					None => panic!("query.cancel accepted: {message}"),
