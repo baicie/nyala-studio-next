@@ -233,11 +233,12 @@ git diff --check                                                 # PASS
 - **两侧的编译期/测试期绊线**：`error.rs` 的 `match` 引用 `contract::<KIND>`，合同增删 kind 不重新生成即编译失败；`protocol.rs` 的 `V1_REQUEST_METHODS` 引用生成的目录。`tests/contract.rs` 与 `nyalaRuntimeContract.test.ts` 各自重读合同文件比对生成值，覆盖“合同改了但生成器没跑”。
 - **CI**：`Product baseline` job 在 `nyala:validate-rpc` 之后运行 `npm run nyala:check-rpc-generated`（比较 CRLF 归一化后的内容，Windows 检出不会误报）；`Unit tests (node)` 的文件列表加入 `nyalaRuntimeContract.test.ts`。`Rust runtime` job 不加生成步骤——它没有 `setup-node`，而该检查已在 `Product baseline` 覆盖两个文件。
 - **未做**：从 schema 生成 TS 运行时校验器（见“未采纳的替代方案”）；`rust/crates/nyala-runtime/src/server.rs` 的方法分发仍用字符串匹配，只受 `tests/conformance.rs` 的方法覆盖检查约束。
-- 未验证：Node 24.18.0 指定版本（本机 24.16.0）、Linux 四项必需检查、macOS、MSRV 1.82。
+- **已合入**：PR #39，squash `113a170be69`（2026-11-02）；四项必需检查 `Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 均 PASS（run `41375212220`）。
+- 未验证：Node 24.18.0 指定版本（本机 24.16.0）、macOS、MSRV 1.82。
 
 ## 修订记录
 
-- **2026-11-02 · N-110 合同生成声明**：§3 的“不手写 DTO”改写为生成范围与绊线说明（生成器、两侧产物、`error.rs` 从 `contract::` 取 kind/code/retryable、两层检测）；“未采纳的替代方案”改写 serde DTO 一条并新增“不生成运行时校验器”；后续项 10 注明 N-110 不改合同；证据。`nyala/rpc/**` 未改。实测发现合并后的 PR #19（`@vscode/markdown-editor` 升级）把修改的上游跟踪文件从 55 增加到 57（`extensions/markdown-language-features/package.json` 与 `package-lock.json`），而 `upstream-base.json` 仍停在 #20 时的 `61`；本 PR 按现有口径把它更正为 `63`（57 + 6）。`src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts` 是新增的非测试 Nyala 源文件，合并后新增数由 6 变为 7、`patchCount` 由 `63` 变为 `64`；生成器、`rust/` 与文档不计入。
+- **2026-11-02 · N-110 合同生成声明**：§3 的“不手写 DTO”改写为生成范围与绊线说明（生成器、两侧产物、`error.rs` 从 `contract::` 取 kind/code/retryable、两层检测）；“未采纳的替代方案”改写 serde DTO 一条并新增“不生成运行时校验器”；后续项 10 注明 N-110 不改合同；证据。`nyala/rpc/**` 未改。实测发现合并后的 PR #19（`@vscode/markdown-editor` 升级）把修改的上游跟踪文件从 55 增加到 57（`extensions/markdown-language-features/package.json` 与 `package-lock.json`），而 `upstream-base.json` 仍停在 #20 时的 `61`；本 PR 按现有口径把它更正为 `63`（57 + 6）。`src/vs/platform/nyalaRuntime/common/nyalaRuntimeContract.generated.ts` 是新增的非测试 Nyala 源文件，合并后新增数由 6 变为 7、`patchCount` 由 `63` 变为 `64`（合并后实测 `64`，`upstream-base.json` 已更新）；生成器、`rust/` 与文档不计入。已随 PR #39（squash `113a170be69`）合入 `nyala/main`，四项必需检查 PASS（run `41375212220`）。
 
 - **2026-11-02 · N-105 metadata + N-106 查询执行 + N-109 只读强制**：新增 `metadata.rs`、`query.rs`、`value.rs` 与 §4 中 `runtime.health` 计数、`capabilities`、`readOnly` 三行的实际值；header 与 §2 的依赖说明加入 `column_decltype`/`hooks` 两个 rusqlite feature；后续项 8–13；证据。`nyala/rpc/**` 未改（合同保持 15 methods / 19 kinds / 36 definitions）。已随 PR #37（squash `b9f00ff4326`）合入 `nyala/main`。
 
