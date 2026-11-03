@@ -49,7 +49,7 @@ Renderer 只能发 `NyalaRuntimeCommand` 里的命令：`getRuntimeState`、`con
 
 | 字段 | 创建者 | 作用域 | 过期条件 |
 |---|---|---|---|
-| `profileId` | Workbench 服务（`p_<n>` 或由路径派生的稳定 id） | 窗口 + 用户存储；不含 session | 用户删除 profile |
+| `profileId` | Workbench 服务（`p_<uuid>`，与路径无关） | 窗口 + 用户存储；不含 session | 用户删除 profile |
 | `sessionId` | Rust Runtime（`connection.open`） | Runtime 进程 | 进程退出、`connection.close`、Runtime 重启 |
 | `sessionGeneration` | Rust Runtime | 同一 `sessionId` 的代际 | 重新 `connection.open` |
 | `runtimeGeneration` | Supervisor（每次 launch +1） | 窗口 | 每次重启 / Reload |
@@ -59,6 +59,16 @@ Renderer 只能发 `NyalaRuntimeCommand` 里的命令：`getRuntimeState`、`con
 - 服务在发请求前比较 `runtimeGeneration`；不匹配即拒绝（`NyalaRequestError`），请求根本不会到达新进程。
 - Supervisor 换代时服务把所有连接标为 `lost` 并清空 catalog：旧 session 不会被当作有效会话继续使用。
 - Profile 存 `IStorageService`（`StorageScope.PROFILE`），只存 path/readOnly/displayName，不存 session、不存凭据。Session 永远只在 Runtime 进程内存中。
+
+#### 4.1 身份与去重分离（2026-11-03 修正）
+
+初版用 `p_` + 路径替换非法字符来生成 `profileId`（`/data/a-b.sqlite` 与 `/data/a/b.sqlite` 都会变成 `p__data_a_b_sqlite`）。这既不稳定也不唯一：两条不同路径可以塌成一个 id，其中一条连接会顶掉另一条的 session。现在：
+
+- **身份**：`addProfile` 生成 `p_<uuid v4>`，与路径字符无关，因此不同路径的 id 在构造上不可能碰撞。
+- **去重**：`addProfile` 仍按 `target.path` 精确比较（路径来自文件对话框的 `URI.fsPath`，已由文件服务规范化），同一文件加两次返回已有 id，不新增行。
+- **迁移**：`restoreProfiles` 对不符合 `PROFILE_ID_PATTERN` 的旧 id 重新分配一次，并同时按路径去重；迁移结果写回存储，之后的恢复不再重写。第二次 `restoreProfiles` 不会替换持有 session 的在世行。
+
+接口相应改为 `addProfile(profile): Promise<string>`：调用方需要拿到 id 才能 `connect`，而 id 不再由调用方决定。
 
 ### 5. 结果与 IPC 体积
 
@@ -70,6 +80,17 @@ Renderer 只能发 `NyalaRuntimeCommand` 里的命令：`getRuntimeState`、`con
 - 请求失败：结构化错误原样回到 Renderer；UI 在树中显示 `Connection failed` / `Connection lost` 与 `safeDetail`。
 - 取消：v1 的 `query.cancel` 属执行语义，本轮桥未暴露（没有 Query），未来随 N-202 一起加白名单并传 `CancellationToken`。
 - Disposable：View 释放时注销事件订阅并 dispose 树；服务随窗口存活，通道随 `DisposableStore` 在应用关闭时释放；窗口关闭时 Supervisor 走 ADR 0004 的有序停止。
+
+#### 6.1 连接尝试的归属（2026-11-03 修正）
+
+初版 `connect` 直接改行状态，没有「这次尝试是否还是当前那次」的概念，于是同一 Profile 上重叠的 connect、connect 期间到达的 disconnect、打开成功但 catalog 失败三条路径都会留下不该存在的 session 或错误状态。现在每个 Profile 有一个尝试计数器（`attempts`）：
+
+- `connect` / `disconnect` / `refresh` / 收到 runtime 状态变化都先 `beginAttempt(profileId)`；异步回复只有在 `isCurrent(profileId, attempt)` 为真时才能提交。
+- 被取代的 `connect` 若已经打开了 session，会立刻 `connection.close` 它，而不是把它装进行里；这样重叠点击最多留下一个可追踪的 session。
+- 打开成功但 catalog 读取失败：关闭 session 并报错。若运行时拒绝关闭该 session，保留一个**可 Disconnect 重试**的 handle，但行状态是 `error`，`catalog` 被清空——UI 不会把它显示成可用连接。
+- 重连前先关闭旧 session；关闭失败时保留旧 handle 并报错，不会同时开着两个。
+- runtime 进入 `failed`/`stopped` 或换代时，`beginAttempt` 使所有进行中的尝试失效，并把有 handle 或处于 `connected`/`connecting`/`testing` 的行置为 `lost`。
+- 结构化错误经 `asRuntimeError` 还原；`errorMessage()` 覆盖 `Error`、结构化错误（优先 `safeDetail`）、带 `message` 的对象与字符串，UI 不再出现 `[object Object]`。
 
 ### 7. Connections 视图（N-201）
 
@@ -95,3 +116,7 @@ Renderer 只能发 `NyalaRuntimeCommand` 里的命令：`getRuntimeState`、`con
 ## 验证
 
 见 PR 描述与 `docs/nyala-kickoff/PROGRESS.md` 的 P2 记录；单测 `nyalaRuntimeRequest.test.ts`、`nyalaConnectionService.test.ts` 覆盖白名单/参数校验、测试→打开→列目录顺序、失败中止、重启换代与 stale handle 拒绝。
+
+## 修订记录
+
+- **2026-11-03 · 合并后安全收尾（PR C，`fix/post-merge-safety-closure`）**：§4.1 把 Profile 身份（`p_<uuid>`）与路径去重分开，并记录旧 id 的一次性迁移；§6.1 记录连接尝试计数器、被取代 connect 的 session 回收、catalog 失败时的关闭/可重试 handle、重连前关闭旧 session、runtime 不可用时的 `lost` 与结构化错误文本。接口 `addProfile` 改为返回 id。验证：`nyalaConnectionService.test.ts` 31 项（FakeBridge + `DeferredPromise` 强制重叠，先证旧实现失败）、`nyalaBootstrap.test.ts` 18 项在 Chromium 中运行（Connections 树行、DI、Reload、Dispose、错误/丢失状态）。`nyala/rpc/**` 未改。

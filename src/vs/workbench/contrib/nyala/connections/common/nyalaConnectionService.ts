@@ -17,12 +17,13 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
-import { INyalaMetadataDescribeResult, INyalaMetadataListObjectsResult } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeContract.generated.js';
+import { INyalaMetadataDescribeResult, INyalaMetadataListObjectsResult, NYALA_ERROR_KINDS } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeContract.generated.js';
 import { INyalaRuntimeCallResult, INyalaRuntimeState, NyalaRuntimeCommand } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeIpc.js';
 import { INyalaRuntimeErrorObject } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeProtocol.js';
-import { INyalaConnectionTarget, NyalaRequestError } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeRequest.js';
+import { asRuntimeError, INyalaConnectionTarget, NyalaRequestError } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeRequest.js';
 
 /** A connection the user added: a persisted target and the session opened for it. */
 export interface INyalaConnectionProfile {
@@ -69,8 +70,11 @@ export interface INyalaConnectionService {
 	readonly onDidChangeRuntime: Event<INyalaRuntimeState>;
 	readonly connections: readonly INyalaConnectionState[];
 	readonly runtimeState: INyalaRuntimeState;
-	/** Adds a profile and remembers it for the next window, unless it is already known. */
-	addProfile(profile: INyalaConnectionProfile): Promise<void>;
+	/**
+	 * Adds a profile and remembers it for the next window, unless a profile for the same path is
+	 * already known. Returns the identity of the new or existing profile.
+	 */
+	addProfile(profile: Omit<INyalaConnectionProfile, 'profileId'>): Promise<string>;
 	/** Loads the profiles saved by earlier windows; sessions are not restored. */
 	restoreProfiles(): Promise<void>;
 	/** Asks the main process where this window's runtime is; resolves the live state. */
@@ -108,8 +112,13 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 
 	private readonly states = new Map<string, INyalaConnectionState>();
 	private readonly catalogs = new Map<string, INyalaCatalog>();
-	private nextProfile = 1;
 	private lastRuntimeGeneration = 0;
+	/**
+	 * One counter per profile, bumped whenever a new connect, disconnect, refresh or runtime state
+	 * supersedes whatever that profile was doing. A response may only commit while its attempt is
+	 * still the current one; an older connect closes the session it opened instead of installing it.
+	 */
+	private readonly attempts = new Map<string, number>();
 
 	constructor(
 		private readonly bridge: INyalaRuntimeBridge,
@@ -147,34 +156,60 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 
 	/** Registers a connection whose metadata the view may ask for. */
 
-	async addProfile(profile: Omit<INyalaConnectionProfile, 'profileId'> & { readonly profileId?: string }): Promise<void> {
-		const profileId = profile.profileId ?? `p_${this.nextProfile++}`;
-		if (this.states.has(profileId)) {
-			return;
+	async addProfile(profile: Omit<INyalaConnectionProfile, 'profileId'>): Promise<string> {
+		// A path identifies the database the user chose; it is not an identity. Deduplicating on it
+		// keeps "add the same file twice" idempotent, while the id below stays independent of the
+		// path's characters and can never collide with another path's id. Paths arrive from the
+		// file dialog (`URI.fsPath`), so they are already normalized; deduplication compares them
+		// exactly and leaves platform rules to the file service.
+		const existing = this.profileForPath(profile.target.path);
+		if (existing) {
+			return existing.profile.profileId;
 		}
+		const profileId = `p_${generateUuid()}`;
 		this.states.set(profileId, { profile: { ...profile, profileId }, status: 'disconnected' });
 		this.saveProfiles();
 		this._onDidChangeConnections.fire();
+		return profileId;
 	}
 
 	async restoreProfiles(): Promise<void> {
 		const stored = parseStoredProfiles(this.storageService?.get(NYALA_PROFILES_STORAGE_KEY, StorageScope.PROFILE, ''));
+		const usedIds = new Set<string>();
+		const usedPaths = new Set<string>();
+		let migrated = false;
 		for (const profile of stored) {
-			if (this.states.has(profile.profileId)) {
+			const pathKey = profile.path;
+			if (usedPaths.has(pathKey)) {
+				migrated = true;
 				continue;
 			}
-			this.states.set(profile.profileId, {
+			// Profiles saved by the path-derived scheme may share an id with another path after a
+			// lossy replacement (`a-b` and `a/b`), and they are re-keyed to a fresh stable id. New
+			// ids (`p_<uuid>`) are kept, so the same profile keeps its identity across windows.
+			const legacy = !PROFILE_ID_PATTERN.test(profile.profileId);
+			let profileId = profile.profileId;
+			if (legacy || usedIds.has(profileId)) {
+				profileId = `p_${generateUuid()}`;
+				migrated = true;
+			}
+			usedIds.add(profileId);
+			usedPaths.add(pathKey);
+			if (this.states.has(profileId)) {
+				// A second restore must not replace a live row (and forget the session it holds).
+				continue;
+			}
+			this.states.set(profileId, {
 				profile: {
-					profileId: profile.profileId,
+					profileId,
 					displayName: profile.displayName,
 					target: { driver: 'sqlite', path: profile.path, readOnly: profile.readOnly },
 				},
 				status: 'disconnected',
 			});
-			const number = Number(/^p_(\d+)$/.exec(profile.profileId)?.[1]);
-			if (Number.isSafeInteger(number) && number >= this.nextProfile) {
-				this.nextProfile = number + 1;
-			}
+		}
+		if (migrated) {
+			this.saveProfiles();
 		}
 		this._onDidChangeConnections.fire();
 	}
@@ -194,45 +229,134 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 	}
 
 	async connect(profileId: string): Promise<void> {
-		await this.withState(profileId, 'connecting', async profile => {
-			const tested = await this.bridge.call(NyalaRuntimeCommand.TestConnection, profile.target);
-			if (!tested.ok) {
-				this.fail(profileId, tested.error);
+		const state = this.states.get(profileId);
+		if (!state) {
+			return;
+		}
+		const attempt = this.beginAttempt(profileId);
+		// Reconnecting a profile is an explicit new session. The old handle is closed first; if
+		// closing it fails, the profile keeps that closeable handle and does not open a second one.
+		if (state.handle) {
+			const closed = await this.closeSession(state.handle);
+			if (!this.isCurrent(profileId, attempt)) {
 				return;
 			}
-			// The generation that answered is the one this session will belong to.
-			this.noteRuntimeGeneration(tested.runtimeGeneration);
-			const opened = await this.bridge.call<{ sessionId: string; sessionGeneration: number }>(NyalaRuntimeCommand.OpenConnection, profile.target);
-			if (!opened.ok) {
-				this.fail(profileId, opened.error);
+			if (!closed) {
+				this.update(profileId, {
+					status: 'error',
+					handle: state.handle,
+					error: { message: localize('nyala.connection.closeFailed', 'The previous session could not be closed. Disconnect again before reconnecting.') },
+				});
 				return;
 			}
-			this.noteRuntimeGeneration(opened.runtimeGeneration);
-			this.update(profileId, {
-				status: 'connected',
-				handle: {
+			this.catalogs.delete(profileId);
+			this.update(profileId, { status: 'disconnected', handle: undefined, error: undefined });
+		}
+		let opened: INyalaConnectionHandle | undefined;
+		await this.withState(profileId, attempt, 'connecting', async profile => {
+			try {
+				const tested = await this.bridge.call(NyalaRuntimeCommand.TestConnection, profile.target);
+				if (!this.isCurrent(profileId, attempt)) {
+					return;
+				}
+				if (!tested.ok) {
+					this.fail(profileId, attempt, tested.error);
+					return;
+				}
+				// The generation that answered is the one this session will belong to.
+				this.noteRuntimeGeneration(tested.runtimeGeneration);
+				if (!this.acceptGeneration(tested.runtimeGeneration)) {
+					this.fail(profileId, attempt, runtimeLostWhileConnecting());
+					return;
+				}
+				const reply = await this.bridge.call<{ sessionId: string; sessionGeneration: number }>(NyalaRuntimeCommand.OpenConnection, profile.target);
+				if (!this.isCurrent(profileId, attempt)) {
+					if (reply.ok) {
+						await this.closeSession({ profileId, sessionId: reply.result.sessionId, sessionGeneration: reply.result.sessionGeneration, runtimeGeneration: reply.runtimeGeneration });
+					}
+					return;
+				}
+				if (!reply.ok) {
+					this.fail(profileId, attempt, reply.error);
+					return;
+				}
+				this.noteRuntimeGeneration(reply.runtimeGeneration);
+				const handle: INyalaConnectionHandle = {
 					profileId,
-					sessionId: opened.result.sessionId,
-					sessionGeneration: opened.result.sessionGeneration,
-					runtimeGeneration: opened.runtimeGeneration,
-				},
-			});
-			await this.loadCatalog(profileId);
+					sessionId: reply.result.sessionId,
+					sessionGeneration: reply.result.sessionGeneration,
+					runtimeGeneration: reply.runtimeGeneration,
+				};
+				opened = handle;
+				if (!this.acceptGeneration(handle.runtimeGeneration)) {
+					opened = undefined;
+					await this.closeSession(handle);
+					this.fail(profileId, attempt, runtimeLostWhileConnecting());
+					return;
+				}
+				const catalog = await this.readCatalog(handle);
+				if (!this.isCurrent(profileId, attempt)) {
+					opened = undefined;
+					await this.closeSession(handle);
+					return;
+				}
+				if (!catalog.ok) {
+					// The open succeeded but the catalog did not. The session is useless to the
+					// Connections view; close it rather than leaving an unreferenced runtime handle.
+					const closed = await this.closeSession(handle);
+					opened = undefined;
+					if (!this.isCurrent(profileId, attempt)) {
+						return;
+					}
+					if (closed) {
+						this.fail(profileId, attempt, catalog.error);
+					} else {
+						// The runtime would not close it. Keep the handle so Disconnect can retry, but
+						// never present the profile as connected or as having a usable catalog.
+						this.catalogs.delete(profileId);
+						this.update(profileId, { status: 'error', handle, error: catalog.error });
+					}
+					return;
+				}
+				this.catalogs.set(profileId, catalog.catalog);
+				this.update(profileId, { status: 'connected', handle, error: undefined });
+				opened = undefined;
+			} catch (error) {
+				// A rejection the bridge raised (IPC failure, a bug) is not an RPC answer. The session
+				// this attempt opened, if any, must not outlive it.
+				if (opened) {
+					await this.closeSession(opened);
+					opened = undefined;
+				}
+				throw error;
+			}
 		});
 	}
 
 	async disconnect(profileId: string): Promise<void> {
+		const attempt = this.beginAttempt(profileId);
 		const state = this.states.get(profileId);
-		if (!state?.handle) {
+		if (!state) {
+			return;
+		}
+		if (!state.handle) {
 			this.catalogs.delete(profileId);
 			this.update(profileId, { status: 'disconnected', handle: undefined, error: undefined });
 			return;
 		}
 		const handle = state.handle;
 		// Closing is idempotent on the runtime; a session from a dead generation is already gone.
-		const closed = await this.bridge.call(NyalaRuntimeCommand.CloseConnection, { sessionId: handle.sessionId, sessionGeneration: handle.sessionGeneration });
-		if (!closed.ok && closed.error.data.kind !== 'INVALID_SESSION' && closed.error.data.kind !== 'RUNTIME_LOST') {
-			this.logService.warn(`Nyala: closing ${handle.sessionId} failed: ${closed.error.data.kind}`);
+		const closed = await this.closeSession(handle);
+		if (!this.isCurrent(profileId, attempt)) {
+			return;
+		}
+		if (!closed) {
+			this.update(profileId, {
+				status: 'error',
+				handle,
+				error: { message: localize('nyala.connection.closeFailed', 'The previous session could not be closed. Disconnect again before reconnecting.') },
+			});
+			return;
 		}
 		this.catalogs.delete(profileId);
 		this.update(profileId, { status: 'disconnected', handle: undefined, error: undefined });
@@ -243,7 +367,18 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 		if (state?.status !== 'connected' || !state.handle) {
 			return;
 		}
-		await this.loadCatalog(profileId);
+		const attempt = this.beginAttempt(profileId);
+		const handle = state.handle;
+		const catalog = await this.readCatalog(handle);
+		if (!this.isCurrent(profileId, attempt) || !this.sameHandle(profileId, handle)) {
+			return;
+		}
+		if (!catalog.ok) {
+			this.fail(profileId, attempt, catalog.error);
+			return;
+		}
+		this.catalogs.set(profileId, catalog.catalog);
+		this._onDidChangeConnections.fire();
 	}
 
 	async listObjects(handle: INyalaConnectionHandle, kinds: readonly ('table' | 'view' | 'index')[]): Promise<INyalaMetadataListObjectsResult> {
@@ -290,19 +425,28 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 
 	/** Refuses a handle from an earlier runtime generation before a request is sent at all. */
 	private assertCurrent(handle: INyalaConnectionHandle): void {
-		if (this.currentRuntimeState.generation !== handle.runtimeGeneration) {
+		if (this.currentRuntimeState.status !== 'ready' || this.currentRuntimeState.generation !== handle.runtimeGeneration) {
 			throw new NyalaRequestError(localize('nyala.connection.staleGeneration', 'The runtime restarted; this connection must be opened again.'));
 		}
 	}
 
 	private onRuntimeState(state: INyalaRuntimeState): void {
+		const previousGeneration = this.lastRuntimeGeneration;
 		this.currentRuntimeState = state;
-		if (this.lastRuntimeGeneration !== 0 && state.generation !== this.lastRuntimeGeneration) {
-			// The process behind every handle of the previous generation is gone.
+		const unavailable = state.status === 'failed' || state.status === 'stopped';
+		const replaced = previousGeneration !== 0 && state.generation !== previousGeneration;
+		if (unavailable || replaced) {
+			// The process behind every handle is gone, or cannot currently answer. Nothing in
+			// flight may commit after this point; a late connect closes the session it opened.
 			for (const [profileId, connection] of this.states) {
-				if (connection.handle) {
+				this.beginAttempt(profileId);
+				if (connection.handle || connection.status === 'connected' || connection.status === 'connecting' || connection.status === 'testing') {
 					this.catalogs.delete(profileId);
-					this.update(profileId, { status: 'lost', handle: undefined, error: { message: localize('nyala.connection.lost', 'The runtime restarted. Reconnect to continue.') } });
+					this.update(profileId, {
+						status: 'lost',
+						handle: undefined,
+						error: { message: unavailable ? localize('nyala.connection.unavailable', 'The runtime is not available. Reconnect to continue.') : localize('nyala.connection.lost', 'The runtime restarted. Reconnect to continue.') },
+					});
 				}
 			}
 		}
@@ -310,19 +454,14 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 		this._onDidChangeRuntime.fire(state);
 	}
 
-	private async loadCatalog(profileId: string): Promise<void> {
-		const state = this.states.get(profileId);
-		if (!state?.handle) {
-			return;
-		}
+	private async readCatalog(handle: INyalaConnectionHandle): Promise<{ ok: true; catalog: INyalaCatalog } | { ok: false; error: INyalaRuntimeErrorObject }> {
 		const listed = await this.bridge.call<INyalaMetadataListObjectsResult>(NyalaRuntimeCommand.ListObjects, {
-			sessionId: state.handle.sessionId,
-			sessionGeneration: state.handle.sessionGeneration,
+			sessionId: handle.sessionId,
+			sessionGeneration: handle.sessionGeneration,
 			limit: 1000,
 		});
 		if (!listed.ok) {
-			this.fail(profileId, listed.error);
-			return;
+			return { ok: false, error: listed.error };
 		}
 		const catalog: { tables: string[]; views: string[]; indexes: string[] } = { tables: [], views: [], indexes: [] };
 		for (const object of listed.result.objects) {
@@ -334,28 +473,80 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 				catalog.indexes.push(object.name);
 			}
 		}
-		this.catalogs.set(profileId, catalog);
-		this._onDidChangeConnections.fire();
+		return { ok: true, catalog };
 	}
 
-	private fail(profileId: string, error: INyalaRuntimeErrorObject): void {
+	private profileForPath(path: string): INyalaConnectionState | undefined {
+		return [...this.states.values()].find(state => state.profile.target.path === path);
+	}
+
+	private fail(profileId: string, attempt: number, error: INyalaRuntimeErrorObject): void {
+		if (!this.isCurrent(profileId, attempt)) {
+			return;
+		}
 		this.catalogs.delete(profileId);
 		this.update(profileId, { status: 'error', handle: undefined, error });
 	}
 
-	private async withState(profileId: string, status: NyalaConnectionStatus, body: (profile: INyalaConnectionProfile) => Promise<void>): Promise<void> {
+	private async withState(profileId: string, attempt: number, status: NyalaConnectionStatus, body: (profile: INyalaConnectionProfile) => Promise<void>): Promise<void> {
 		const state = this.states.get(profileId);
-		if (!state) {
+		if (!state || !this.isCurrent(profileId, attempt)) {
 			return;
 		}
 		this.update(profileId, { status, error: undefined });
 		try {
 			await body(state.profile);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			this.logService.warn(`Nyala: ${profileId} failed: ${message}`);
-			this.update(profileId, { status: 'error', handle: undefined, error: { message } });
+			if (!this.isCurrent(profileId, attempt)) {
+				return;
+			}
+			const detail = errorMessage(error);
+			this.logService.warn(`Nyala: ${profileId} failed: ${detail}`);
+			const structured = asRuntimeError(error);
+			this.update(profileId, { status: 'error', handle: undefined, error: structured ?? { message: detail } });
 		}
+	}
+
+	/**
+	 * Closes a session and says whether it is gone. `INVALID_SESSION`/`RUNTIME_LOST` also mean
+	 * gone: the runtime that knew it no longer exists. A genuine failure keeps the handle for a
+	 * later Disconnect rather than pretending the session was released.
+	 */
+	private async closeSession(handle: INyalaConnectionHandle): Promise<boolean> {
+		try {
+			const closed = await this.bridge.call(NyalaRuntimeCommand.CloseConnection, { sessionId: handle.sessionId, sessionGeneration: handle.sessionGeneration });
+			if (closed.ok) {
+				return true;
+			}
+			if (closed.error.data.kind === 'INVALID_SESSION' || closed.error.data.kind === 'RUNTIME_LOST') {
+				return true;
+			}
+			this.logService.warn(`Nyala: closing ${handle.sessionId} failed: ${closed.error.data.kind}`);
+			return false;
+		} catch (error) {
+			this.logService.warn(`Nyala: closing ${handle.sessionId} failed: ${errorMessage(error)}`);
+			return false;
+		}
+	}
+
+	private beginAttempt(profileId: string): number {
+		const attempt = (this.attempts.get(profileId) ?? 0) + 1;
+		this.attempts.set(profileId, attempt);
+		return attempt;
+	}
+
+	private isCurrent(profileId: string, attempt: number): boolean {
+		return this.attempts.get(profileId) === attempt;
+	}
+
+	private sameHandle(profileId: string, handle: INyalaConnectionHandle): boolean {
+		const current = this.states.get(profileId)?.handle;
+		return !!current && current.sessionId === handle.sessionId && current.sessionGeneration === handle.sessionGeneration && current.runtimeGeneration === handle.runtimeGeneration;
+	}
+
+	/** A generation may only be used while the renderer still knows it as the ready one. */
+	private acceptGeneration(generation: number): boolean {
+		return this.currentRuntimeState.status === 'ready' && this.currentRuntimeState.generation === generation;
 	}
 
 	private update(profileId: string, patch: Partial<INyalaConnectionState>): void {
@@ -376,6 +567,9 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
  * (`docs/nyala-kickoff/docs/14-storage.md`). No credential is ever stored: SQLite needs none.
  */
 export const NYALA_PROFILES_STORAGE_KEY = 'nyala.connections.profiles';
+
+/** The ids this scheme writes. Persisted ids outside it are from the old path-derived scheme. */
+export const PROFILE_ID_PATTERN = /^p_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface INyalaStoredProfile {
 	readonly profileId: string;
@@ -409,4 +603,28 @@ export function parseStoredProfiles(raw: string | undefined): INyalaStoredProfil
 		}
 	}
 	return profiles;
+}
+
+/** The `RUNTIME_LOST` a connect reports when the generation that answered stopped being current. */
+function runtimeLostWhileConnecting(): INyalaRuntimeErrorObject {
+	return {
+		code: NYALA_ERROR_KINDS.RUNTIME_LOST.code,
+		message: 'The runtime restarted while connecting.',
+		data: { kind: NYALA_ERROR_KINDS.RUNTIME_LOST.kind, retryable: NYALA_ERROR_KINDS.RUNTIME_LOST.retryable },
+	};
+}
+
+/** A message safe to show and log when a rejection may be a structured error, an Error or a value. */
+function errorMessage(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	const structured = asRuntimeError(error);
+	if (structured) {
+		return structured.data.safeDetail ?? structured.message;
+	}
+	if (typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+		return (error as { message: string }).message;
+	}
+	return typeof error === 'string' ? error : localize('nyala.connection.unknownError', 'The connection request failed.');
 }

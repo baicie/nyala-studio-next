@@ -144,6 +144,7 @@ rust/
     - **本轮交付的诚实报告**：错误信封新增 `data.executionRollback`（`"rolled_back"` / `"unknown"`，README §7）。执行失败且没有交付结果时，如果失败语句或其脚本中的前序语句可能写过库，运行时报 `unknown`；只有确定为只读或未运行的失败才报 `rolled_back`。客户端据此**不会**把一次可能已提交的写当作失败重放。`Executions::finished` 里因结果上限/单行超帧而拒绝句柄时同样报 `unknown`。
     - **本轮明确没有做的**：用外层事务包住 `query.execute` 并只在结果被接受时提交。尝试过并**放弃**：v1 没有执行级事务，脚本里的 `BEGIN` / `COMMIT` / `SAVEPOINT` 属于客户端；在任何脚本外层再包一层事务会改变这些脚本的语义（内层 `BEGIN` 直接失败，`PRAGMA journal_mode`、`VACUUM` 报 “cannot … from within a transaction”），也会把并发会话的锁持有时间从“语句级”扩大到“结果生命周期”。正确的事务所有权（N-402）需要显式的 `transaction.*` 方法与客户端可见的提交点，归于后续任务。
     - **未关闭部分**：写入已提交而结果被拒时的实际回滚能力；以及取消/超时中断的写语句，SQLite 自己的回滚行为仍是唯一保证（运行时不加断言，统一报 `unknown`）。
+    - **2026-11-03 修正（PR C）**：`executionRollback` 描述的是**整个执行**，不是恰好失败的那条语句。初版在失败语句只读时直接写 `rolled_back`，于是 `INSERT …; SELECT json_extract('not-json','$')` 这种「前面已提交、后面只读语句失败」的脚本被报成 `rolled_back`，客户端会以为写没发生。现在只有 `read_only && !completed_write` 才允许 `rolled_back`；脚本自己 `BEGIN … COMMIT` 之后读失败同样报 `unknown`（提交是真的，运行时无从撤销）。仍然**不做**外层事务包装，理由同下。测试：`worker::tests` 中 `a_script_whose_read_fails_after_a_committed_write_is_not_reported_as_rolled_back`、`a_script_that_commits_its_own_transaction_before_a_read_fails_is_not_rolled_back`、`a_script_that_fails_inside_its_own_transaction_reports_unknown_and_is_undone`，以及 `tests/stdio.rs` 的管道级 `rq_5` 用例；数据库内容由测试直接回读断言，不以返回值自证。
 
 ## 证据
 
@@ -275,6 +276,8 @@ git diff --check                                                 # PASS
 - 未验证：Node 24.18.0 指定版本（本机 24.16.0）、macOS、MSRV 1.82。
 
 ## 修订记录
+
+- **2026-11-03 · 合并后安全收尾（PR C）**：后续项 14 补记 `executionRollback` 的语义修正——失败语句只读、但同一脚本已提交过写时不得报 `rolled_back`。`run_statements` 的失败分支改为 `read_only && !completed_write` 才回 `rolled_back`；脚本自持事务的两种结局各加一条真实 SQLite 回归，`tests/stdio.rs` 增加管道级用例。`nyala/rpc/**` 未改（字段与取值集合本就如此，改的是运行时的取值规则）。同时修复本文件三处被吞掉的行内代码（`unknown`、`Outcome::stopped`）的注释。
 
 - **2026-11-03 · P1 SQL 正确性加固（PR A）**：`value.rs` 把空 BLOB 编码为 `{"type":"bytes","encoding":"base64","data":""}`，不再混同 SQL NULL；`$defs/cell` 的 `bytes.data` 放宽为允许空串（README §6 勘误），Rust 与 TS 生成声明重新生成，Rust/Node 两侧校验器各补正/负向 cell 用例。失败执行新增 `data.executionRollback`（`rolled_back` / `unknown`），后续项 14 记录其局限。新增只读边界回归：`ATTACH` 后写附加库、`PRAGMA` 边界、`file:` URI 提权、失败后数据不变。`nyala/rpc/**` 有合同改动（只新增可选字段与放宽 `minLength`，按 §8 属勘误，不升 v2）。
 

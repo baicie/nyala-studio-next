@@ -81,9 +81,7 @@ export async function addProfileForUri(connectionService: INyalaConnectionServic
 		return;
 	}
 	const path = file.fsPath;
-	const profileId = `p_${path.replace(/[^A-Za-z0-9]/g, '_')}`;
-	await connectionService.addProfile({
-		profileId,
+	const profileId = await connectionService.addProfile({
 		displayName: basename(path),
 		target: { driver: 'sqlite', path, readOnly: true },
 	});

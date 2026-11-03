@@ -683,7 +683,11 @@ fn run_statements(
 			// the probes in this suite). Only a writer that never ran is provably undone, so a
 			// failed writer keeps `unknown`.
 			Err((state, error)) => {
-				if read_only {
+				// A read-only statement that failed changed nothing itself, but the execution may
+				// already have committed an earlier statement of the same script. `executionRollback`
+				// describes the execution, so it may only say `rolled_back` when no statement of
+				// this execution was allowed to write.
+				if read_only && !completed_write {
 					break Err((state, error.with_rollback(Rollback::RolledBack)));
 				}
 				failed_write = true;
