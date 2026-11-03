@@ -167,6 +167,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - **PASS（本机，Windows 11）**：`nyalaSqlStatements` 18、`nyalaQueryExecution` 17、`nyalaQueryExecutionService` 25、`nyalaQueryContext` 29、`nyalaConnectionService` 39、`nyalaRuntimeRequest` 10、`nyalaRuntimeChannel` 13、`nyalaRuntimeProtocol` 8；浏览器 `nyalaQueryExecution` 8、`nyalaQueryEditor` 29、`nyalaBootstrap` 18；`build-fast` PASS；Nyala 文件 `tsc` 0 错误。
 - **红/绿（实测）**：分别回退触发器跟踪、终态冻结、`canExecute` 门禁与未知语义、键位 weight，对应套件出现 4 / 2 / 3 / 1 条失败；恢复后全部通过。
 - **范围**：Rust 执行器与 `nyala/rpc/**` 未改；未实现结果网格（N-204/N-205）、草稿持久化（N-206）、桌面 E2E（N-207）。
+- **CI（HEAD `a0ce7e54a6e`）**：四项必需检查 PASS（[run 41665473827](https://github.com/baicie/nyala-studio-next/actions/runs/41665473827)）；手动 Full test suites PASS（[run 41666261425](https://github.com/baicie/nyala-studio-next/actions/runs/41666261425)）。
 - **NOT RUN**：原生 Electron smoke（仍受 `@vscode/policy-watcher` 原生绑定阻塞），不以 Chromium 单测替代。
 
 ## 2026-11-01 子会话收尾状态
