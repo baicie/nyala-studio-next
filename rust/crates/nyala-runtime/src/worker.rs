@@ -32,7 +32,7 @@ use rusqlite::fallible_iterator::FallibleIterator;
 use rusqlite::{Batch, ErrorCode, Statement};
 use serde_json::{json, Map, Value};
 
-use crate::error::{ErrorKind, RpcError};
+use crate::error::{ErrorKind, Rollback, RpcError};
 use crate::events::{self, Event};
 use crate::sqlite::{ConnectionInterrupt, Database};
 use crate::value::cell;
@@ -273,6 +273,8 @@ pub(crate) struct Outcome {
 	pub(crate) error: Option<RpcError>,
 	pub(crate) results: Vec<Collected>,
 	pub(crate) elapsed_ms: u64,
+	/// Set when the execution failed without handing over its results.
+	pub(crate) rollback: Option<Rollback>,
 }
 
 impl Outcome {
@@ -283,6 +285,7 @@ impl Outcome {
 			error: Some(outcome.1),
 			results: Vec::new(),
 			elapsed_ms: 0,
+			rollback: None,
 		}
 	}
 }
@@ -580,6 +583,11 @@ fn prepare(database: &Database, job: &Job) -> Result<(), RpcError> {
 /// execution, and v1 has no `transaction.*` method with which a client could end it. Only what
 /// this script opened is rolled back; a transaction that was already open on the connection is
 /// left to whoever opened it.
+///
+/// A failed execution reports what it did to the database in `rollback` (`executionRollback` on
+/// the error): a failure whose statements all changed nothing or were undone says `rolled_back`,
+/// and one that may have committed is reported as `unknown` instead of being claimed as rolled
+/// back (ADR 0002 follow-up 14).
 fn run(database: &Database, job: &Job) -> Outcome {
 	let started = Instant::now();
 	let autocommit = database.connection().is_autocommit();
@@ -604,18 +612,36 @@ fn run(database: &Database, job: &Job) -> Outcome {
 			error: None,
 			results,
 			elapsed_ms,
+			rollback: None,
 		},
-		Err((state, error)) => Outcome {
-			state,
-			error: Some(error),
-			results: Vec::new(),
-			elapsed_ms,
-		},
+		Err((state, error)) => {
+			// `run_statements` always decides this for a failure it observed; a failure raised
+			// before the statements ran changed nothing.
+			let rollback = match error.rollback {
+				Some(Rollback::RolledBack) => Rollback::RolledBack,
+				_ => Rollback::Unknown,
+			};
+			Outcome {
+				state,
+				error: Some(error),
+				results: Vec::new(),
+				elapsed_ms,
+				rollback: Some(rollback),
+			}
+		}
 	}
 }
 
 /// Walks the text with SQLite's own preparer through `Batch`, so a `;` inside a string literal
 /// is never mistaken for a statement separator and comments are skipped as SQLite skips them.
+///
+/// A failure reports what it may have left in the database (`Rollback`), using SQLite's own
+/// `sqlite3_stmt_readonly` instead of reading the SQL: a statement that failed changed nothing
+/// (SQLite undoes a failed statement, an implicit transaction included), but a script whose earlier
+/// statements completed cannot promise that their writes are gone. v1 has no execution-level
+/// transaction — a script's own `BEGIN`/`COMMIT` is the client's, not the runtime's — so wrapping
+/// every script here would change the semantics of exactly the scripts that manage transactions
+/// (`README.md` §5; ADR 0002 follow-up 14).
 fn run_statements(
 	database: &Database,
 	job: &Job,
@@ -623,30 +649,65 @@ fn run_statements(
 ) -> Result<(), (State, RpcError)> {
 	let request = &job.request;
 	let mut batch = Batch::new(database.connection(), &request.sql);
-	loop {
+	// A statement that completed and was allowed to write may have committed; one that only read
+	// left nothing behind.
+	let mut completed_write = false;
+	// A writer that failed may still have committed part of its work before the failure, so it is
+	// never reported as rolled back.
+	let mut failed_write = false;
+	let result = loop {
 		let statement = batch
 			.next()
-			.map_err(|error| (State::Failed, query_error(error, request.read_only)))?;
-		let Some(statement) = statement else {
-			break;
+			.map_err(|error| (State::Failed, query_error(error, request.read_only)));
+		let statement = match statement {
+			Ok(Some(statement)) => statement,
+			Ok(None) => break Ok(()),
+			Err(error) => break Err(error),
 		};
 		if request.mode == Mode::Single
 			&& batch
 				.next()
-				.map_err(|error| (State::Failed, query_error(error, request.read_only)))?
-				.is_some()
+				.map_err(|error| (State::Failed, query_error(error, request.read_only)))
+				.is_ok_and(|statement| statement.is_some())
 		{
-			return Err((
+			break Err((
 				State::Failed,
 				invalid("mode statement and selection run one statement; use mode script"),
 			));
 		}
-		step(statement, job, results)?;
-		if request.mode == Mode::Single {
-			break;
+		let read_only = statement.readonly();
+		match step(statement, job, results) {
+			Ok(()) => completed_write |= !read_only,
+			// A write statement that fails after it started stepping may have committed some of
+			// its rows: `INSERT … RETURNING` stopped by the row limit or a cancel does (proven by
+			// the probes in this suite). Only a writer that never ran is provably undone, so a
+			// failed writer keeps `unknown`.
+			Err((state, error)) => {
+				if read_only {
+					break Err((state, error.with_rollback(Rollback::RolledBack)));
+				}
+				failed_write = true;
+				break Err((state, error));
+			}
 		}
-	}
-	Ok(())
+		if request.mode == Mode::Single {
+			break Ok(());
+		}
+	};
+	result.map_err(|(state, error)| {
+		// The failing statement filled this in when it knows its own answer (a writer reports
+		// `unknown` even when the error came from the result limit). A statement that failed
+		// outside its own step, or a script whose earlier statement completed, may have committed
+		// something too; only a statement that never ran is provably undone.
+		let rollback = if error.rollback.is_some() {
+			return (state, error);
+		} else if completed_write || failed_write {
+			Rollback::Unknown
+		} else {
+			Rollback::RolledBack
+		};
+		(state, error.with_rollback(rollback))
+	})
 }
 
 /// Runs one prepared statement and collects its result, if it produced columns.

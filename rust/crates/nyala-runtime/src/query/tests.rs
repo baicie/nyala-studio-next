@@ -46,6 +46,7 @@ fn completed_outcome(results: Vec<Collected>) -> Outcome {
 		error: None,
 		results,
 		elapsed_ms: 11,
+		rollback: None,
 	}
 }
 
@@ -190,6 +191,7 @@ fn a_cancel_is_a_request_of_its_own_and_reports_the_state_it_changed() {
 			)),
 			results: Vec::new(),
 			elapsed_ms: 5,
+			rollback: None,
 		},
 		TTL,
 	);

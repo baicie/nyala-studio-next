@@ -281,6 +281,42 @@ fn schema_evaluator_accepts_the_samples_and_rejects_the_negative_controls() {
 			"{label} must fail"
 		);
 	}
+
+	// `$defs/cell` directly, for the same reason as the Node validator: the samples only carry the
+	// cells their statements produce. The empty `bytes` cell is the 2026-11-03 erratum; it has to be
+	// valid and stay distinct from `null` and an empty string.
+	for (label, cell, valid) in [
+		("SQL NULL", json!({"type": "null"}), true),
+		("empty text", json!({"type": "string", "value": ""}), true),
+		(
+			"empty blob",
+			json!({"type": "bytes", "encoding": "base64", "data": ""}),
+			true,
+		),
+		(
+			"one-byte blob",
+			json!({"type": "bytes", "encoding": "base64", "data": "AA=="}),
+			true,
+		),
+		(
+			"bytes with an unknown encoding",
+			json!({"type": "bytes", "encoding": "base64url", "data": "AA=="}),
+			false,
+		),
+		(
+			"bytes without data",
+			json!({"type": "bytes", "encoding": "base64"}),
+			false,
+		),
+		(
+			"bytes with an extra field",
+			json!({"type": "bytes", "encoding": "base64", "data": "", "note": "x"}),
+			false,
+		),
+	] {
+		let errors = schema.def_errors(&cell, "cell");
+		assert_eq!(errors.is_empty(), valid, "{label}: {cell} -> {errors:?}");
+	}
 }
 
 /// The expected response of `request` in the sample stream.

@@ -270,6 +270,22 @@ for (const [label, broken] of brokenSamples) {
 	check(collectErrors(broken, schema).length > 0, `negative control must fail schema validation: ${label}`);
 }
 
+// Cells are checked against `$defs/cell` directly, because the samples' own results carry only the
+// cells their statements produce. The empty `bytes` cell is the erratum of 2026-11-03: an empty blob
+// is `data: ""`, and it must stay distinguishable from `null` and an empty string.
+for (const [label, cell, valid] of [
+	['SQL NULL', { type: 'null' }, true],
+	['empty text', { type: 'string', value: '' }, true],
+	['empty blob', { type: 'bytes', encoding: 'base64', data: '' }, true],
+	['one-byte blob', { type: 'bytes', encoding: 'base64', data: 'AA==' }, true],
+	['bytes with an unknown encoding', { type: 'bytes', encoding: 'base64url', data: 'AA==' }, false],
+	['bytes without data', { type: 'bytes', encoding: 'base64' }, false],
+	['bytes with an extra field', { type: 'bytes', encoding: 'base64', data: '', note: 'x' }, false]
+]) {
+	const errors = collectErrors(cell, { $ref: '#/$defs/cell', $defs: schema.$defs });
+	check(valid ? errors.length === 0 : errors.length > 0, `${label}: ${valid ? 'must be a valid cell' : 'must be rejected'} -> ${errors.join('; ')}`);
+}
+
 // ---- 3. Request/response pairing and per-method result validation ----
 const isRequest = message => Object.hasOwn(message, 'method') && Object.hasOwn(message, 'id');
 const isNotification = message => Object.hasOwn(message, 'method') && !Object.hasOwn(message, 'id');
