@@ -1,6 +1,6 @@
 # Nyala Studio · 项目进度快照
 
-> 快照时间：2026-11-02（`nyala/main` `db514f8837e`；原快照 2026-11-02 的 `b9f00ff4326`，更早为 `4b5c38345b8`）· 基线 Code OSS `1.143.0`（`2d0b7506a36c1d6db9a466440131a8e01eab2289`，2026-10-29 由 `1.142.0` 同步）· 开发版本 `0.0.1-dev.0`
+> 快照时间：2026-11-03（`nyala/main` `4532c084134`；原快照 2026-11-03 的 `db514f8837e`，更早为 `b9f00ff4326`、`4b5c38345b8`）· 基线 Code OSS `1.143.0`（`2d0b7506a36c1d6db9a466440131a8e01eab2289`，2026-10-29 由 `1.142.0` 同步）· 开发版本 `0.0.1-dev.0`
 > 用途：跨机器移交与断点续做。**状态权威顺序：Git 分支与 PR ＞ 本文档 ＞ 会话记忆**；阶段验收仍以 [19-roadmap.md](docs/19-roadmap.md) 为准。
 
 ## 一句话状态
@@ -11,7 +11,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 
 | 分支 | HEAD | 目标 | 状态 |
 |---|---|---|---|
-| `nyala/main` | `db514f8837e`（2026-11-02 核对） | 稳定主线 | 已合入 #8、#11、#13–#18、#20、#21–#43；#37 为 N-105/N-106/N-109（`b9f00ff4326`），#38 为状态快照收尾（`cff320ad65e`），#39 为 N-110 生成合同（`113a170be69`），#41 为 N-108（`e90619d396b`），#42 为 N-108 状态记录（`cfc2e61ebb3`），#43 为单行超帧修复（`db514f8837e`） |
+| `nyala/main` | `4532c084134`（2026-11-03 核对） | 稳定主线 | 已合入 #8、#11、#13–#18、#20、#21–#46；#45 为 P1 SQL 正确性加固（`673f8e4c6a0`），#46 为 P2 Runtime Bridge + N-201（`4532c084134`）；#37 为 N-105/N-106/N-109（`b9f00ff4326`），#38 为状态快照收尾（`cff320ad65e`），#39 为 N-110 生成合同（`113a170be69`），#41 为 N-108（`e90619d396b`），#42 为 N-108 状态记录（`cfc2e61ebb3`），#43 为单行超帧修复（`db514f8837e`） |
 | `feat/p1-sqlite-session` | `f04316fcb2a` | → `nyala/main`（PR #33） | **MERGED**（squash `195475b84b3`）：SQLite 连接、会话与审核补测 |
 | `fix/close-runtime-egress` | `a334073f505` | → `nyala/main`（PR #34） | **MERGED**（squash `2b73f20285c`）：Agent Host 与拼写词典出站路径关闭 |
 | `feat/p1-runtime-supervisor` | `66c0e4b4cbc` | → `nyala/main`（PR #35） | **MERGED**（squash `24c3cc7aa23`）：N-103 Runtime Supervisor；staging 缓存改为内容 SHA-256 + 执行位；组合 head 四项必需检查 PASS |
@@ -111,7 +111,8 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 连接身份：`profileId`（Workbench，存 `IStorageService`，只存 path/readOnly/displayName）+ `sessionId`/`sessionGeneration`（Runtime）+ `runtimeGeneration`（Supervisor）+ 窗口绑定。`INyalaConnectionHandle` 携带四者；Runtime 换代后旧 handle 在本地被拒绝，连接标为 `lost`。
 - Connections 树（N-201）：选择本地 SQLite 文件 → `connection.test` → `connection.open` → 列出 Tables/Views/Indexes → 展开表时 `metadata.describe` 取列；支持连接/断开/刷新，Loading / Empty / Error / Lost 状态与 aria label。只读会话，不写库。
 - 单测：`nyalaRuntimeRequest.test.ts`（白名单参数校验）、`nyalaConnectionService.test.ts`（test→open→catalog 顺序、失败中止、换代失效、profile 解析）与 `nyalaRuntimeChannel.test.ts`（白名单外命令拒绝、无 runtime 窗口返回 `RUNTIME_LOST`、参数错误在触达进程前返回 `INVALID_PARAMS`、两个真实进程互不可见）加入 `Unit tests (node)` job。
-- **PASS（CI，PR #46 head `ab8c683c0f9`，run `41554877870`）**：`Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 四项必需检查。CI 抓出并修复的缺陷：supervisor 事件前的 runtime generation 未初始化；Supervisor 的 `runtime.hello` 未协商任何 feature（`connection.open` 被回 `PROTOCOL_MISMATCH`）；新源码含非 ASCII 字符。**NOT RUN**：桌面原生 E2E（需 `npm install` + 真实 Electron）、Linux/macOS 原生。
+- **已合入**：PR #46，squash `4532c084134`（2026-11-03）；rebase 到含 PR #45 的主线后在 head `b85ba3ba68c` 重跑 CI，run `41565681831` 四项必需检查 PASS。
+- **PASS（CI，PR #46 首个通过 head `ab8c683c0f9`，run `41554877870`）**：`Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 四项必需检查。CI 抓出并修复的缺陷：supervisor 事件前的 runtime generation 未初始化；Supervisor 的 `runtime.hello` 未协商任何 feature（`connection.open` 被回 `PROTOCOL_MISMATCH`）；新源码含非 ASCII 字符。**NOT RUN**：桌面原生 E2E（需 `npm install` + 真实 Electron）、Linux/macOS 原生。
 
 ## 2026-11-01 子会话收尾状态
 
