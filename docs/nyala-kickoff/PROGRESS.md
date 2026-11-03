@@ -155,13 +155,19 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - **PASS（本机，Windows 11）**：`nyalaQueryEditor.test.ts` **29 passing**（Chromium）、`nyalaQueryContext.test.ts` **29 passing**、`nyalaConnectionService.test.ts` 39 passing、`nyalaBootstrap.test.ts` 18 passing（Chromium）；`build-fast --client-only` PASS；`tsc -p src/tsconfig.json` 中 Nyala 文件 0 错误（全项目 387 条仍为缺失 Electron 类型的既有环境问题）。
 - **NOT RUN（具体阻塞）**：原生 Electron smoke。Electron 43.7.7 已从 `%LOCALAPPDATA%\electron\Cache` 装入 `.build/electron`，但应用在开窗前退出（exit 1）：`@vscode/policy-watcher` 的 `.node` 绑定缺失，`NativePolicyService._updatePolicyDefinitions` 在 `ConfigurationService.initialize` 中产生未处理拒绝。离线重建该模块因本机 MSVC 未安装 Spectre 缓解库而失败（MSB8040）；没有通过移除 `SpectreMitigation` 来绕过。桌面原生 E2E 仍属 N-207。
 
-### P2.5 · N-203 Query Execution（`feat/n203-query-execution`，Draft PR）
+### P2.5 · N-203 Query Execution（`feat/n203-query-execution`，Draft PR #51）
 
-- 设计先行：新增 [ADR 0008](../../adr/0008-n203-query-execution.md)（执行快照、ExecutionId 身份、状态推进、取消语义、结果所有权、Ctrl/Cmd+Enter 与 Monaco 的冲突取舍、Main 进程校验、与 N-204 的最小接口）与 [实施拆分与验收矩阵](docs/32-n203-execution-plan.md)（S1–S6，A1–A24）。
-- 硬约束：执行入口必须调用 `canExecute(runtimeState)`，不接受 `binding !== undefined`；快照在第一个 `await` 之前冻结，之后标签页切换、重新绑定、关闭都不改变在途执行的目标；所有操作按 `executionId`；`unknown` 与 `UNKNOWN_COMMIT_STATUS` 不自动重试。
-- 范围：Rust 执行器与 `nyala/rpc/**` 不改；N-203 只做 Main 进程白名单/校验、Workbench 执行服务、命令与键位、结果句柄所有权。
-- **PASS（合并前）**：PR #49、#50 已合入 `nyala/main`，`patchCount` 71 → 80（57 个修改的上游跟踪文件 + 23 个新增 Nyala 源文件），main 上四项必需检查在 `4769913eab4` 通过（run `41635809716`）。
-- **进行中**：S1–S6 尚未实施，本条目只记录设计与拆分；任何 A 项未 PASS 前不合并。
+- 设计：新增 [ADR 0008](../../adr/0008-n203-query-execution.md)（执行快照、ExecutionId 身份、状态推进、取消语义、结果租约与上限、Ctrl/Cmd+Enter 与 Monaco 的冲突取舍、Main 进程校验、与 N-204 的最小接口）与 [实施拆分与验收矩阵](docs/32-n203-execution-plan.md)（S1–S6，A1–A28）。审查后按 D1–D4 修订：执行结束不等于结果释放、未知结果诚实报告、取消/校准的身份与版本规则、选区多语句明确拒绝。
+- 实现：
+  - `query/common/nyalaSqlStatements.ts`：SQL-aware 分割，识别字符串/标识符/注释与 SQLite Trigger 的 `BEGIN … END`（含 `CASE … END`）；无法可靠识别时返回失败而不是猜一个片段。
+  - `query/common/nyalaQueryExecution.ts`：不可变快照、状态机、终态冻结、sequence/代际过滤、取消回复不覆盖权威状态、`unknown`/`notSent` 语义。
+  - `query/common/nyalaQueryExecutionService.ts`：执行所有权；每 `queryId` 一个非终态执行；发送前注册 pending；关闭后 abandoned 并在迟到回复时取消；结果租约（acquire/release）、每窗口 3 个句柄上限与淘汰、换代本地遗忘、`release` 至多一次。
+  - `query/browser/nyalaQueryExecution.contribution.ts`：`Nyala: Execute`（Ctrl/Cmd+Enter，选区优先否则当前语句）、`Nyala: Execute Selection`（无默认键）、`Nyala: Execute Script`（Shift+Ctrl/Cmd+Enter）。
+  - Main 进程：新增 5 个命令与 `QueryStateChanged` 通知；参数与回复结构校验；`sent`/`answered` 让执行服务区分「确定未执行」与「结果未知」。
+- **PASS（本机，Windows 11）**：`nyalaSqlStatements` 18、`nyalaQueryExecution` 17、`nyalaQueryExecutionService` 25、`nyalaQueryContext` 29、`nyalaConnectionService` 39、`nyalaRuntimeRequest` 10、`nyalaRuntimeChannel` 13、`nyalaRuntimeProtocol` 8；浏览器 `nyalaQueryExecution` 8、`nyalaQueryEditor` 29、`nyalaBootstrap` 18；`build-fast` PASS；Nyala 文件 `tsc` 0 错误。
+- **红/绿（实测）**：分别回退触发器跟踪、终态冻结、`canExecute` 门禁与未知语义、键位 weight，对应套件出现 4 / 2 / 3 / 1 条失败；恢复后全部通过。
+- **范围**：Rust 执行器与 `nyala/rpc/**` 未改；未实现结果网格（N-204/N-205）、草稿持久化（N-206）、桌面 E2E（N-207）。
+- **NOT RUN**：原生 Electron smoke（仍受 `@vscode/policy-watcher` 原生绑定阻塞），不以 Chromium 单测替代。
 
 ## 2026-11-01 子会话收尾状态
 

@@ -10,7 +10,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
-import { INyalaRuntimeCallResult, INyalaRuntimeState, NyalaRuntimeCommand, NyalaRuntimeEvent, NYALA_RUNTIME_CHANNEL } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeIpc.js';
+import { INyalaQueryStateChangedEvent, INyalaRuntimeCallResult, INyalaRuntimeState, NyalaRuntimeCommand, NyalaRuntimeEvent, NYALA_RUNTIME_CHANNEL } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeIpc.js';
 import { INyalaRuntimeBridge } from '../common/nyalaConnectionService.js';
 
 export class NyalaRuntimeBridge extends Disposable implements INyalaRuntimeBridge {
@@ -38,5 +38,9 @@ export class NyalaRuntimeBridge extends Disposable implements INyalaRuntimeBridg
 
 	get onDidChangeState(): Event<INyalaRuntimeState> {
 		return this.channel.listen<INyalaRuntimeState>(NyalaRuntimeEvent.RuntimeStateChanged);
+	}
+
+	get onDidChangeQueryState(): Event<INyalaQueryStateChangedEvent> {
+		return this.channel.listen<INyalaQueryStateChangedEvent>(NyalaRuntimeEvent.QueryStateChanged);
 	}
 }

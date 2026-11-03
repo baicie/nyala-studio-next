@@ -62,6 +62,13 @@ function limit(value: unknown): number {
 	return value;
 }
 
+function boundedInteger(value: unknown, field: string, minimum: number, maximum: number): number {
+	if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
+		fail(`${field} must be an integer between ${minimum} and ${maximum}`);
+	}
+	return value;
+}
+
 /**
  * `connection.test` / `connection.open` parameters. The path must be absolute: it names an
  * existing database file and never a `file:` URI, an in-memory database or a relative path
@@ -158,6 +165,98 @@ export function describeParams(params: unknown): { sessionId: string; sessionGen
 		...session,
 		object: object.schema === undefined ? { name: object.name } : { schema: object.schema, name: object.name },
 	};
+}
+
+/** The declared v1 modes of `query.execute`; `statement` and `selection` run one statement each. */
+export type NyalaExecuteMode = 'statement' | 'selection' | 'script';
+
+export interface INyalaExecuteRequest {
+	readonly sessionId: string;
+	readonly sessionGeneration: number;
+	readonly sql: string;
+	readonly mode: NyalaExecuteMode;
+	readonly timeoutMs: number;
+	readonly maxInitialRows: number;
+}
+
+/** Largest SQL text the bridge forwards: the frame limit is 8 MiB, this leaves room for the envelope. */
+export const MAX_SQL_BYTES = 1024 * 1024;
+
+/** `query.execute` parameters. Every field is required by the v1 schema; the bridge adds none. */
+export function executeParams(params: unknown): INyalaExecuteRequest {
+	if (!isRecord(params)) {
+		fail('parameters must be an object');
+	}
+	const session = sessionRef(params);
+	const sql = params.sql;
+	if (typeof sql !== 'string' || sql.trim().length === 0) {
+		fail('sql must be a non-empty string');
+	}
+	if (sql.length > MAX_SQL_BYTES) {
+		fail(`sql must be at most ${MAX_SQL_BYTES} characters`);
+	}
+	if (params.mode !== 'statement' && params.mode !== 'selection' && params.mode !== 'script') {
+		fail('mode must be statement, selection or script');
+	}
+	return {
+		...session,
+		sql,
+		mode: params.mode,
+		timeoutMs: boundedInteger(params.timeoutMs, 'timeoutMs', 1, 600_000),
+		maxInitialRows: boundedInteger(params.maxInitialRows, 'maxInitialRows', 1, 10_000),
+	};
+}
+
+/** `query.cancel` parameters. `reason` is optional and only labels the request. */
+export function cancelParams(params: unknown): { executionId: string; reason?: 'user' | 'timeout' | 'shutdown' } {
+	if (!isRecord(params)) {
+		fail('parameters must be an object');
+	}
+	const result: { executionId: string; reason?: 'user' | 'timeout' | 'shutdown' } = { executionId: id(params.executionId, 'executionId') };
+	if (params.reason !== undefined) {
+		if (params.reason !== 'user' && params.reason !== 'timeout' && params.reason !== 'shutdown') {
+			fail('reason must be user, timeout or shutdown');
+		}
+		result.reason = params.reason;
+	}
+	return result;
+}
+
+/** `query.getState` parameters. */
+export function executionRef(params: unknown): { executionId: string } {
+	if (!isRecord(params)) {
+		fail('parameters must be an object');
+	}
+	return { executionId: id(params.executionId, 'executionId') };
+}
+
+/** `result.fetchPage` parameters. `cursor` is opaque to the bridge and bounded in length. */
+export function fetchPageParams(params: unknown): { resultId: string; limit: number; cursor?: string | null } {
+	if (!isRecord(params)) {
+		fail('parameters must be an object');
+	}
+	const result: { resultId: string; limit: number; cursor?: string | null } = {
+		resultId: id(params.resultId, 'resultId'),
+		limit: limit(params.limit),
+	};
+	if (params.cursor !== undefined) {
+		if (params.cursor === null) {
+			result.cursor = null;
+		} else if (typeof params.cursor !== 'string' || params.cursor.length > 512) {
+			fail('cursor must be a string of at most 512 characters or null');
+		} else {
+			result.cursor = params.cursor;
+		}
+	}
+	return result;
+}
+
+/** `result.release` parameters. */
+export function resultRef(params: unknown): { resultId: string } {
+	if (!isRecord(params)) {
+		fail('parameters must be an object');
+	}
+	return { resultId: id(params.resultId, 'resultId') };
 }
 
 /** The generated error object a failed bridge call carries back, when `error` is one. */

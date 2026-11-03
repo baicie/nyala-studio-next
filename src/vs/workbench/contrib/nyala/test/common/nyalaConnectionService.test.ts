@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
@@ -27,6 +27,7 @@ class FakeBridge implements INyalaRuntimeBridge {
 	readonly calls: { command: string; params: unknown }[] = [];
 	readonly states = new Emitter<INyalaRuntimeState>();
 	readonly onDidChangeState = this.states.event;
+	readonly onDidChangeQueryState = Event.None;
 	state: INyalaRuntimeState = { generation: 1, status: 'ready' };
 	/** Per-command answer; the default succeeds. */
 	/** A command's answer, or `{ throws }` when the bridge call itself rejects. */

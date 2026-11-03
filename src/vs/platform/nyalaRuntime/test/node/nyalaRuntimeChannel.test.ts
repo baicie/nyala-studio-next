@@ -8,6 +8,7 @@
 // supervisor is reachable, and a structured runtime error survives the channel as a value.
 
 import assert from 'assert';
+import { Event } from '../../../../base/common/event.js';
 import { promises as fsPromises } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
@@ -17,7 +18,8 @@ import { INyalaRuntimeCallResult, INyalaRuntimeState, NYALA_RUNTIME_FEATURES } f
 import { connectionTarget, sessionRef } from '../../common/nyalaRuntimeRequest.js';
 import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch } from '../../node/nyalaRuntimeProcess.js';
 import { NyalaRuntimeSupervisor } from '../../node/nyalaRuntimeSupervisor.js';
-import { NyalaRuntimeChannel, runtimeStateOf, windowIdFromContext } from '../../electron-main/nyalaRuntimeChannel.js';
+import { checkResultShape, NyalaRuntimeChannel, queryStateEvent, runtimeStateOf, windowIdFromContext } from '../../electron-main/nyalaRuntimeChannel.js';
+import { NyalaRuntimeCommand, NyalaRuntimeEvent } from '../../common/nyalaRuntimeIpc.js';
 import { TestRuntimeLogger } from './nyalaRuntimeTestUtils.js';
 
 const REPO_ROOT = dirname(FileAccess.asFileUri('').fsPath);
@@ -67,7 +69,7 @@ suite('Nyala runtime channel', function () {
 		const supervisors = new FakeSupervisors();
 		const logger = store.add(new TestRuntimeLogger());
 		const channel = new NyalaRuntimeChannel(supervisors, logger);
-		await assert.rejects(() => channel.call('window:1', 'query.execute', {}), /not allowed/);
+		await assert.rejects(() => channel.call('window:1', 'query.explain', {}), /not allowed/);
 		await assert.rejects(() => channel.call('window:1', 'runtime.hello', {}), /not allowed/);
 		await assert.rejects(() => channel.call('not-a-window', 'getRuntimeState'), /unknown client context/);
 	});
@@ -151,5 +153,84 @@ suite('Nyala runtime channel', function () {
 			await first.stop();
 			await second.stop();
 		}
+	});
+
+	test('a command outside the whitelist cannot smuggle a method in through its params', async () => {
+		const supervisors = new FakeSupervisors();
+		const logger = store.add(new TestRuntimeLogger());
+		const channel = new NyalaRuntimeChannel(supervisors, logger);
+
+		for (const command of ['query.explain', 'result.fetchAll', 'transaction.begin', 'runtime.hello']) {
+			await assert.rejects(() => channel.call('window:1', command, {}), /not allowed/, command);
+		}
+	});
+
+	test('execution parameters are validated before any process is touched', async () => {
+		const supervisors = new FakeSupervisors();
+		const logger = store.add(new TestRuntimeLogger());
+		const channel = new NyalaRuntimeChannel(supervisors, logger);
+
+		const answer = await channel.call<INyalaRuntimeCallResult>('window:1', NyalaRuntimeCommand.QueryExecute, { sessionId: 's_1', sessionGeneration: 1, sql: '', mode: 'statement', timeoutMs: 1, maxInitialRows: 1 });
+
+		assert.deepStrictEqual({ ok: answer.ok, kind: answer.ok ? undefined : answer.error.data.kind }, { ok: false, kind: 'INVALID_PARAMS' });
+	});
+
+	test('a malformed reply is reported as an internal failure, never as a statement about the SQL', () => {
+		const cases: Array<[NyalaRuntimeCommand, unknown, object]> = [
+			[NyalaRuntimeCommand.QueryExecute, { executionId: 'not an id', state: 'queued', sequence: 1 }, {}],
+			[NyalaRuntimeCommand.QueryExecute, { executionId: 'ex_1', state: 'halfway', sequence: 1 }, {}],
+			[NyalaRuntimeCommand.QueryExecute, { executionId: 'ex_1', state: 'queued', sequence: 0 }, {}],
+			[NyalaRuntimeCommand.QueryGetState, { executionId: 'ex_1', state: 'running', sequence: 1, resultIds: ['bad id'] }, {}],
+			[NyalaRuntimeCommand.QueryCancel, { accepted: 'yes', state: 'cancelled' }, {}],
+			[NyalaRuntimeCommand.ResultFetchPage, { columns: [], rows: [[], [], []], hasMore: false, nextCursor: null }, { limit: 2 }],
+			[NyalaRuntimeCommand.ResultFetchPage, { columns: [], rows: [], hasMore: 'no', nextCursor: null }, { limit: 2 }],
+			[NyalaRuntimeCommand.ResultRelease, { released: 'yes' }, {}],
+			[NyalaRuntimeCommand.QueryExecute, 'not an object', {}],
+		];
+
+		for (const [command, result, params] of cases) {
+			const problem = checkResultShape(command, result, params);
+			assert.ok(problem, `${command}: ${JSON.stringify(result)}`);
+		}
+	});
+
+	test('a well-formed reply passes the shape check unchanged', () => {
+		const cases: Array<[NyalaRuntimeCommand, object, object]> = [
+			[NyalaRuntimeCommand.QueryExecute, { executionId: 'ex_1', state: 'queued', sequence: 1 }, {}],
+			[NyalaRuntimeCommand.QueryGetState, { executionId: 'ex_1', state: 'completed', sequence: 4, resultIds: ['rs_1'] }, {}],
+			[NyalaRuntimeCommand.QueryCancel, { accepted: true, state: 'cancel_requested' }, {}],
+			[NyalaRuntimeCommand.ResultFetchPage, { columns: [], rows: [[], []], hasMore: false, nextCursor: null }, { limit: 2 }],
+			[NyalaRuntimeCommand.ResultRelease, { released: false }, {}],
+		];
+
+		for (const [command, result, params] of cases) {
+			assert.strictEqual(checkResultShape(command, result, params), undefined, command);
+		}
+	});
+
+	test('a state notification carries the generation of the process that sent it', () => {
+		const event = queryStateEvent({ method: 'query.stateChanged', params: { executionId: 'ex_1', sequence: 2, state: 'running', resultIds: ['rs_1'], elapsedMs: 5 } }, 7);
+
+		assert.deepStrictEqual(event, { runtimeGeneration: 7, executionId: 'ex_1', sequence: 2, state: 'running', resultIds: ['rs_1'], elapsedMs: 5 });
+	});
+
+	test('a notification that does not match the contract is dropped instead of being guessed at', () => {
+		for (const params of [
+			{ executionId: 'ex_1', sequence: 1, state: 'running' },
+			{ executionId: 'ex_1', sequence: 2, state: 'nearly-done' },
+			{ executionId: 'bad id', sequence: 2, state: 'running' },
+			{ executionId: 'ex_1', sequence: 2, state: 'running', resultIds: ['ok', 'bad id'] },
+			{ executionId: 'ex_1', sequence: 2, state: 'running', elapsedMs: -1 },
+			{ executionId: 'ex_1', sequence: 2, state: 'running', error: { code: 'x' } },
+			{ sequence: 2, state: 'running' },
+		]) {
+			assert.strictEqual(queryStateEvent({ method: 'query.stateChanged', params }, 1), undefined, JSON.stringify(params).slice(0, 70));
+		}
+		assert.strictEqual(queryStateEvent({ method: 'runtime.restarted', params: {} }, 1), undefined);
+	});
+
+	test('the state event listener exists for a window with a supervisor and nowhere without one', () => {
+		const withoutSupervisor = new NyalaRuntimeChannel(new FakeSupervisors(), store.add(new TestRuntimeLogger()));
+		assert.strictEqual(withoutSupervisor.listen('window:1', NyalaRuntimeEvent.QueryStateChanged), Event.None);
 	});
 });

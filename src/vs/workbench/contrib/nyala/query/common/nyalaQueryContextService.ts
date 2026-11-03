@@ -15,6 +15,7 @@
 //     longer exists (runtime restart, disconnect, failed runtime);
 //   - never carry a session across a runtime generation.
 
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { localize } from '../../../../../nls.js';
@@ -26,6 +27,9 @@ import { INyalaQueryBindingResult, INyalaQueryContextService, NyalaQueryContext 
 export class NyalaQueryContextService extends Disposable implements INyalaQueryContextService {
 
 	declare readonly _serviceBrand: undefined;
+
+	private readonly _onDidRelease = this._register(new Emitter<string>());
+	readonly onDidRelease: Event<string> = this._onDidRelease.event;
 
 	private readonly contexts = new Map<string, NyalaQueryContext>();
 	/**
@@ -87,6 +91,7 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 		// the same id: dropping the intent makes every outstanding call stale.
 		this.intents.delete(queryId);
 		context.dispose();
+		this._onDidRelease.fire(queryId);
 	}
 
 	async bind(context: NyalaQueryContext, profileId: string): Promise<INyalaQueryBindingResult> {
