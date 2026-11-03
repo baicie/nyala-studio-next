@@ -137,6 +137,7 @@ jobs:
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeRequest.test.ts
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeChannel.test.ts
           --run src/vs/workbench/contrib/nyala/test/common/nyalaConnectionService.test.ts
+          --run src/vs/workbench/contrib/nyala/test/common/nyalaQueryContext.test.ts
 
   rust:
     name: Rust runtime
@@ -236,4 +237,5 @@ jobs:
           --browser chromium
           --reporter spec
           --run src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts
+          --run src/vs/workbench/contrib/nyala/test/browser/nyalaQueryEditor.test.ts
 

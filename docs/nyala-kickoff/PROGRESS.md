@@ -125,6 +125,36 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - **PASS（本机）**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（单元 138 + cancellation 6 + conformance 8 + contract 4 + stdio 22 = 178）、`nyala:validate-product`、`nyala:validate-rpc`、`nyala:check-rpc-generated`、Nyala 其余 node 套件 47 passing / 1 pending、`git diff --check`。
 - **BLOCKED（本机环境）**：`typecheck-client` 需要 `.build/typings/electron.d.ts`，本机离线无法从 GitHub Releases 下载；`tsc` 全项目报 387 条错误，全部来自缺失的 Electron 类型（`electron`/`original-fs` 模块与 `Process.noAsar` 等），**Nyala 文件 0 条**。以 CI 的 `Client typecheck and hygiene` 为准。
 
+### P2.3 · N-202 Query EditorInput + Context（`feat/n202-query-editor-context`）
+
+- 新目录 `src/vs/workbench/contrib/nyala/query/`：`common/nyalaQueryResource.ts`（URI 与编辑器/语言常量）、`common/nyalaQueryEditorInput.ts`（`EditorInput`，只持有身份与对共享文档的引用）、`common/nyalaQueryDocument.ts` / `nyalaQueryDocumentService.ts`（每个 `queryId` 一个文档：模型、脏状态、上下文与引用计数）、`common/nyalaQueryContext.ts` / `nyalaQueryContextService.ts`（绑定与 latest-intent）、`browser/nyalaQueryEditorPane.ts`（`AbstractTextCodeEditor` + 状态行）、`browser/nyalaQuery.contribution.ts`（Pane/Resolver/Serializer/两个命令/标题菜单）。
+- 身份与隔离：`queryId` 是 EditorInput 身份，binding 是运行时身份，两者不互推；`NyalaQueryContext` 逐查询一个对象，禁止从全局当前连接推断。四种失效（runtime 换代、runtime 不可用、Profile 断开、Profile 被后台重连）都会 `unbind` 并给出可读理由，且**不自动改绑**。
+- URI 只含 uuid：`nyala-query://local/<queryId>`，无 query、无 fragment；路径/会话/凭据只存在于 Profile 与 runtime handle 中。序列化只写 `{ queryId }`（不写 SQL 正文），反序列化校验 id 形态，坏数据拒绝。
+- 复用而非重写：`IEditorService.openEditor`、`AbstractTextCodeEditor`（`CodeEditorWidget`）、`IEditorPaneRegistry`/`IEditorResolverService`/`IEditorFactoryRegistry`、`IModelService`；没有新的 Tab 系统、没有改 `EditorService`。
+- 命令：`nyala.query.new`（`Nyala: New Query`）与 `nyala.query.changeConnection`（仅对激活的查询标签页生效，标题菜单仅在 `resourceScheme === nyala-query` 时出现）。
+- **PASS（本机，Windows 11，Chromium 实跑）**：`nyalaQueryEditor.test.ts` **25 passing**、`nyalaQueryContext.test.ts` **21 passing**、`nyalaBootstrap.test.ts` **18 passing**、`nyalaConnectionService.test.ts` **39 passing**；Nyala 文件 `tsc` **0 错误**；`git diff --check` PASS。
+- **NOT RUN**：桌面原生 E2E（N-207：连接→编辑→执行→结果→重启）、macOS/Linux 原生；执行命令（N-203）与结果面板（N-204）本就不在范围。
+
+### P2.4 · 审查修复（PR #49 Phase A + PR #50 Phase B）
+
+**Session 所有权（#49）**：刷新失败不再等同于会话失效。catalog 元数据失败（`PROTOCOL_MISMATCH`、IPC 异常）保留 handle 与可关闭入口；只有 `INVALID_SESSION`/`RUNTIME_LOST` 这类确定失效才丢弃 handle。关不掉的 session 进入 `stranded`，`disconnect`/重连会重试关闭，runtime 换代时清理。`connect()` 在旧 session 关闭未确认前不再打开新 session；打开后异常的清理路径在 `closeSession()` 返回 false 时保留 handle，而不是把唯一引用丢掉。证据：`nyalaConnectionService.test.ts` 新增 8 条确定性用例（FakeBridge 的 `throws`/`holdConnect` 控制顺序），改实现前 5 条失败，现 **39 passing**。
+
+**绑定意图（#50）**：`NyalaQueryContextService.bind()` 引入 latest-intent 计数，覆盖「A 后发先至」「迟到的 A 不覆盖 B」「标签页关闭后的迟到回复」「释放后同 queryId 重建」「bind 期间 runtime 换代」「快速连续选择停在最后一个有效操作」。检查不只在 `await` 前：`connect()` 之后、`context.bind()` 之前都重新校验 intent、context 身份、是否已释放与 runtime 代际。证据：`nyalaQueryContext.test.ts` 新增 6 组用例。
+
+**文本与上下文所有权（#50）**：新增 `NyalaQueryDocument`（每个 `queryId` 一个）与 `NyalaQueryDocumentService`。Input 构造时 `acquire()`、销毁时释放引用；同一 `queryId` 的两个 Input 共享模型与上下文，关闭其一不影响另一；最后一个引用释放才 `destroyModel` 并 `release(queryId)`；重复释放是空操作，已关闭文档拒绝交出模型。Pane 只观察 Document 的上下文，不再自行 `create`/`release`。测试用两个真实 Input 与两个真实 Pane 验证。
+
+**保存策略（#50，B3）**：N-202 明确是 scratch buffer。`save()`/`saveAs()` 抛本地化错误并由工作台显示通知，不再继承「返回 `this` 的静默成功」；脏标签页关闭走 `IEditorCloseHandler`，只给「关闭/取消」；`revert()` 恢复打开时文本；`EditorInputCapabilities.Scratchpad` 使其不进入「全部保存」。序列化只写 `{ queryId }`，**不写 SQL 正文**——布局文件不再成为敏感语句的静默存储；N-206 负责 opt-in 草稿与 `.sql` 文件保存。ADR 0007 §6 记录该决策。
+
+**最终审查收口（#50）**：
+
+1. **切换连接期间没有执行目标**：`NyalaQueryContext` 增加 `bindingState`（`idle`/`switching`）。已绑定 A 的用户显式选择 B 时，`bind()` 在打开 B 之前调用 `beginSwitch()` 清空 binding，因此 `canExecute()` 为 false、`getExecutionBinding()` 为 `undefined`，状态行与标题显示「正在连接 B」。B 成功只绑定 B；B 失败**不恢复 A**，而是保留无绑定并记录 `connection-failed`——用户已表示要离开 A，悄悄接回就是本 ADR 禁止的隐式改绑。重新选择**当前已绑定**的同一 Profile 不经过 `switching`，失败时保留原绑定。乱序返回仍由 per-query intent 决定：迟到的回复既不绑定也不改变状态。关闭标签页、runtime 换代/不可用、Session 失效都会收束切换状态。测试全部用 `DeferredPromise` 控制 connect 完成时机，没有 timeout。
+2. **标题与状态栏同步**：`NyalaQueryEditorInput` 订阅共享 Document 的 `onDidChangeBinding` 并触发 `onDidChangeLabel`；Pane 的状态行同样从 Document 的绑定事件派生。两个共享 `queryId` 的 Input 在连接、切换、断开时都各自刷新。
+3. **Document 监听器释放**：`NyalaQueryDocumentService` 的每文档 `onDidDispose` 订阅改存 `DisposableMap`，Document 销毁时连同订阅一起移除，订阅数恒等于存活文档数。移除前核对订阅归属，避免清掉同 id 重新打开后新文档的订阅。
+4. **陈旧注释修正**：Pane 头部不再声称「保存会写入 `.sql` 文件」，改为明确「N-202 没有文件后端」；Contribution 头部改为「恢复只含 queryId，不恢复正文」，与 ADR 0007 §6 一致。
+
+- **PASS（本机，Windows 11）**：`nyalaQueryEditor.test.ts` **29 passing**（Chromium）、`nyalaQueryContext.test.ts` **29 passing**、`nyalaConnectionService.test.ts` 39 passing、`nyalaBootstrap.test.ts` 18 passing（Chromium）；`build-fast --client-only` PASS；`tsc -p src/tsconfig.json` 中 Nyala 文件 0 错误（全项目 387 条仍为缺失 Electron 类型的既有环境问题）。
+- **NOT RUN（具体阻塞）**：原生 Electron smoke。Electron 43.7.7 已从 `%LOCALAPPDATA%\electron\Cache` 装入 `.build/electron`，但应用在开窗前退出（exit 1）：`@vscode/policy-watcher` 的 `.node` 绑定缺失，`NativePolicyService._updatePolicyDefinitions` 在 `ConfigurationService.initialize` 中产生未处理拒绝。离线重建该模块因本机 MSVC 未安装 Spectre 缓解库而失败（MSB8040）；没有通过移除 `SpectreMitigation` 来绕过。桌面原生 E2E 仍属 N-207。
+
 ## 2026-11-01 子会话收尾状态
 
 | PR | 已核对 head / 主线提交 | 状态与证据 |
