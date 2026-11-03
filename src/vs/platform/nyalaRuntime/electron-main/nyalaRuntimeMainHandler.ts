@@ -16,6 +16,7 @@ import { IProductService } from '../../product/common/productService.js';
 import { LoadReason } from '../../window/electron-main/window.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { INyalaRuntimeSupervisors, NyalaRuntimeChannel } from './nyalaRuntimeChannel.js';
+import { NYALA_RUNTIME_FEATURES } from '../common/nyalaRuntimeIpc.js';
 import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, stageNyalaRuntimeExecutable } from '../node/nyalaRuntimeProcess.js';
 import { NyalaRuntimeSupervisor, NyalaRuntimeWindowSupervisors } from '../node/nyalaRuntimeSupervisor.js';
 
@@ -74,6 +75,9 @@ export class NyalaRuntimeMainHandler extends Disposable implements INyalaRuntime
 		return new NyalaRuntimeSupervisor({
 			label: `window ${windowId}`,
 			clientBuild: this.productService.version,
+			// The handshake happens once per process, so this lists everything the renderer bridge
+			// may call; a method whose feature was not negotiated is refused by the runtime.
+			supportedFeatures: NYALA_RUNTIME_FEATURES,
 			resolveLaunch: () => this.resolveLaunch(),
 		}, this.logger);
 	}

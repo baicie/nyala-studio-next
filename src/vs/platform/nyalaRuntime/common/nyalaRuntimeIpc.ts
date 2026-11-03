@@ -24,6 +24,21 @@ export const enum NyalaRuntimeCommand {
 	DescribeObject = 'metadata.describe',
 }
 
+/**
+ * `supportedFeatures` the supervisor negotiates in `runtime.hello`. It is every v1 feature the
+ * bridge can reach, because the handshake happens once per process and a later call cannot add
+ * one. A feature the renderer never uses is still requested here so that the *only* gate is the
+ * command whitelist, not an accidental negotiation gap.
+ */
+export const NYALA_RUNTIME_FEATURES: readonly string[] = [
+	'sqlite',
+	'metadata.listObjects',
+	'query.execute',
+	'query.cancel',
+	'result.fetchPage',
+	'result.release',
+];
+
 /** Events the renderer may listen to. */
 export const enum NyalaRuntimeEvent {
 	/** The window's runtime generation changed; every session of the old generation is void. */

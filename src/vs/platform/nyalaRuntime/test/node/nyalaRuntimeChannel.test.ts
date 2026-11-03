@@ -13,7 +13,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { FileAccess } from '../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { INyalaRuntimeCallResult, INyalaRuntimeState } from '../../common/nyalaRuntimeIpc.js';
+import { INyalaRuntimeCallResult, INyalaRuntimeState, NYALA_RUNTIME_FEATURES } from '../../common/nyalaRuntimeIpc.js';
 import { connectionTarget, sessionRef } from '../../common/nyalaRuntimeRequest.js';
 import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch } from '../../node/nyalaRuntimeProcess.js';
 import { NyalaRuntimeSupervisor } from '../../node/nyalaRuntimeSupervisor.js';
@@ -31,7 +31,7 @@ class FakeSupervisors {
 	}
 }
 
-suite('Nyala runtime channel', function (this: Mocha.Suite) {
+suite('Nyala runtime channel', function () {
 
 	this.timeout(60_000);
 
@@ -39,7 +39,7 @@ suite('Nyala runtime channel', function (this: Mocha.Suite) {
 	let launch: INyalaRuntimeLaunch | undefined;
 	let tmpDir = '';
 
-	suiteSetup(async function (this: Mocha.Suite) {
+	suiteSetup(async function () {
 		const executable = await findNyalaRuntimeExecutable(REPO_ROOT, false, process.env, process.platform);
 		if (!executable) {
 			if (process.env[REQUIRED_ENV] === '1') {
@@ -87,8 +87,9 @@ suite('Nyala runtime channel', function (this: Mocha.Suite) {
 		const channel = new NyalaRuntimeChannel(supervisors, store.add(new TestRuntimeLogger()));
 		for (const params of [
 			{ driver: 'sqlite', path: 'file:/tmp/x.sqlite?mode=rwc', readOnly: true },
-			{ driver: 'sqlite', path: '/tmp/x.sqlite', readOnly: true, sessionId: 's_9' },
+			{ driver: 'sqlite', path: 'db.sqlite', readOnly: true },
 			{ driver: 'postgres', path: '/tmp/x.sqlite', readOnly: true },
+			{ driver: 'sqlite', path: '/tmp/x.sqlite' },
 		]) {
 			const answer = await channel.call<INyalaRuntimeCallResult>('window:1', 'connection.test', params);
 			assert.strictEqual(answer.ok, false, JSON.stringify(params));
@@ -96,18 +97,21 @@ suite('Nyala runtime channel', function (this: Mocha.Suite) {
 				assert.strictEqual(answer.error.data.kind, 'INVALID_PARAMS', JSON.stringify(params));
 			}
 		}
+		// A stray field is dropped rather than forwarded, which the request tests cover.
+		const dropped = connectionTarget({ driver: 'sqlite', path: '/tmp/x.sqlite', readOnly: true, sessionId: 's_9' });
+		assert.deepStrictEqual(dropped, { driver: 'sqlite', path: '/tmp/x.sqlite', readOnly: true });
 		// The relative path and the URI are refused before the supervisor is asked for one.
 		assert.strictEqual(supervisors.byWindow.size, 0);
 	});
 
-	test('each window reaches only its own runtime', async function (this: Mocha.Test) {
+	test('each window reaches only its own runtime', async function () {
 		if (!launch) {
 			this.skip();
 		}
 		const supervisors = new FakeSupervisors();
 		const logger = store.add(new TestRuntimeLogger());
 		const start = async (windowId: number) => {
-			const supervisor = store.add(new NyalaRuntimeSupervisor({ label: `window ${windowId}`, clientBuild: '0.0.1-test', resolveLaunch: async () => launch! }, logger));
+			const supervisor = store.add(new NyalaRuntimeSupervisor({ label: `window ${windowId}`, clientBuild: '0.0.1-test', supportedFeatures: NYALA_RUNTIME_FEATURES, resolveLaunch: async () => launch! }, logger));
 			supervisors.byWindow.set(windowId, supervisor);
 			await supervisor.start();
 			return supervisor;
