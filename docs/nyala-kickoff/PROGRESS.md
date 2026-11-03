@@ -161,10 +161,10 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 实现：
   - `query/common/nyalaSqlStatements.ts`：SQL-aware 分割，识别字符串/标识符/注释与 SQLite Trigger 的 `BEGIN … END`（含 `CASE … END`）；无法可靠识别时返回失败而不是猜一个片段。
   - `query/common/nyalaQueryExecution.ts`：不可变快照、状态机、终态冻结、sequence/代际过滤、取消回复不覆盖权威状态、`unknown`/`notSent` 语义。
-  - `query/common/nyalaQueryExecutionService.ts`：执行所有权；每 `queryId` 一个非终态执行；发送前注册 pending；关闭后 abandoned 并在迟到回复时取消；结果租约（acquire/release）、每窗口 3 个句柄上限与淘汰、换代本地遗忘、`release` 至多一次。
+  - `query/common/nyalaQueryExecutionService.ts`：执行所有权；每 `queryId` 一个非终态执行；发送前注册 pending；关闭后 abandoned 并在迟到回复时取消；结果租约（acquire/release）、每窗口 3 个句柄上限与淘汰、换代本地遗忘、`release` 至多一次；已终止且无结果的旧执行记录会被清理，窗口不会按执行次数累积。
   - `query/browser/nyalaQueryExecution.contribution.ts`：`Nyala: Execute`（Ctrl/Cmd+Enter，选区优先否则当前语句）、`Nyala: Execute Selection`（无默认键）、`Nyala: Execute Script`（Shift+Ctrl/Cmd+Enter）。
   - Main 进程：新增 5 个命令与 `QueryStateChanged` 通知；参数与回复结构校验；`sent`/`answered` 让执行服务区分「确定未执行」与「结果未知」。
-- **PASS（本机，Windows 11）**：`nyalaSqlStatements` 18、`nyalaQueryExecution` 17、`nyalaQueryExecutionService` 25、`nyalaQueryContext` 29、`nyalaConnectionService` 39、`nyalaRuntimeRequest` 10、`nyalaRuntimeChannel` 13、`nyalaRuntimeProtocol` 8；浏览器 `nyalaQueryExecution` 8、`nyalaQueryEditor` 29、`nyalaBootstrap` 18；`build-fast` PASS；Nyala 文件 `tsc` 0 错误。
+- **PASS（本机，Windows 11）**：`nyalaSqlStatements` 18、`nyalaQueryExecution` 17、`nyalaQueryExecutionService` 26、`nyalaQueryContext` 29、`nyalaConnectionService` 39、`nyalaRuntimeRequest` 10、`nyalaRuntimeChannel` 13、`nyalaRuntimeProtocol` 8；浏览器 `nyalaQueryExecution` 8、`nyalaQueryEditor` 29、`nyalaBootstrap` 18；`build-fast` PASS；Nyala 文件 `tsc` 0 错误。
 - **红/绿（实测）**：分别回退触发器跟踪、终态冻结、`canExecute` 门禁与未知语义、键位 weight，对应套件出现 4 / 2 / 3 / 1 条失败；恢复后全部通过。
 - **范围**：Rust 执行器与 `nyala/rpc/**` 未改；未实现结果网格（N-204/N-205）、草稿持久化（N-206）、桌面 E2E（N-207）。
 - **CI（HEAD `a0ce7e54a6e`）**：四项必需检查 PASS（[run 41665473827](https://github.com/baicie/nyala-studio-next/actions/runs/41665473827)）；手动 Full test suites PASS（[run 41666261425](https://github.com/baicie/nyala-studio-next/actions/runs/41666261425)）。
