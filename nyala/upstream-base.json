@@ -8,6 +8,6 @@
   "packageManager": "npm",
   "initializedAt": "2026-10-18",
   "syncedAt": "2026-10-29",
-  "patchCount": 64,
-  "patchCountBasis": "57 modified upstream-tracked files plus 7 new Nyala source files; documentation, CI workflow, instruction and nyala metadata files are listed separately in patch-ledger.md"
+  "patchCount": 71,
+  "patchCountBasis": "57 modified upstream-tracked files plus 14 new Nyala source files; documentation, CI workflow, instruction and nyala metadata files are listed separately in patch-ledger.md"
 }
