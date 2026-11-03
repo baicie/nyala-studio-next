@@ -9,6 +9,7 @@
 // rebound by an explicit call for that tab.
 
 import assert from 'assert';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -49,12 +50,31 @@ class FakeConnectionService implements INyalaConnectionService {
 
 	async connect(profileId: string): Promise<void> {
 		this.calls.push(`connect:${profileId}`);
+		// The session belongs to the runtime that accepted the open, so the generation is captured
+		// before any wait: a restart while the open is in flight leaves the row holding a session
+		// from the runtime that died, exactly as the real supervisor would.
+		const issuedBy = this.runtimeState.generation;
+		// A gate lets a test decide when a connect finishes, so two overlapping binds can be
+		// completed in the opposite order to the one they were started in.
+		const gate = this.gates.get(profileId);
+		if (gate) {
+			this.gates.delete(profileId);
+			await gate.p;
+		}
 		const row = this.rows.find(state => state.profile.profileId === profileId);
 		if (!row) {
 			return;
 		}
 		this.opens++;
-		this.setRow({ ...row, status: 'connected', error: undefined, handle: { profileId, sessionId: `s_${this.opens}`, sessionGeneration: 1, runtimeGeneration: this.runtimeState.generation } });
+		this.setRow({ ...row, status: 'connected', error: undefined, handle: { profileId, sessionId: `s_${this.opens}`, sessionGeneration: 1, runtimeGeneration: issuedBy } });
+	}
+
+	/** Holds the next `connect` of a profile until the returned promise completes. */
+	readonly gates = new Map<string, DeferredPromise<void>>();
+	holdConnect(profileId: string): DeferredPromise<void> {
+		const gate = new DeferredPromise<void>();
+		this.gates.set(profileId, gate);
+		return gate;
 	}
 
 	async disconnect(profileId: string): Promise<void> {
@@ -290,6 +310,140 @@ suite('Nyala query context', () => {
 
 		assert.deepStrictEqual({ ok: result.ok, message: result.ok ? undefined : result.message }, { ok: false, message: 'This query tab is no longer open.' });
 	});
+
+	//#region Binding isolation (latest intent wins)
+
+	/** Runs microtasks and timers until the pending binds have settled. */
+	async function settle(): Promise<void> {
+		await timeout(0);
+		await timeout(0);
+	}
+
+	test('a later bind wins even when an earlier one finishes last', async () => {
+		connections.rows = [row('p_a', 'disconnected'), row('p_b', 'disconnected')];
+		const tab = service.create('q_1');
+		const slowA = connections.holdConnect('p_a');
+		const fastB = connections.holdConnect('p_b');
+
+		const first = bind(tab, 'p_a');
+		await settle();
+		const second = bind(tab, 'p_b');
+		await settle();
+
+		// B, the later intent, completes first; A completes afterwards with a session of its own.
+		fastB.complete();
+		const bResult = await second;
+		slowA.complete();
+		const aResult = await first;
+
+		assert.deepStrictEqual({
+			first: aResult.ok,
+			second: bResult.ok,
+			profile: tab.profileId,
+			session: tab.binding?.sessionId,
+		}, {
+			first: false,
+			second: true,
+			profile: 'p_b',
+			// B finished first, so its connect is the one that opened the first new session.
+			session: 's_1',
+		}, 'the late reply of the superseded bind cannot override the newer choice');
+	});
+
+	test('a late bind reply cannot bind a context that was released', async () => {
+		connections.rows = [row('p_a', 'disconnected')];
+		const tab = service.create('q_1');
+		const gate = connections.holdConnect('p_a');
+		const pending = bind(tab, 'p_a');
+		await settle();
+
+		service.release(tab.queryId);
+		gate.complete();
+		const result = await pending;
+
+		assert.deepStrictEqual({ ok: result.ok, bound: tab.isBound, disposed: tab.isDisposed }, { ok: false, bound: false, disposed: true });
+	});
+
+	test('a late bind reply cannot pollute a new context that reuses the same query id', async () => {
+		connections.rows = [row('p_a', 'disconnected')];
+		const oldContext = service.create('q_1');
+		const gate = connections.holdConnect('p_a');
+		const pending = bind(oldContext, 'p_a');
+		await settle();
+
+		service.release('q_1');
+		const newContext = service.create('q_1');
+		gate.complete();
+		const result = await pending;
+
+		assert.deepStrictEqual({
+			resultOk: result.ok,
+			newBound: newContext.isBound,
+			newBinding: newContext.binding,
+			oldDisposed: oldContext.isDisposed,
+		}, { resultOk: false, newBound: false, newBinding: undefined, oldDisposed: true }, 'the new object starts clean; the old reply is dropped');
+	});
+
+	test('a runtime restart while binding does not install the stale session', async () => {
+		connections.rows = [row('p_a', 'disconnected')];
+		const tab = service.create('q_1');
+		const gate = connections.holdConnect('p_a');
+		const pending = bind(tab, 'p_a');
+		await settle();
+
+		// The runtime restarts while the connect is in flight; the row that comes back claims a
+		// session from generation 1, which the window no longer talks to.
+		connections.runtimeState = { generation: 2, status: 'ready' };
+		connections.runtimeChanges.fire(connections.runtimeState);
+		gate.complete();
+		const result = await pending;
+
+		assert.deepStrictEqual({ ok: result.ok, bound: tab.isBound, reason: tab.unboundReason }, { ok: false, bound: false, reason: 'never-bound' });
+	});
+
+	test('a stale session is refused even when the row still reports it as connected', async () => {
+		const tab = service.create('q_1');
+		// A row from generation 1 was left behind; the runtime is already at generation 2.
+		connections.rows = [connected('p_a', 's_old', 1)];
+		connections.runtimeState = { generation: 2, status: 'ready' };
+
+		const result = await bind(tab, 'p_a');
+
+		assert.deepStrictEqual({ ok: result.ok, bound: tab.isBound }, { ok: false, bound: false });
+	});
+
+	test('rapid repeated choices leave the tab bound to the last one', async () => {
+		connections.rows = [connected('p_a', 's_a'), connected('p_b', 's_b')];
+		const tab = service.create('q_1');
+
+		const results = await Promise.all([
+			bind(tab, 'p_a'),
+			bind(tab, 'p_b'),
+			bind(tab, 'p_a'),
+			bind(tab, 'p_b'),
+		]);
+
+		// None of these calls suspends (both rows are already connected), so each one commits before
+		// the next is issued: the guarantee is that the tab ends on the last choice and never on a
+		// mix. Supersession only has to drop replies that arrive late, which the gated test covers.
+		assert.deepStrictEqual({
+			profile: tab.profileId,
+			session: tab.binding?.sessionId,
+			successes: results.filter(result => result.ok).length,
+		}, { profile: 'p_b', session: 's_b', successes: 4 }, 'the final state is the last choice');
+	});
+
+	test('a bind resolved after the tab closed reports failure instead of a binding', async () => {
+		connections.rows = [connected('p_a', 's_a')];
+		const tab = service.create('q_1');
+		service.release('q_1');
+
+		const result = await bind(tab, 'p_a');
+
+		assert.deepStrictEqual({ ok: result.ok, bound: tab.isBound }, { ok: false, bound: false });
+	});
+
+	//#endregion
 
 	test('create() returns the same context for the same query id, so a reopened tab keeps its target', () => {
 		const first = service.create('q_1');

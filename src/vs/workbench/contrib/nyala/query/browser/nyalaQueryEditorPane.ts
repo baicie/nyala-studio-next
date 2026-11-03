@@ -148,7 +148,9 @@ export class NyalaQueryEditorPane extends AbstractTextCodeEditor<ICodeEditorView
 
 	private watchContext(input: NyalaQueryEditorInput): void {
 		this.stopWatching();
-		const context = this.contextService.get(input.queryId) ?? this.contextService.create(input.queryId);
+		// The context belongs to the input's shared document; the pane only observes it and must
+		// not create, release or rebind it.
+		const context = input.getContext();
 		this.currentContext = context;
 		this.contextListener = context.onDidChangeBinding(() => this.updateStatus());
 		this.updateStatus();

@@ -104,6 +104,18 @@ export class NyalaQueryContext extends Disposable {
 		return this._binding !== undefined;
 	}
 
+	/** Whether this context was released; a bind that arrives later must not use it. */
+	get isDisposed(): boolean {
+		return this._disposed;
+	}
+
+	private _disposed = false;
+
+	override dispose(): void {
+		this._disposed = true;
+		super.dispose();
+	}
+
 	/** The reason the tab has no binding; `never-bound` until it once had one. */
 	get unboundReason(): NyalaQueryUnboundReason {
 		return this._reason;

@@ -13,7 +13,7 @@ import { Dimension } from '../../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Emitter } from '../../../../../base/common/event.js';
-import { toDisposable } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ILanguageService } from '../../../../../editor/common/languages/language.js';
 import { IModelService } from '../../../../../editor/common/services/model.js';
@@ -24,11 +24,15 @@ import { NyalaQueryEditorSerializer } from '../../query/browser/nyalaQuery.contr
 import { NyalaQueryEditorPane } from '../../query/browser/nyalaQueryEditorPane.js';
 import { INyalaQueryContextService } from '../../query/common/nyalaQueryContext.js';
 import { NyalaQueryContextService } from '../../query/common/nyalaQueryContextService.js';
-import { NyalaQueryEditorInput, NYALA_QUERY_SCHEME, nyalaQueryResource, queryIdOf } from '../../query/common/nyalaQueryEditorInput.js';
+import { NyalaQueryEditorInput } from '../../query/common/nyalaQueryEditorInput.js';
+import { INyalaQueryDocumentService, NyalaQueryDocumentService } from '../../query/common/nyalaQueryDocumentService.js';
+import { NYALA_QUERY_SCHEME, nyalaQueryResource, queryIdOf } from '../../query/common/nyalaQueryResource.js';
 import { INyalaCatalog, INyalaConnectionHandle, INyalaConnectionService, INyalaConnectionState } from '../../connections/common/nyalaConnectionService.js';
 import { IEditorGroup } from '../../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
-import { EditorResourceAccessor } from '../../../../common/editor.js';
+import { EditorInputCapabilities, EditorResourceAccessor } from '../../../../common/editor.js';
+import { ConfirmResult, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { CommandsRegistry } from '../../../../../platform/commands/common/commands.js';
 import { MenuId, MenuRegistry, isIMenuItem } from '../../../../../platform/actions/common/actions.js';
@@ -142,6 +146,7 @@ suite('Nyala query editor', () => {
 
 	let connections: FakeConnectionService;
 	let contextService: NyalaQueryContextService;
+	let documentService: NyalaQueryDocumentService;
 	let instantiationService: ITestInstantiationService;
 
 	setup(() => {
@@ -150,11 +155,18 @@ suite('Nyala query editor', () => {
 		instantiationService = workbenchInstantiationService(undefined, store);
 		instantiationService.stub(INyalaConnectionService, connections);
 		instantiationService.stub(INyalaQueryContextService, contextService);
+		const modelService = instantiationService.invokeFunction(accessor => accessor.get(IModelService));
 		// The built-in `sql` language comes from an extension, which this suite does not load;
 		// registering the id keeps the model's language the one the editor asks for.
 		const languageService = instantiationService.invokeFunction(accessor => accessor.get(ILanguageService));
 		store.add(languageService.registerLanguage({ id: 'sql' }));
+		documentService = store.add(new NyalaQueryDocumentService(modelService, languageService, contextService));
+		instantiationService.stub(INyalaQueryDocumentService, documentService);
 	});
+
+	function getModelService(): IModelService {
+		return instantiationService.invokeFunction(accessor => accessor.get(IModelService));
+	}
 
 	function createInput(queryId = 'q_1'): NyalaQueryEditorInput {
 		return store.add(instantiationService.createInstance(NyalaQueryEditorInput, queryId));
@@ -260,17 +272,20 @@ suite('Nyala query editor', () => {
 		});
 	});
 
-	test('a closed and reopened query reuses the text model of that query', () => {
+	test('closing the last tab of a query disposes its model, so reopening it starts empty', () => {
 		const input = createInput('q_1');
-		input.getModel().setValue('SELECT * FROM customers;');
+		const model = input.getModel();
+		model.setValue('SELECT * FROM customers;');
 		input.dispose();
 
 		const reopened = createInput('q_1');
 
-		// Disposing the input destroys the model it owns, so the reopened tab starts empty; what
-		// must never happen is inheriting another query's text.
+		// The last holder destroyed the model, so the reopened tab starts clean; what must never
+		// happen is inheriting another query's text.
+		assert.notStrictEqual(reopened.getModel(), model);
+		assert.strictEqual(model.isDisposed(), true);
 		assert.strictEqual(reopened.getModel().getValue(), '');
-		assert.notStrictEqual(reopened.getModel().uri.toString(), nyalaQueryResource('q_2').toString());
+		assert.strictEqual(reopened.getModel().uri.toString(), nyalaQueryResource('q_1').toString());
 	});
 
 	test('a tab is dirty only after its text diverges from the last saved state', () => {
@@ -286,6 +301,157 @@ suite('Nyala query editor', () => {
 		dirtyStates.push(input.isDirty());
 
 		assert.deepStrictEqual(dirtyStates, [false, true, false, true]);
+	});
+
+	//#endregion
+
+	//#region Model and context ownership
+
+	test('two inputs for the same query share one model and one context', () => {
+		const first = createInput('q_shared');
+		const second = createInput('q_shared');
+		const firstDirty: boolean[] = [];
+		const secondDirty: boolean[] = [];
+		const listeners = store.add(new DisposableStore());
+		listeners.add(first.onDidChangeDirty(() => firstDirty.push(first.isDirty())));
+		listeners.add(second.onDidChangeDirty(() => secondDirty.push(second.isDirty())));
+
+		const model = first.getModel();
+		model.setValue('SELECT 1;');
+
+		assert.deepStrictEqual({
+			sameDocument: first.document === second.document,
+			sameModel: first.getModel() === second.getModel(),
+			sameContext: first.getContext() === second.getContext(),
+			sharedText: second.getModel().getValue(),
+			bothDirty: [first.isDirty(), second.isDirty()],
+			firstDirty,
+			secondDirty,
+			references: second.document.referenceCount,
+		}, {
+			sameDocument: true,
+			sameModel: true,
+			sameContext: true,
+			sharedText: 'SELECT 1;',
+			bothDirty: [true, true],
+			firstDirty: [true],
+			secondDirty: [true],
+			references: 2,
+		});
+	});
+
+	test('closing one of two tabs keeps the other tab\'s model and context alive', () => {
+		const first = createInput('q_shared');
+		const second = createInput('q_shared');
+		first.getModel().setValue('SELECT 1;');
+		const model = second.getModel();
+		const context = second.getContext();
+
+		first.dispose();
+
+		const afterFirstClose = {
+			modelAlive: !model.isDisposed(),
+			modelStillRegistered: getModelService().getModel(model.uri) === model,
+			text: second.getModel().getValue(),
+			contextAlive: !context.isDisposed,
+			contextStillRegistered: contextService.get('q_shared') === context,
+			documentRegistered: documentService.peek('q_shared') === second.document,
+			references: second.document.referenceCount,
+		};
+
+		second.getModel().setValue('SELECT 2;');
+
+		assert.deepStrictEqual({
+			afterFirstClose,
+			editedAfterClose: second.getModel().getValue(),
+			dirty: second.isDirty(),
+		}, {
+			afterFirstClose: {
+				modelAlive: true,
+				modelStillRegistered: true,
+				text: 'SELECT 1;',
+				contextAlive: true,
+				contextStillRegistered: true,
+				documentRegistered: true,
+				references: 1,
+			},
+			editedAfterClose: 'SELECT 2;',
+			dirty: true,
+		});
+	});
+
+	test('two query ids never share a model or a context', () => {
+		const a = createInput('q_a');
+		const b = createInput('q_b');
+		const modelA = a.getModel();
+		const modelB = b.getModel();
+		const contextA = a.getContext();
+		const contextB = b.getContext();
+		modelA.setValue('SELECT 1;');
+
+		a.dispose();
+
+		assert.deepStrictEqual({
+			distinctModels: modelA !== modelB,
+			distinctContexts: contextA !== contextB,
+			distinctDocuments: a.document !== b.document,
+			aModelGone: modelA.isDisposed(),
+			bTextUntouched: b.getModel().getValue(),
+			bModelAlive: !modelB.isDisposed(),
+			bContextAlive: !contextB.isDisposed,
+		}, {
+			distinctModels: true,
+			distinctContexts: true,
+			distinctDocuments: true,
+			aModelGone: true,
+			bTextUntouched: '',
+			bModelAlive: true,
+			bContextAlive: true,
+		});
+	});
+
+	test('the last holder releases the document, and releasing twice is a no-op', () => {
+		const first = createInput('q_last');
+		const second = createInput('q_last');
+		const document = first.document;
+		const model = first.getModel();
+		const context = first.getContext();
+		model.setValue('SELECT 1;');
+
+		first.dispose();
+		const afterOneClose = {
+			documentDisposed: document.isDisposed,
+			references: document.referenceCount,
+			modelAlive: !model.isDisposed(),
+		};
+
+		second.dispose();
+		// Neither a repeated input dispose nor a repeated release may touch the other holder.
+		first.dispose();
+		second.dispose();
+
+		assert.deepStrictEqual({
+			afterOneClose,
+			documentDisposed: document.isDisposed,
+			references: document.referenceCount,
+			modelDisposed: model.isDisposed(),
+			modelGone: getModelService().getModel(model.uri),
+			contextGone: contextService.get('q_last'),
+			contextDisposed: context.isDisposed,
+			registryEmpty: documentService.peek('q_last'),
+		}, {
+			afterOneClose: { documentDisposed: false, references: 1, modelAlive: true },
+			documentDisposed: true,
+			references: 0,
+			modelDisposed: true,
+			modelGone: null,
+			contextGone: undefined,
+			contextDisposed: true,
+			registryEmpty: undefined,
+		});
+
+		// A closed document refuses to hand out its model instead of resurrecting it.
+		assert.throws(() => document.getModel(), /was closed/);
 	});
 
 	//#endregion
@@ -383,6 +549,60 @@ suite('Nyala query editor', () => {
 		}, { context: contextB, binding: 'p_b', label: 'p_b.sqlite' });
 	});
 
+	test('two panes on two inputs of one query edit the same text and follow the same binding', async () => {
+		connections.rows = [connectedRow('p_a', 's_a')];
+		const first = createInput('q_pair');
+		const second = createInput('q_pair');
+		const paneA = createPane();
+		const paneB = createPane();
+		await paneA.pane.setInput(first, undefined, {}, CancellationToken.None);
+		await paneB.pane.setInput(second, undefined, {}, CancellationToken.None);
+
+		await contextService.bind(first.getContext(), 'p_a');
+		const label = (container: HTMLElement) => container.querySelector('.nyala-query-status-label')?.textContent;
+
+		first.getModel().setValue('SELECT * FROM customers;');
+
+		const beforeClose = {
+			textA: paneA.pane.getText(),
+			textB: paneB.pane.getText(),
+			sameContext: paneA.pane.getContext() === paneB.pane.getContext(),
+			sameBinding: paneA.pane.getExecutionBinding() === paneB.pane.getExecutionBinding(),
+			sessionA: paneA.pane.getExecutionBinding()?.sessionId,
+			labelA: label(paneA.container),
+			labelB: label(paneB.container),
+		};
+
+		// Close one of the two tabs: the other pane keeps editing the same, still-live model.
+		paneA.pane.clearInput();
+		first.dispose();
+		second.getModel().setValue('SELECT 2;');
+
+		assert.deepStrictEqual({
+			beforeClose,
+			afterClose: {
+				textB: paneB.pane.getText(),
+				modelAlive: !second.getModel().isDisposed(),
+				labelB: label(paneB.container),
+			},
+		}, {
+			beforeClose: {
+				textA: 'SELECT * FROM customers;',
+				textB: 'SELECT * FROM customers;',
+				sameContext: true,
+				sameBinding: true,
+				sessionA: 's_a',
+				labelA: 'p_a.sqlite',
+				labelB: 'p_a.sqlite',
+			},
+			afterClose: {
+				textB: 'SELECT 2;',
+				modelAlive: true,
+				labelB: 'p_a.sqlite',
+			},
+		});
+	});
+
 	//#endregion
 
 	//#region Registration and commands
@@ -449,22 +669,26 @@ suite('Nyala query editor', () => {
 
 	//#region Persistence and disposal
 
-	test('the serializer stores the query id and text, never a session, path or credential', () => {
+	test('the serializer stores the query id only, never the text, a session, path or credential', () => {
 		connections.rows = [connectedRow('p_a', 's_a', '/home/alice/private.sqlite')];
 		const input = createInput('q_1');
-		input.getModel().setValue('SELECT * FROM customers;');
+		input.getModel().setValue("SELECT * FROM customers WHERE token = 'sk-live-secret';");
 		contextService.create('q_1');
 		const serializer = new NyalaQueryEditorSerializer();
 
 		const serialized = serializer.serialize(input) ?? '';
 
-		assert.deepStrictEqual(JSON.parse(serialized), { queryId: 'q_1', text: 'SELECT * FROM customers;' });
+		assert.deepStrictEqual(JSON.parse(serialized), { queryId: 'q_1' });
 		assert.ok(!serialized.includes('alice'));
 		assert.ok(!serialized.includes('s_a'));
 		assert.ok(!serialized.includes('private.sqlite'));
+		// N-202 does not put the SQL body into the window layout: a layout file must not become a
+		// silent store for statements that may contain sensitive literals.
+		assert.ok(!serialized.includes('sk-live-secret'));
+		assert.ok(!serialized.includes('SELECT'));
 	});
 
-	test('deserializing restores a tab with its text and no binding', () => {
+	test('deserializing restores the tab identity with no text and no binding', () => {
 		connections.rows = [connectedRow('p_a', 's_a')];
 		const serializer = new NyalaQueryEditorSerializer();
 
@@ -474,9 +698,63 @@ suite('Nyala query editor', () => {
 		assert.deepStrictEqual({
 			text: restored?.getModel().getValue(),
 			queryId: restored?.queryId,
+			dirty: restored?.isDirty(),
 			bound: contextService.get('q_1')?.isBound ?? false,
 			execution: contextService.get('q_1')?.canExecute(connections.runtimeState) ?? false,
-		}, { text: 'SELECT 1;', queryId: 'q_1', bound: false, execution: false });
+		}, { text: '', queryId: 'q_1', dirty: false, bound: false, execution: false });
+	});
+
+	test('saving a query tab reports that it has no file instead of pretending to succeed', async () => {
+		const input = createInput('q_1');
+		input.getModel().setValue('SELECT 1;');
+
+		await assert.rejects(input.save(1), /not saved to a file/);
+		await assert.rejects(input.saveAs(1), /not saved to a file/);
+		assert.strictEqual(input.isDirty(), true);
+	});
+
+	test('revert restores the text the tab was opened with and clears the dirty state', async () => {
+		const input = createInput('q_1');
+		input.setText('SELECT 1;');
+		input.getModel().setValue('SELECT 2;');
+
+		const dirtyBefore = input.isDirty();
+		await input.revert(1);
+
+		assert.deepStrictEqual({
+			dirtyBefore,
+			text: input.getModel().getValue(),
+			dirtyAfter: input.isDirty(),
+		}, { dirtyBefore: true, text: 'SELECT 1;', dirtyAfter: false });
+	});
+
+	test('closing a dirty query tab asks before discarding text and never offers a save', async () => {
+		const input = createInput('q_1');
+		const dialogService = instantiationService.invokeFunction(accessor => accessor.get(IDialogService)) as TestDialogService;
+		const closeHandler = input.closeHandler!;
+
+		const cleanPrompt = closeHandler.showConfirm();
+		input.getModel().setValue('SELECT 1;');
+		const dirtyPrompt = closeHandler.showConfirm();
+
+		dialogService.setConfirmResult({ confirmed: false, checkboxChecked: false });
+		const cancelled = await closeHandler.confirm([{ editor: input, groupId: 1 }]);
+		dialogService.setConfirmResult({ confirmed: true, checkboxChecked: false });
+		const accepted = await closeHandler.confirm([{ editor: input, groupId: 1 }]);
+
+		assert.deepStrictEqual({
+			cleanPrompt,
+			dirtyPrompt,
+			cancelled,
+			accepted,
+			capabilities: input.capabilities,
+		}, {
+			cleanPrompt: false,
+			dirtyPrompt: true,
+			cancelled: ConfirmResult.CANCEL,
+			accepted: ConfirmResult.DONT_SAVE,
+			capabilities: EditorInputCapabilities.Scratchpad,
+		});
 	});
 
 	test('a corrupt serialized tab is refused instead of restoring something unexpected', () => {

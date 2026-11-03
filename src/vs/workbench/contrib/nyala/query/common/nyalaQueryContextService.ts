@@ -28,6 +28,19 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 	declare readonly _serviceBrand: undefined;
 
 	private readonly contexts = new Map<string, NyalaQueryContext>();
+	/**
+	 * The latest binding intent per query id. Every `bind` call claims a new number and may only
+	 * commit while its number is still the current one; a reply that arrives after a later intent
+	 * (or after the tab was closed) is dropped instead of overwriting the newer decision.
+	 *
+	 * Keyed by query id, not by the context object, and compared together with the context: two
+	 * contexts may briefly share an id while an editor input is replaced, and a reply meant for the
+	 * old object must never bind the new one.
+	 */
+	private readonly intents = new Map<string, { readonly context: NyalaQueryContext; readonly intent: number }>();
+	private nextIntent = 0;
+	/** The runtime generation this service has already seen; `undefined` until the first event. */
+	private lastSeenGeneration: number | undefined;
 
 	constructor(
 		@INyalaConnectionService private readonly connectionService: INyalaConnectionService,
@@ -65,6 +78,9 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 			return;
 		}
 		this.contexts.delete(queryId);
+		// A reply still in flight must not bind the released object, nor a later one that reuses
+		// the same id: dropping the intent makes every outstanding call stale.
+		this.intents.delete(queryId);
 		context.dispose();
 	}
 
@@ -74,6 +90,8 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 		if (this.contexts.get(context.queryId) !== context) {
 			return { ok: false, message: localize('nyala.query.bind.unknownContext', 'This query tab is no longer open.') };
 		}
+
+		const want = this.claimIntent(context);
 
 		const row = this.connectionService.connections.find(state => state.profile.profileId === profileId);
 		if (!row) {
@@ -87,15 +105,29 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 			await this.connectionService.connect(profileId);
 		}
 
+		// The row may have changed while this call waited: the tab may have been closed, another
+		// intent may have superseded this one, or the runtime may have restarted. All three make
+		// this reply stale, and a stale reply must not bind anything.
+		if (!this.isCurrentIntent(context, want)) {
+			return { ok: false, message: supersededMessage() };
+		}
+
 		const connected = this.connectionService.connections.find(state => state.profile.profileId === profileId);
 		if (!connected || connected.status !== 'connected' || !connected.handle) {
 			return { ok: false, message: describeFailure(connected) };
 		}
 
 		const handle = connected.handle;
-		// The profile row may have been reconnected while this tab waited; the handle read after
-		// the await is the one that matters, and it is bound as a whole (never mixed with an older
-		// session id from before the await).
+		// The handle is bound as a whole, and only if the runtime that issued it is the one the
+		// workbench is talking to now. A generation change while waiting means the session belongs
+		// to a process that is gone.
+		if (!this.isReadyGeneration(handle.runtimeGeneration)) {
+			return { ok: false, message: localize('nyala.query.bind.staleRuntime', 'The runtime restarted while connecting. Choose a connection again.') };
+		}
+		if (!this.isCurrentIntent(context, want)) {
+			return { ok: false, message: supersededMessage() };
+		}
+
 		context.bind({
 			profileId: handle.profileId,
 			profileName: connected.profile.displayName,
@@ -110,6 +142,32 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 		return { ok: true, binding: context.binding! };
 	}
 
+	/** Claims the next intent for a context, superseding whatever that query was doing. */
+	private claimIntent(context: NyalaQueryContext): number {
+		const intent = ++this.nextIntent;
+		this.intents.set(context.queryId, { context, intent });
+		return intent;
+	}
+
+	/**
+	 * Whether the intent that is committing is still the one the user last expressed, for the same
+	 * context object. A released context, a re-created context under the same id, a later bind and
+	 * a runtime generation change all answer `false`.
+	 */
+	private isCurrentIntent(context: NyalaQueryContext, intent: number): boolean {
+		if (this.contexts.get(context.queryId) !== context || context.isDisposed) {
+			return false;
+		}
+		const current = this.intents.get(context.queryId);
+		return current?.context === context && current.intent === intent;
+	}
+
+	/** Whether the handle's runtime generation is the one this window is currently talking to. */
+	private isReadyGeneration(generation: number): boolean {
+		const state = this.connectionService.runtimeState;
+		return state.status === 'ready' && state.generation === generation;
+	}
+
 	override dispose(): void {
 		// Contexts are created here, so this service is their owner: a tab that never closed must
 		// not leave a live emitter (or a session reference) behind when the window goes away.
@@ -117,6 +175,7 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 			context.dispose();
 		}
 		this.contexts.clear();
+		this.intents.clear();
 		super.dispose();
 	}
 
@@ -146,6 +205,13 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 	}
 
 	private onRuntimeState(state: INyalaRuntimeState): void {
+		const generation = this.lastSeenGeneration;
+		this.lastSeenGeneration = state.generation;
+		// A generation change or a dead runtime invalidates whatever a pending bind was about to
+		// install: the session it read belongs to the runtime that just went away.
+		if (state.status !== 'ready' || (generation !== undefined && generation !== state.generation)) {
+			this.intents.clear();
+		}
 		if (state.status === 'ready') {
 			this.reconcile();
 			return;
@@ -157,6 +223,11 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 			}
 		}
 	}
+}
+
+/** Why a bind that was overtaken by a later action did not change anything. */
+function supersededMessage(): string {
+	return localize('nyala.query.bind.superseded', 'A newer connection choice replaced this one.');
 }
 
 /** A short, safe explanation for a row that cannot be bound. */

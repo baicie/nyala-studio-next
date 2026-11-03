@@ -32,13 +32,16 @@ import { generateUuid } from '../../../../../base/common/uuid.js';
 import { INyalaConnectionService } from '../../connections/common/nyalaConnectionService.js';
 import { INyalaQueryContextService } from '../common/nyalaQueryContext.js';
 import { NyalaQueryContextService } from '../common/nyalaQueryContextService.js';
-import { NYALA_QUERY_SCHEME, NyalaQueryEditorInput, nyalaQueryResource, queryIdOf } from '../common/nyalaQueryEditorInput.js';
+import { INyalaQueryDocumentService, NyalaQueryDocumentService } from '../common/nyalaQueryDocumentService.js';
+import { NyalaQueryEditorInput } from '../common/nyalaQueryEditorInput.js';
+import { NYALA_QUERY_SCHEME, nyalaQueryResource, queryIdOf } from '../common/nyalaQueryResource.js';
 import { NyalaQueryEditorPane } from './nyalaQueryEditorPane.js';
 
 export const NYALA_NEW_QUERY_COMMAND_ID = 'nyala.query.new';
 export const NYALA_CHANGE_CONNECTION_COMMAND_ID = 'nyala.query.changeConnection';
 
 registerSingleton(INyalaQueryContextService, NyalaQueryContextService, InstantiationType.Delayed);
+registerSingleton(INyalaQueryDocumentService, NyalaQueryDocumentService, InstantiationType.Delayed);
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(
@@ -50,8 +53,10 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 );
 
 /**
- * Restores a query tab after a reload. The serialized form holds the query id and the text only;
- * sessions, paths and credentials are not serializable from a query tab by construction.
+ * Restores a query tab after a reload. The serialized form holds the query id only: sessions,
+ * paths and credentials cannot enter it by construction, and N-202 deliberately does not write the
+ * SQL body into the layout either. Query text that may carry sensitive literals is persisted only
+ * by N-206's own, opt-in store. A restored tab therefore comes back empty and unbound.
  */
 export class NyalaQueryEditorSerializer implements IEditorSerializer {
 
@@ -63,21 +68,17 @@ export class NyalaQueryEditorSerializer implements IEditorSerializer {
 		if (!(editorInput instanceof NyalaQueryEditorInput)) {
 			return undefined;
 		}
-		return JSON.stringify({ queryId: editorInput.queryId, text: editorInput.getModel().getValue() });
+		return JSON.stringify({ queryId: editorInput.queryId });
 	}
 
 	deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
 		try {
-			const data = JSON.parse(serializedEditor) as { queryId?: unknown; text?: unknown };
+			const data = JSON.parse(serializedEditor) as { queryId?: unknown };
 			const queryId = typeof data.queryId === 'string' ? data.queryId : undefined;
 			if (!queryId || !/^[A-Za-z0-9_-]+$/.test(queryId)) {
 				return undefined;
 			}
-			const input = instantiationService.createInstance(NyalaQueryEditorInput, queryId);
-			if (typeof data.text === 'string') {
-				input.setText(data.text);
-			}
-			return input;
+			return instantiationService.createInstance(NyalaQueryEditorInput, queryId);
 		} catch {
 			return undefined;
 		}
@@ -190,7 +191,7 @@ registerAction2(class extends Action2 {
 			return;
 		}
 
-		const context = contextService.get(input.queryId) ?? contextService.create(input.queryId);
+		const context = input.getContext();
 		const result = await contextService.bind(context, picked.profileId);
 		if (!result.ok) {
 			logService.warn(`Nyala: binding ${input.queryId} failed: ${result.message}`);

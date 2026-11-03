@@ -3,55 +3,34 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// The editor input of one Nyala query tab (N-202). It owns nothing but identity and the text:
+// The editor input of one Nyala query tab (N-202). It owns nothing but identity:
 //
 //   - identity is `queryId`, exposed as the URI `nyala-query://local/<queryId>`;
-//   - the text lives in an `IModelService` model under that URI, so a closed and reopened tab can
-//     reuse it while another tab gets its own model;
-//   - the execution target lives in a `NyalaQueryContext`, never in this input and never in a
-//     global "current connection".
+//   - the text model and the query context belong to the query's `NyalaQueryDocument`, which this
+//     input holds a reference to; two inputs for the same query therefore share both, and closing
+//     one of them never destroys what the other is still using;
+//   - the execution target lives in that context, never in this input and never in a global
+//     "current connection".
 //
 // The URI carries the query id and nothing else. It is visible in the tab, the window title and
 // any serialized layout, so it must not contain a path, a connection string, a user name, a
 // password or a token (ADR 0007).
 
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { ILanguageService } from '../../../../../editor/common/languages/language.js';
 import { ITextModel } from '../../../../../editor/common/model.js';
-import { IModelService } from '../../../../../editor/common/services/model.js';
 import { localize } from '../../../../../nls.js';
-import { EditorInputCapabilities, IUntypedEditorInput, Verbosity } from '../../../../common/editor.js';
-import { EditorInput } from '../../../../common/editor/editorInput.js';
-import { INyalaQueryContextService } from './nyalaQueryContext.js';
-
-/** The scheme of a query tab's URI. `local` marks the window; no path or secret is encoded. */
-export const NYALA_QUERY_SCHEME = 'nyala-query';
-
-/** The editor type id; also the pane id and the serializer's input id. */
-export const NYALA_QUERY_EDITOR_ID = 'workbench.editor.nyalaQuery';
-
-/** `sql`, matching the built-in syntax the workbench already ships. */
-export const NYALA_QUERY_LANGUAGE_ID = 'sql';
-
-/** The URI of a query. Only the query id appears in it. */
-export function nyalaQueryResource(queryId: string): URI {
-	return URI.from({ scheme: NYALA_QUERY_SCHEME, authority: 'local', path: `/${queryId}` });
-}
-
-/** Reads a query id back out of a query URI, or `undefined` for anything else. */
-export function queryIdOf(resource: URI | undefined): string | undefined {
-	if (!resource || resource.scheme !== NYALA_QUERY_SCHEME || resource.authority !== 'local') {
-		return undefined;
-	}
-	const id = resource.path.replace(/^\//, '');
-	return id.length > 0 && !id.includes('/') ? id : undefined;
-}
+import { ConfirmResult, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { EditorInputCapabilities, GroupIdentifier, IRevertOptions, ISaveOptions, IUntypedEditorInput, Verbosity } from '../../../../common/editor.js';
+import { EditorInput, IEditorCloseHandler } from '../../../../common/editor/editorInput.js';
+import { NyalaQueryContext } from './nyalaQueryContext.js';
+import { NyalaQueryDocument } from './nyalaQueryDocument.js';
+import { INyalaQueryDocumentService } from './nyalaQueryDocumentService.js';
+import { NYALA_QUERY_EDITOR_ID } from './nyalaQueryResource.js';
 
 /**
- * One query tab. The text model is created on demand and handed to the pane; the context is
- * fetched from the window's context service so a reopened tab and its first tab share only what
- * the query id says they share.
+ * One query tab. The text and the context come from the window's document service, so a second tab
+ * for the same query shares them and a different query shares nothing.
  */
 export class NyalaQueryEditorInput extends EditorInput {
 
@@ -67,36 +46,63 @@ export class NyalaQueryEditorInput extends EditorInput {
 
 	override readonly resource: URI;
 
+	/** The query's shared model and context. Never disposed by this input directly. */
+	readonly document: NyalaQueryDocument;
+
 	/**
-	 * A query tab is dirty until it is saved to a file; the workbench must not close it silently.
-	 * It is not a singleton: the same query may be shown in two groups, sharing the model.
+	 * A query tab is dirty until its text is saved; the workbench must not close it silently.
+	 * It is not a singleton: the same query may be shown in two groups, sharing the document.
+	 * `Scratchpad` says what is true in N-202: no file backs the tab, so it is kept out of
+	 * "Save All" and out of the dirty-editor LRU cleanup until N-206 adds persistence.
 	 */
 	override get capabilities(): EditorInputCapabilities {
-		return EditorInputCapabilities.None;
+		return EditorInputCapabilities.Scratchpad;
 	}
 
-	private readonly modelDisposables = this._register(new DisposableStore());
-	private model: ITextModel | undefined;
-	private savedVersionId: number | undefined;
+	/**
+	 * Closing a dirty query tab must not offer "Save": there is no file to save to. The dialog
+	 * says what will be lost and offers only Close/Cancel.
+	 */
+	override readonly closeHandler: IEditorCloseHandler = {
+		showConfirm: () => this.isDirty(),
+		confirm: async editors => {
+			const message = editors.length === 1
+				? localize('nyala.query.close.one', 'Close "{0}" without saving?', editors[0].editor.getName())
+				: localize('nyala.query.close.many', 'Close {0} query tabs without saving?', editors.length);
+			const { confirmed } = await this.dialogService.confirm({
+				type: 'warning',
+				message,
+				detail: localize('nyala.query.close.detail', 'A query tab is not saved to a file yet. Its text exists only in this window and will be lost.'),
+				primaryButton: localize('nyala.query.close.confirm', 'Close'),
+			});
+			return confirmed ? ConfirmResult.DONT_SAVE : ConfirmResult.CANCEL;
+		},
+	};
+
+	private readonly documentListeners = this._register(new DisposableStore());
+	private readonly reference: IDisposable;
 
 	constructor(
 		readonly queryId: string,
-		@IModelService private readonly modelService: IModelService,
-		@ILanguageService private readonly languageService: ILanguageService,
-		@INyalaQueryContextService private readonly contextService: INyalaQueryContextService,
+		@INyalaQueryDocumentService documentService: INyalaQueryDocumentService,
+		@IDialogService private readonly dialogService: IDialogService,
 	) {
 		super();
-		this.resource = nyalaQueryResource(queryId);
+		this.document = documentService.get(queryId);
+		this.resource = this.document.resource;
+		this.reference = this.document.acquire();
+		// Dirty state is a property of the shared text, so every input of the query hears about it.
+		this.documentListeners.add(this.document.onDidChangeText(() => this._onDidChangeDirty.fire()));
 	}
 
 	override getName(): string {
-		// The query id is a uuid; the user should not have to read it. The number is the tab's
-		// ordinal within this window, so two query tabs stay distinguishable.
+		// The query id is a uuid; the user should not have to read it. The prefix keeps two query
+		// tabs distinguishable while the full id stays the identity.
 		return localize('nyala.query.name', 'Query {0}', this.queryId.slice(0, 8));
 	}
 
 	override getDescription(verbosity = Verbosity.MEDIUM): string | undefined {
-		const binding = this.contextService.get(this.queryId)?.binding;
+		const binding = this.document.context.binding;
 		if (!binding) {
 			return verbosity === Verbosity.SHORT ? undefined : localize('nyala.query.unbound', 'no connection');
 		}
@@ -109,40 +115,50 @@ export class NyalaQueryEditorInput extends EditorInput {
 	}
 
 	override isDirty(): boolean {
-		const model = this.model;
-		if (!model) {
-			return false;
-		}
-		return this.savedVersionId !== undefined && this.savedVersionId !== model.getVersionId();
+		return !this.document.isDisposed && this.document.isDirty;
 	}
 
-	/** The model of this query, created once and kept across pane re-creation. */
+	/** The model of this query, shared with every other input for it. */
 	getModel(): ITextModel {
-		if (!this.model || this.model.isDisposed()) {
-			const existing = this.modelService.getModel(this.resource);
-			this.model = existing ?? this.modelService.createModel('', this.languageService.createById(NYALA_QUERY_LANGUAGE_ID), this.resource);
-			this.watchModel(this.model);
-		}
-		return this.model;
+		return this.document.getModel();
+	}
+
+	/** The execution target of this query, shared with every other input for it. */
+	getContext(): NyalaQueryContext {
+		return this.document.context;
 	}
 
 	/** Replaces the whole text, e.g. when a draft is restored into a reopened tab. */
 	setText(text: string): void {
-		const model = this.getModel();
-		model.setValue(text);
-		this.savedVersionId = model.getVersionId();
-		this._onDidChangeDirty.fire();
+		this.document.setText(text);
 	}
 
-	/** Marks the current text as the saved one; the pane calls this after writing a file. */
+	/** Marks the current text as the saved one; both inputs of the query become clean. */
 	markSaved(): void {
-		this.savedVersionId = this.getModel().getVersionId();
-		this._onDidChangeDirty.fire();
+		this.document.markSaved();
 	}
 
 	/** Whether the text differs from the last saved state (always false for a brand new model). */
 	get hasUnsavedText(): boolean {
 		return this.isDirty();
+	}
+
+	/**
+	 * N-202 has no file behind a query tab. `EditorInput.save()` would return `this`, which makes
+	 * Ctrl+S look like it saved something; failing visibly is the honest behavior until N-206 adds
+	 * a real Save As / draft flow.
+	 */
+	override async save(group: GroupIdentifier, options?: ISaveOptions): Promise<EditorInput | undefined> {
+		throw notSavedToFile();
+	}
+
+	override async saveAs(group: GroupIdentifier, options?: ISaveOptions): Promise<EditorInput | undefined> {
+		throw notSavedToFile();
+	}
+
+	/** Restores the text the tab had when it was opened (or last marked saved). */
+	override async revert(group: GroupIdentifier, options?: IRevertOptions): Promise<void> {
+		this.document.revert();
 	}
 
 	override matches(otherInput: EditorInput | IUntypedEditorInput): boolean {
@@ -154,22 +170,18 @@ export class NyalaQueryEditorInput extends EditorInput {
 		return otherInput instanceof NyalaQueryEditorInput && otherInput.queryId === this.queryId;
 	}
 
-	/** Text is kept while the window lives; the model is disposed with the input. */
+	/**
+	 * Gives up this tab's reference. The shared model and context are destroyed only when the last
+	 * input for the query lets go, so closing one of two tabs leaves the other fully usable.
+	 */
 	override dispose(): void {
-		this.modelDisposables.clear();
-		this.contextService.release(this.queryId);
-		if (this.model && !this.model.isDisposed()) {
-			this.modelService.destroyModel(this.resource);
-		}
-		this.model = undefined;
+		this.documentListeners.clear();
+		this.reference.dispose();
 		super.dispose();
 	}
+}
 
-	private watchModel(model: ITextModel): void {
-		if (this.savedVersionId === undefined) {
-			this.savedVersionId = model.getVersionId();
-		}
-		this.modelDisposables.clear();
-		this.modelDisposables.add(model.onDidChangeContent(() => this._onDidChangeDirty.fire()));
-	}
+/** The one refusal behind both save entry points; the message is what the notification shows. */
+function notSavedToFile(): Error {
+	return new Error(localize('nyala.query.save.noFile', 'This query tab is not saved to a file yet. Its text exists only in this window; copy the SQL if you need to keep it.'));
 }
