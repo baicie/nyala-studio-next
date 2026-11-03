@@ -47,7 +47,7 @@ export type NyalaQueryUnboundReason = 'never-bound' | 'connection-closed' | 'run
  *             the user just moved away from.
  *
  * A switch never goes back to `idle` holding the previous binding: it ends either bound to the new
- * profile or unbound with a reason (ADR 0007 §3).
+ * profile or unbound with a reason (ADR 0007, section 3).
  */
 export type NyalaQueryBindingState = 'idle' | 'switching';
 
@@ -179,7 +179,7 @@ export class NyalaQueryContext extends Disposable {
 	/**
 	 * Ends a switch that produced no target. The previous binding is deliberately **not** restored:
 	 * the user asked for another connection, and reviving the old session behind that request would
-	 * be the silent rebind this context exists to prevent (ADR 0007 §3).
+	 * be the silent rebind this context exists to prevent (ADR 0007, section 3).
 	 */
 	failSwitch(reason: Exclude<NyalaQueryUnboundReason, 'never-bound'>): void {
 		this._state = 'idle';

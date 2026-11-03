@@ -10,7 +10,7 @@
 //
 // A restored tab comes back with its query id only — no text and no session. A reload always
 // lands on an empty, unbound tab: the binding is an explicit user action (`Nyala: Change Query
-// Connection`), and the SQL body is never written to the layout (ADR 0007 §6).
+// Connection`), and the SQL body is never written to the layout (ADR 0007, section 6).
 
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
