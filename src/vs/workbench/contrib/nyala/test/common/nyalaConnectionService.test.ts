@@ -29,7 +29,8 @@ class FakeBridge implements INyalaRuntimeBridge {
 	readonly onDidChangeState = this.states.event;
 	state: INyalaRuntimeState = { generation: 1, status: 'ready' };
 	/** Per-command answer; the default succeeds. */
-	readonly answers = new Map<string, INyalaRuntimeCallResult>();
+	/** A command's answer, or `{ throws }` when the bridge call itself rejects. */
+	readonly answers = new Map<string, INyalaRuntimeCallResult | { throws: string }>();
 	/** Per-command gate: while set, `call` waits for it. */
 	private readonly gates = new Map<string, DeferredPromise<void>>();
 	/** Session ids handed out, so two opens are distinguishable. */
@@ -55,6 +56,11 @@ class FakeBridge implements INyalaRuntimeBridge {
 		}
 		const answer = this.answers.get(command);
 		if (answer) {
+			// A bridge rejects when the IPC itself fails; that is not an RPC answer and must not be
+			// confused with one.
+			if (typeof (answer as { throws?: string }).throws === 'string') {
+				throw new Error((answer as { throws: string }).throws);
+			}
 			return answer as INyalaRuntimeCallResult<T>;
 		}
 		switch (command) {
@@ -551,7 +557,90 @@ suite('Nyala connection service', () => {
 		assert.strictEqual(service.catalog(profileId), undefined, 'a superseded refresh commits nothing');
 	});
 
-	test('a refresh failure is shown on the row and leaves the handle alone', async () => {
+	test('a metadata failure keeps the session, because the session did not fail', async () => {
+		const profileId = await addProfile();
+		await service.connect(profileId);
+		const opened = stateOf(profileId).handle;
+		bridge.answers.set(NyalaRuntimeCommand.ListObjects, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32011, message: 'mismatch', data: { kind: 'PROTOCOL_MISMATCH', retryable: false } },
+		});
+		const closesBefore = bridge.commands().filter(command => command === NyalaRuntimeCommand.CloseConnection).length;
+		await service.refresh(profileId);
+
+		assert.deepStrictEqual({
+			status: stateOf(profileId).status,
+			catalog: service.catalog(profileId),
+			handleKept: stateOf(profileId).handle?.sessionId,
+			closes: bridge.commands().filter(command => command === NyalaRuntimeCommand.CloseConnection).length - closesBefore,
+		}, {
+			status: 'error',
+			catalog: undefined,
+			handleKept: opened?.sessionId,
+			closes: 0,
+		}, 'the runtime never said the session is gone, so no close is sent and the handle is kept');
+	});
+
+	test('a refresh whose bridge call throws keeps the session and lets the caller see the failure', async () => {
+		const profileId = await addProfile();
+		await service.connect(profileId);
+		const opened = stateOf(profileId).handle;
+		bridge.answers.set(NyalaRuntimeCommand.ListObjects, { throws: 'IPC channel closed' });
+
+		// A rejected bridge call is not an RPC answer, so it is not logged as a connection error:
+		// it propagates, and the row is left holding the session it had.
+		await assert.rejects(() => service.refresh(profileId), /IPC channel closed/);
+
+		assert.deepStrictEqual({
+			status: stateOf(profileId).status,
+			handleKept: stateOf(profileId).handle?.sessionId,
+			catalog: service.catalog(profileId),
+			closes: bridge.commands().filter(command => command === NyalaRuntimeCommand.CloseConnection).length,
+		}, { status: 'connected', handleKept: opened?.sessionId, catalog: { tables: ['customers'], views: ['recent_orders'], indexes: ['customers_by_name'] }, closes: 0 });
+	});
+
+	test('a refresh that learns the session is gone closes it and forgets the handle', async () => {
+		const profileId = await addProfile();
+		await service.connect(profileId);
+		bridge.answers.set(NyalaRuntimeCommand.ListObjects, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32603, message: 'no such session', data: { kind: 'INVALID_SESSION', retryable: false } },
+		});
+
+		await service.refresh(profileId);
+
+		assert.deepStrictEqual({
+			status: stateOf(profileId).status,
+			handle: stateOf(profileId).handle,
+			closes: bridge.commands().filter(command => command === NyalaRuntimeCommand.CloseConnection).length,
+		}, { status: 'error', handle: undefined, closes: 1 }, 'a session the runtime says is gone is closed and dropped');
+	});
+
+	test('a refresh that cannot close a session it believes is gone keeps it closeable', async () => {
+		const profileId = await addProfile();
+		await service.connect(profileId);
+		bridge.answers.set(NyalaRuntimeCommand.ListObjects, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32603, message: 'no such session', data: { kind: 'INVALID_SESSION', retryable: false } },
+		});
+		bridge.answers.set(NyalaRuntimeCommand.CloseConnection, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32603, message: 'busy', data: { kind: 'RESOURCE_LIMIT', retryable: true } },
+		});
+
+		await service.refresh(profileId);
+
+		assert.deepStrictEqual({
+			status: stateOf(profileId).status,
+			handle: stateOf(profileId).handle?.sessionId,
+		}, { status: 'error', handle: 's_1' }, 'the only reference to the live session is not dropped');
+	});
+
+	test('reconnecting after a failed refresh closes the old session before opening another', async () => {
 		const profileId = await addProfile();
 		await service.connect(profileId);
 		bridge.answers.set(NyalaRuntimeCommand.ListObjects, {
@@ -560,11 +649,123 @@ suite('Nyala connection service', () => {
 			error: { code: -32011, message: 'mismatch', data: { kind: 'PROTOCOL_MISMATCH', retryable: false } },
 		});
 		await service.refresh(profileId);
+		const before = bridge.calls.length;
 
-		const state = stateOf(profileId);
-		assert.strictEqual(state.status, 'error');
-		assert.strictEqual(service.catalog(profileId), undefined);
-		assert.ok(!state.handle, 'a failed refresh does not claim the session is usable');
+		bridge.answers.delete(NyalaRuntimeCommand.ListObjects);
+		await service.connect(profileId);
+
+		assert.deepStrictEqual(bridge.commands(before), [
+			NyalaRuntimeCommand.CloseConnection,
+			NyalaRuntimeCommand.TestConnection,
+			NyalaRuntimeCommand.OpenConnection,
+			NyalaRuntimeCommand.ListObjects,
+		], 'the unusable session is retired before a new one is tested and opened');
+		assert.strictEqual(stateOf(profileId).status, 'connected');
+	});
+
+	test('a reconnect whose old session will not close opens no second session', async () => {
+		const profileId = await addProfile();
+		await service.connect(profileId);
+		const opened = stateOf(profileId).handle;
+		bridge.answers.set(NyalaRuntimeCommand.CloseConnection, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32603, message: 'busy', data: { kind: 'RESOURCE_LIMIT', retryable: true } },
+		});
+		const before = bridge.calls.length;
+
+		await service.connect(profileId);
+
+		assert.deepStrictEqual({
+			commands: bridge.commands(before),
+			status: stateOf(profileId).status,
+			handle: stateOf(profileId).handle?.sessionId,
+			openedNow: opened?.sessionId,
+		}, {
+			commands: [NyalaRuntimeCommand.CloseConnection],
+			status: 'error',
+			handle: opened?.sessionId,
+			openedNow: opened?.sessionId,
+		}, 'no TestConnection/OpenConnection is sent while a session is unaccounted for');
+	});
+
+	test('Disconnect retries a session a failed close left behind', async () => {
+		const profileId = await addProfile();
+		await service.connect(profileId);
+		const opened = stateOf(profileId).handle;
+		bridge.answers.set(NyalaRuntimeCommand.CloseConnection, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32603, message: 'busy', data: { kind: 'RESOURCE_LIMIT', retryable: true } },
+		});
+		await service.disconnect(profileId);
+		assert.strictEqual(stateOf(profileId).status, 'error', 'the failed close is visible');
+
+		bridge.answers.delete(NyalaRuntimeCommand.CloseConnection);
+		await service.disconnect(profileId);
+
+		assert.deepStrictEqual({
+			status: stateOf(profileId).status,
+			handle: stateOf(profileId).handle,
+			closedSession: opened?.sessionId,
+		}, { status: 'disconnected', handle: undefined, closedSession: 's_1' }, 'the retry closes the session the first attempt could not');
+	});
+
+	test('a connect superseded while the runtime was opening leaves no untracked session', async () => {
+		const profileId = await addProfile();
+		const openHeld = bridge.hold(NyalaRuntimeCommand.OpenConnection);
+		const first = service.connect(profileId);
+		await settle();
+
+		// A second connect supersedes the first while the runtime is still opening its session.
+		bridge.answers.set(NyalaRuntimeCommand.CloseConnection, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32603, message: 'busy', data: { kind: 'RESOURCE_LIMIT', retryable: true } },
+		});
+		const second = service.connect(profileId);
+		openHeld.complete();
+		await Promise.all([first, second]);
+
+		const closes = bridge.commands().filter(command => command === NyalaRuntimeCommand.CloseConnection).length;
+		const opened = bridge.calls.filter(call => call.command === NyalaRuntimeCommand.OpenConnection).map(call => call);
+		assert.deepStrictEqual({
+			status: stateOf(profileId).status,
+			opens: opened.length,
+			closes,
+			handleIsSecondSession: stateOf(profileId).handle?.sessionId === 's_2',
+		}, {
+			status: 'connected',
+			opens: 2,
+			closes: 1,
+			handleIsSecondSession: true,
+		}, 'the second attempt owns the row, and the session the superseded one opened was closed exactly once');
+	});
+
+	test('a runtime restart retires sessions that could not be closed', async () => {
+		const profileId = await addProfile();
+		await service.connect(profileId);
+		bridge.answers.set(NyalaRuntimeCommand.CloseConnection, {
+			ok: false,
+			runtimeGeneration: 1,
+			error: { code: -32603, message: 'busy', data: { kind: 'RESOURCE_LIMIT', retryable: true } },
+		});
+		await service.disconnect(profileId);
+		assert.strictEqual(stateOf(profileId).status, 'error');
+
+		// The runtime that knew that session is gone; a new one must not inherit the retry list.
+		bridge.state = { generation: 2, status: 'ready' };
+		bridge.states.fire(bridge.state);
+		bridge.answers.delete(NyalaRuntimeCommand.CloseConnection);
+		await service.connect(profileId);
+
+		assert.deepStrictEqual({
+			commands: bridge.commands().slice(-3),
+			status: stateOf(profileId).status,
+		}, {
+			commands: [NyalaRuntimeCommand.TestConnection, NyalaRuntimeCommand.OpenConnection, NyalaRuntimeCommand.ListObjects],
+			status: 'connected',
+		}, 'no CloseConnection is sent to a runtime that never knew the old session');
 	});
 
 	//#endregion

@@ -119,6 +119,14 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 	 * still the current one; an older connect closes the session it opened instead of installing it.
 	 */
 	private readonly attempts = new Map<string, number>();
+	/**
+	 * Sessions the runtime opened for a profile that the row no longer shows: a superseded connect
+	 * whose reply arrived late, a reconnect that replaced a handle, a refresh that decided the
+	 * session was unusable. Closing is best effort, so a session the runtime refused to close stays
+	 * here — it is still open, and only a later close attempt may forget it. Pruning happens on
+	 * every runtime generation change, because a new runtime knows none of them.
+	 */
+	private readonly stranded = new Map<string, INyalaConnectionHandle>();
 
 	constructor(
 		private readonly bridge: INyalaRuntimeBridge,
@@ -234,27 +242,30 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 			return;
 		}
 		const attempt = this.beginAttempt(profileId);
-		// Reconnecting a profile is an explicit new session. The old handle is closed first; if
-		// closing it fails, the profile keeps that closeable handle and does not open a second one.
-		if (state.handle) {
-			const closed = await this.closeSession(state.handle);
-			if (!this.isCurrent(profileId, attempt)) {
-				return;
-			}
-			if (!closed) {
-				this.update(profileId, {
-					status: 'error',
-					handle: state.handle,
-					error: { message: localize('nyala.connection.closeFailed', 'The previous session could not be closed. Disconnect again before reconnecting.') },
-				});
-				return;
-			}
-			this.catalogs.delete(profileId);
-			this.update(profileId, { status: 'disconnected', handle: undefined, error: undefined });
-		}
 		let opened: INyalaConnectionHandle | undefined;
 		await this.withState(profileId, attempt, 'connecting', async profile => {
 			try {
+				// Reconnecting a profile is an explicit new session, and a profile never has two.
+				// Every session this workbench still knows about — the row's own and any earlier
+				// one that failed to close — must be confirmed gone first. If one survives, the
+				// profile keeps that closeable handle and no new session is opened.
+				const remaining = await this.retireSessions(profileId);
+				if (!this.isCurrent(profileId, attempt)) {
+					return;
+				}
+				if (remaining.length > 0) {
+					this.catalogs.delete(profileId);
+					this.update(profileId, {
+						status: 'error',
+						handle: remaining[0],
+						error: { message: localize('nyala.connection.closeFailed', 'The previous session could not be closed. Disconnect again before reconnecting.') },
+					});
+					return;
+				}
+				if (this.states.get(profileId)?.handle) {
+					this.catalogs.delete(profileId);
+					this.update(profileId, { status: 'connecting', handle: undefined, error: undefined });
+				}
 				const tested = await this.bridge.call(NyalaRuntimeCommand.TestConnection, profile.target);
 				if (!this.isCurrent(profileId, attempt)) {
 					return;
@@ -272,6 +283,8 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 				const reply = await this.bridge.call<{ sessionId: string; sessionGeneration: number }>(NyalaRuntimeCommand.OpenConnection, profile.target);
 				if (!this.isCurrent(profileId, attempt)) {
 					if (reply.ok) {
+						// Superseded while the runtime was opening. The session is real, so it is
+						// either closed here or remembered as stranded — never dropped on the floor.
 						await this.closeSession({ profileId, sessionId: reply.result.sessionId, sessionGeneration: reply.result.sessionGeneration, runtimeGeneration: reply.runtimeGeneration });
 					}
 					return;
@@ -301,8 +314,9 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 					return;
 				}
 				if (!catalog.ok) {
-					// The open succeeded but the catalog did not. The session is useless to the
-					// Connections view; close it rather than leaving an unreferenced runtime handle.
+					// The open succeeded but the catalog did not. The Connections view cannot show
+					// this profile, so the session is given back to the runtime — or, if the runtime
+					// will not take it, kept as a closeable handle instead of being forgotten.
 					const closed = await this.closeSession(handle);
 					opened = undefined;
 					if (!this.isCurrent(profileId, attempt)) {
@@ -323,9 +337,17 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 				opened = undefined;
 			} catch (error) {
 				// A rejection the bridge raised (IPC failure, a bug) is not an RPC answer. The session
-				// this attempt opened, if any, must not outlive it.
+				// this attempt opened must not outlive it, and a session that could not be closed is
+				// remembered rather than abandoned: the profile's row is left describing it.
 				if (opened) {
-					await this.closeSession(opened);
+					const closed = await this.closeSession(opened);
+					if (!closed) {
+						this.update(profileId, {
+							status: 'error',
+							handle: opened,
+							error: { message: localize('nyala.connection.closeFailed', 'The previous session could not be closed. Disconnect again before reconnecting.') },
+						});
+					}
 					opened = undefined;
 				}
 				throw error;
@@ -339,21 +361,16 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 		if (!state) {
 			return;
 		}
-		if (!state.handle) {
-			this.catalogs.delete(profileId);
-			this.update(profileId, { status: 'disconnected', handle: undefined, error: undefined });
-			return;
-		}
-		const handle = state.handle;
-		// Closing is idempotent on the runtime; a session from a dead generation is already gone.
-		const closed = await this.closeSession(handle);
+		// Disconnect is the user's retry path: it closes the row's session *and* anything left
+		// stranded for this profile, so a failed close earlier does not require a new window.
+		const remaining = await this.retireSessions(profileId);
 		if (!this.isCurrent(profileId, attempt)) {
 			return;
 		}
-		if (!closed) {
+		if (remaining.length > 0) {
 			this.update(profileId, {
 				status: 'error',
-				handle,
+				handle: remaining[0],
 				error: { message: localize('nyala.connection.closeFailed', 'The previous session could not be closed. Disconnect again before reconnecting.') },
 			});
 			return;
@@ -373,12 +390,32 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 		if (!this.isCurrent(profileId, attempt) || !this.sameHandle(profileId, handle)) {
 			return;
 		}
-		if (!catalog.ok) {
-			this.fail(profileId, attempt, catalog.error);
+		if (catalog.ok) {
+			this.catalogs.set(profileId, catalog.catalog);
+			this._onDidChangeConnections.fire();
 			return;
 		}
-		this.catalogs.set(profileId, catalog.catalog);
-		this._onDidChangeConnections.fire();
+
+		// A metadata read failing says nothing about the session: a protocol error, a timeout or an
+		// IPC hiccup leaves the session open and usable for everything else. Only an error that
+		// says the session itself is gone may retire it; discarding the handle otherwise would
+		// lose the only reference to a live runtime session.
+		if (isSessionGone(catalog.error)) {
+			this.catalogs.delete(profileId);
+			const closed = await this.closeSession(handle);
+			if (!this.isCurrent(profileId, attempt)) {
+				return;
+			}
+			this.update(profileId, closed
+				? { status: 'error', handle: undefined, error: catalog.error }
+				// The runtime would not close a session it also says is invalid. Keep the handle so
+				// Disconnect can retry; the row must not claim to be connected without a catalog.
+				: { status: 'error', handle, error: catalog.error });
+			return;
+		}
+
+		this.catalogs.delete(profileId);
+		this.update(profileId, { status: 'error', handle, error: catalog.error });
 	}
 
 	async listObjects(handle: INyalaConnectionHandle, kinds: readonly ('table' | 'view' | 'index')[]): Promise<INyalaMetadataListObjectsResult> {
@@ -438,6 +475,11 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 		if (unavailable || replaced) {
 			// The process behind every handle is gone, or cannot currently answer. Nothing in
 			// flight may commit after this point; a late connect closes the session it opened.
+			// Sessions remembered from the previous generation are unreachable for good, so their
+			// names are dropped rather than offered to Disconnect as if they could still be closed.
+			if (replaced) {
+				this.stranded.clear();
+			}
 			for (const [profileId, connection] of this.states) {
 				this.beginAttempt(profileId);
 				if (connection.handle || connection.status === 'connected' || connection.status === 'connecting' || connection.status === 'testing') {
@@ -508,25 +550,74 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 	}
 
 	/**
-	 * Closes a session and says whether it is gone. `INVALID_SESSION`/`RUNTIME_LOST` also mean
-	 * gone: the runtime that knew it no longer exists. A genuine failure keeps the handle for a
-	 * later Disconnect rather than pretending the session was released.
+	 * Closes a session and says whether the runtime confirmed it is gone. `INVALID_SESSION` and
+	 * `RUNTIME_LOST` also mean gone: the runtime that knew it no longer exists.
+	 *
+	 * A session that could not be closed is still open. It is remembered in `stranded` so the
+	 * workbench never reaches the point of having opened a session it cannot name again; a later
+	 * close attempt (a retry, a reconnect, a new runtime generation) may retire it.
 	 */
 	private async closeSession(handle: INyalaConnectionHandle): Promise<boolean> {
+		if (this.isGoneGeneration(handle)) {
+			// The runtime that issued this session is not running any more, so nothing is open.
+			this.stranded.delete(handle.sessionId);
+			return true;
+		}
 		try {
 			const closed = await this.bridge.call(NyalaRuntimeCommand.CloseConnection, { sessionId: handle.sessionId, sessionGeneration: handle.sessionGeneration });
 			if (closed.ok) {
+				this.stranded.delete(handle.sessionId);
 				return true;
 			}
 			if (closed.error.data.kind === 'INVALID_SESSION' || closed.error.data.kind === 'RUNTIME_LOST') {
+				this.stranded.delete(handle.sessionId);
 				return true;
 			}
+			this.stranded.set(handle.sessionId, handle);
 			this.logService.warn(`Nyala: closing ${handle.sessionId} failed: ${closed.error.data.kind}`);
 			return false;
 		} catch (error) {
+			this.stranded.set(handle.sessionId, handle);
 			this.logService.warn(`Nyala: closing ${handle.sessionId} failed: ${errorMessage(error)}`);
 			return false;
 		}
+	}
+
+	/** A session from an older runtime generation cannot be open in this one. */
+	private isGoneGeneration(handle: INyalaConnectionHandle): boolean {
+		return this.currentRuntimeState.generation !== handle.runtimeGeneration;
+	}
+
+	/**
+	 * The sessions still open for a profile: the row's own handle plus anything that failed to
+	 * close earlier. A profile must not open a second session while any of these is unaccounted for.
+	 */
+	private openSessionsOf(profileId: string): INyalaConnectionHandle[] {
+		const sessions: INyalaConnectionHandle[] = [];
+		const row = this.states.get(profileId)?.handle;
+		if (row && !this.isGoneGeneration(row)) {
+			sessions.push(row);
+		}
+		for (const handle of this.stranded.values()) {
+			if (handle.profileId === profileId && !this.isGoneGeneration(handle) && !sessions.some(session => session.sessionId === handle.sessionId)) {
+				sessions.push(handle);
+			}
+		}
+		return sessions;
+	}
+
+	/**
+	 * Tries to retire every session the workbench knows about for a profile. Returns the ones the
+	 * runtime would not close, which stay in `stranded`.
+	 */
+	private async retireSessions(profileId: string): Promise<INyalaConnectionHandle[]> {
+		const remaining: INyalaConnectionHandle[] = [];
+		for (const handle of this.openSessionsOf(profileId)) {
+			if (!await this.closeSession(handle)) {
+				remaining.push(handle);
+			}
+		}
+		return remaining;
 	}
 
 	private beginAttempt(profileId: string): number {
@@ -612,6 +703,14 @@ function runtimeLostWhileConnecting(): INyalaRuntimeErrorObject {
 		message: 'The runtime restarted while connecting.',
 		data: { kind: NYALA_ERROR_KINDS.RUNTIME_LOST.kind, retryable: NYALA_ERROR_KINDS.RUNTIME_LOST.retryable },
 	};
+}
+
+/**
+ * Whether an error says the session itself no longer exists. Everything else — a protocol
+ * mismatch, a timeout, a cancelled request, an IPC failure — leaves the session open.
+ */
+function isSessionGone(error: INyalaRuntimeErrorObject): boolean {
+	return error.data.kind === 'INVALID_SESSION' || error.data.kind === 'RUNTIME_LOST';
 }
 
 /** A message safe to show and log when a rejection may be a structured error, an Error or a value. */
