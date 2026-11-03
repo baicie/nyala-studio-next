@@ -9,8 +9,8 @@
 // loses its binding the status line says so and offers the explicit "change connection" action.
 // The pane never picks a connection itself and never reads a global "active connection".
 //
-// Saving writes the text to a `.sql` file chosen by the user, which only turns the tab non-dirty;
-// it does not change the binding, start a query or touch the database.
+// There is no file behind a query tab in N-202: `save`/`saveAs` fail deliberately and the layout
+// stores only the query id, so nothing here writes SQL to disk. Draft persistence is N-206.
 
 import './media/nyalaQueryEditor.css';
 import { Dimension } from '../../../../../base/browser/dom.js';
@@ -167,6 +167,16 @@ export class NyalaQueryEditorPane extends AbstractTextCodeEditor<ICodeEditorView
 			return;
 		}
 		const context = this.currentContext;
+		if (context?.bindingState === 'switching') {
+			// The old target is already gone, so the tab must not claim it is still bound.
+			this.statusLabel.textContent = localize('nyala.query.status.switching', 'Connecting…');
+			this.statusLabel.classList.add('nyala-query-status-unbound');
+			this.statusDetail.textContent = context.switchingTo
+				? localize('nyala.query.status.switchingTo', 'Switching to {0}', context.switchingTo)
+				: '';
+			this.statusContainer.setAttribute('data-state', 'switching');
+			return;
+		}
 		if (!context?.binding) {
 			this.statusLabel.textContent = localize('nyala.query.status.unbound', 'No connection');
 			this.statusLabel.classList.add('nyala-query-status-unbound');
@@ -212,6 +222,8 @@ function unboundHint(context: NyalaQueryContext | undefined): string {
 			return localize('nyala.query.status.unavailable', 'The runtime is not available. Choose a connection when it is back.');
 		case 'connection-closed':
 			return localize('nyala.query.status.closed', 'The connection was closed. Choose a connection to run this query.');
+		case 'connection-failed':
+			return localize('nyala.query.status.failed', 'The connection could not be opened. Choose a connection to run this query.');
 		default:
 			return localize('nyala.query.status.unboundHint', 'This query can be edited, but not run until you choose a connection.');
 	}

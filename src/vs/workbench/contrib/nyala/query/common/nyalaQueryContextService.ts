@@ -39,8 +39,12 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 	 */
 	private readonly intents = new Map<string, { readonly context: NyalaQueryContext; readonly intent: number }>();
 	private nextIntent = 0;
-	/** The runtime generation this service has already seen; `undefined` until the first event. */
-	private lastSeenGeneration: number | undefined;
+	/**
+	 * The runtime generation this service has already seen. Seeded from the live state: the first
+	 * event after a window load may already be a restart, and comparing it against `undefined`
+	 * would let a switch survive a generation it never belonged to.
+	 */
+	private lastSeenGeneration: number;
 
 	constructor(
 		@INyalaConnectionService private readonly connectionService: INyalaConnectionService,
@@ -48,6 +52,7 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 	) {
 		super();
 
+		this.lastSeenGeneration = this.connectionService.runtimeState.generation;
 		this._register(this.connectionService.onDidChangeConnections(() => this.reconcile()));
 		this._register(this.connectionService.onDidChangeRuntime(state => this.onRuntimeState(state)));
 	}
@@ -91,17 +96,37 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 			return { ok: false, message: localize('nyala.query.bind.unknownContext', 'This query tab is no longer open.') };
 		}
 
-		const want = this.claimIntent(context);
-
 		const row = this.connectionService.connections.find(state => state.profile.profileId === profileId);
 		if (!row) {
+			// A profile that does not exist is a bad request, not a reason to disturb a working
+			// binding: nothing has been switched away from yet.
 			return { ok: false, message: localize('nyala.query.bind.unknownProfile', 'That connection does not exist.') };
 		}
 
-		if (row.status !== 'connected' || !row.handle) {
-			if (row.status === 'error' || row.status === 'lost') {
-				return { ok: false, message: describeFailure(row) };
+		const want = this.claimIntent(context);
+
+		// Picking a *different* profile is a switch, and it starts now, before the new connection is
+		// opened: the tab gives up the old target so it cannot execute against the connection the
+		// user just moved away from. Picking the profile the tab already has keeps the binding
+		// untouched, so a failed refresh cannot cost the user a working connection.
+		const previous = context.binding;
+		if ((previous && previous.profileId !== profileId) || context.bindingState === 'switching') {
+			context.beginSwitch(row.profile.displayName);
+		}
+
+		// Every failure from here on ends the switch; only the latest intent may do so, because a
+		// newer choice owns whatever state the tab is in now.
+		const fail = (message: string): INyalaQueryBindingResult => {
+			if (this.isCurrentIntent(context, want)) {
+				context.failSwitch('connection-failed');
 			}
+			return { ok: false, message };
+		};
+
+		if (row.status === 'error' || row.status === 'lost') {
+			return fail(describeFailure(row));
+		}
+		if (row.status !== 'connected' || !row.handle) {
 			await this.connectionService.connect(profileId);
 		}
 
@@ -114,7 +139,7 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 
 		const connected = this.connectionService.connections.find(state => state.profile.profileId === profileId);
 		if (!connected || connected.status !== 'connected' || !connected.handle) {
-			return { ok: false, message: describeFailure(connected) };
+			return fail(describeFailure(connected));
 		}
 
 		const handle = connected.handle;
@@ -122,7 +147,7 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 		// workbench is talking to now. A generation change while waiting means the session belongs
 		// to a process that is gone.
 		if (!this.isReadyGeneration(handle.runtimeGeneration)) {
-			return { ok: false, message: localize('nyala.query.bind.staleRuntime', 'The runtime restarted while connecting. Choose a connection again.') };
+			return fail(localize('nyala.query.bind.staleRuntime', 'The runtime restarted while connecting. Choose a connection again.'));
 		}
 		if (!this.isCurrentIntent(context, want)) {
 			return { ok: false, message: supersededMessage() };
@@ -208,9 +233,17 @@ export class NyalaQueryContextService extends Disposable implements INyalaQueryC
 		const generation = this.lastSeenGeneration;
 		this.lastSeenGeneration = state.generation;
 		// A generation change or a dead runtime invalidates whatever a pending bind was about to
-		// install: the session it read belongs to the runtime that just went away.
-		if (state.status !== 'ready' || (generation !== undefined && generation !== state.generation)) {
+		// install: the session it read belongs to the runtime that just went away. The intents are
+		// dropped so no reply can commit, and every switch in flight ends here — this is the only
+		// place that knows why, and a tab must not wait forever for a reply that will never come.
+		if (state.status !== 'ready' || generation !== state.generation) {
 			this.intents.clear();
+			const switched = state.status === 'failed' || state.status === 'stopped' ? 'runtime-unavailable' : 'runtime-restarted';
+			for (const context of this.contexts.values()) {
+				if (context.bindingState === 'switching') {
+					context.unbind(switched);
+				}
+			}
 		}
 		if (state.status === 'ready') {
 			this.reconcile();

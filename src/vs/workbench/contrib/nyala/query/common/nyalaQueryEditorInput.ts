@@ -93,6 +93,9 @@ export class NyalaQueryEditorInput extends EditorInput {
 		this.reference = this.document.acquire();
 		// Dirty state is a property of the shared text, so every input of the query hears about it.
 		this.documentListeners.add(this.document.onDidChangeText(() => this._onDidChangeDirty.fire()));
+		// The label names the connection, so every input of the query must repaint when the shared
+		// binding changes — including a switch that only makes the tab temporarily unbound.
+		this.documentListeners.add(this.document.onDidChangeBinding(() => this._onDidChangeLabel.fire()));
 	}
 
 	override getName(): string {
@@ -102,7 +105,13 @@ export class NyalaQueryEditorInput extends EditorInput {
 	}
 
 	override getDescription(verbosity = Verbosity.MEDIUM): string | undefined {
-		const binding = this.document.context.binding;
+		const context = this.document.context;
+		if (context.bindingState === 'switching') {
+			return verbosity === Verbosity.SHORT
+				? undefined
+				: localize('nyala.query.switching', 'connecting to {0}…', context.switchingTo ?? '');
+		}
+		const binding = context.binding;
 		if (!binding) {
 			return verbosity === Verbosity.SHORT ? undefined : localize('nyala.query.unbound', 'no connection');
 		}

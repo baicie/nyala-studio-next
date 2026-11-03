@@ -36,7 +36,20 @@ export interface INyalaQueryBinding {
 }
 
 /** Why a tab stopped being bound. Shown to the user; the tab never rebinds on its own. */
-export type NyalaQueryUnboundReason = 'never-bound' | 'connection-closed' | 'runtime-restarted' | 'runtime-unavailable';
+export type NyalaQueryUnboundReason = 'never-bound' | 'connection-closed' | 'runtime-restarted' | 'runtime-unavailable' | 'connection-failed';
+
+/**
+ * What the tab is doing about a connection right now.
+ *
+ *   idle      nothing is in progress; `binding` is the target or there is none.
+ *   switching the user chose another connection and the old one is being retired; the tab has no
+ *             execution target until the switch settles, so it cannot run against the connection
+ *             the user just moved away from.
+ *
+ * A switch never goes back to `idle` holding the previous binding: it ends either bound to the new
+ * profile or unbound with a reason (ADR 0007 §3).
+ */
+export type NyalaQueryBindingState = 'idle' | 'switching';
 
 export interface INyalaQueryBindingOptions {
 	/** The profile's own read-only flag; a tab cannot widen what the connection allows. */
@@ -59,6 +72,7 @@ export class NyalaQueryContext extends Disposable {
 
 	private _binding: INyalaQueryBinding | undefined;
 	private _reason: NyalaQueryUnboundReason = 'never-bound';
+	private _state: NyalaQueryBindingState = 'idle';
 	private _readOnly = true;
 	private _defaultDatabase: string | undefined;
 	private _defaultSchema: string | undefined;
@@ -104,6 +118,21 @@ export class NyalaQueryContext extends Disposable {
 		return this._binding !== undefined;
 	}
 
+	/** Whether a connection switch is in progress; see `NyalaQueryBindingState`. */
+	get bindingState(): NyalaQueryBindingState {
+		return this._state;
+	}
+
+	/**
+	 * The profile a switch is heading to. Only for the status line; never an execution target.
+	 * `undefined` outside a switch.
+	 */
+	get switchingTo(): string | undefined {
+		return this._state === 'switching' ? this._switchingTo : undefined;
+	}
+
+	private _switchingTo: string | undefined;
+
 	/** Whether this context was released; a bind that arrives later must not use it. */
 	get isDisposed(): boolean {
 		return this._disposed;
@@ -123,6 +152,8 @@ export class NyalaQueryContext extends Disposable {
 
 	bind(binding: INyalaQueryBinding, options: INyalaQueryBindingOptions): void {
 		this._binding = binding;
+		this._state = 'idle';
+		this._switchingTo = undefined;
 		this._reason = 'never-bound';
 		this._readOnly = options.readOnly;
 		this._defaultDatabase = options.defaultDatabase;
@@ -130,11 +161,46 @@ export class NyalaQueryContext extends Disposable {
 		this._onDidChangeBinding.fire();
 	}
 
+	/**
+	 * Starts an explicit switch to another profile: the tab gives up its current target *before*
+	 * the new connection is opened, so the user cannot run SQL against the connection they just
+	 * navigated away from. `failSwitch` ends the switch without a target.
+	 */
+	beginSwitch(profileName: string): void {
+		this._binding = undefined;
+		this._readOnly = true;
+		this._defaultDatabase = undefined;
+		this._defaultSchema = undefined;
+		this._state = 'switching';
+		this._switchingTo = profileName;
+		this._onDidChangeBinding.fire();
+	}
+
+	/**
+	 * Ends a switch that produced no target. The previous binding is deliberately **not** restored:
+	 * the user asked for another connection, and reviving the old session behind that request would
+	 * be the silent rebind this context exists to prevent (ADR 0007 §3).
+	 */
+	failSwitch(reason: Exclude<NyalaQueryUnboundReason, 'never-bound'>): void {
+		this._state = 'idle';
+		this._switchingTo = undefined;
+		// Re-binding the profile a tab already has leaves that binding in place; only a tab without
+		// a target records why it has none.
+		if (!this._binding) {
+			this._reason = reason;
+		}
+		this._onDidChangeBinding.fire();
+	}
+
 	unbind(reason: Exclude<NyalaQueryUnboundReason, 'never-bound'>): void {
-		if (!this._binding && this._reason === reason) {
+		// A pending switch keeps its own state; the tab is already without a target.
+		const wasIdle = this._state === 'idle';
+		if (!this._binding && wasIdle && this._reason === reason) {
 			return;
 		}
 		this._binding = undefined;
+		this._state = 'idle';
+		this._switchingTo = undefined;
 		this._reason = reason;
 		this._readOnly = true;
 		this._defaultDatabase = undefined;
@@ -147,7 +213,8 @@ export class NyalaQueryContext extends Disposable {
 	 * belongs to an older runtime generation is not usable, even if nobody has told it yet.
 	 */
 	isBindingCurrent(runtime: INyalaRuntimeState): boolean {
-		return this._binding !== undefined
+		return this._state === 'idle'
+			&& this._binding !== undefined
 			&& runtime.status === 'ready'
 			&& runtime.generation === this._binding.runtimeGeneration;
 	}

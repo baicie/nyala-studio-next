@@ -65,6 +65,12 @@ class FakeConnectionService implements INyalaConnectionService {
 		if (!row) {
 			return;
 		}
+		const failure = this.connectFailures.get(profileId);
+		if (failure) {
+			this.connectFailures.delete(profileId);
+			this.setRow({ ...row, status: 'error', handle: undefined, error: { code: -32602, message: 'Invalid database', data: { kind: 'INVALID_PARAMS', retryable: false, safeDetail: failure } } });
+			return;
+		}
 		this.opens++;
 		this.setRow({ ...row, status: 'connected', error: undefined, handle: { profileId, sessionId: `s_${this.opens}`, sessionGeneration: 1, runtimeGeneration: issuedBy } });
 	}
@@ -75,6 +81,12 @@ class FakeConnectionService implements INyalaConnectionService {
 		const gate = new DeferredPromise<void>();
 		this.gates.set(profileId, gate);
 		return gate;
+	}
+
+	/** Makes the next `connect` of a profile end in `error`, with this safe detail. */
+	private readonly connectFailures = new Map<string, string>();
+	failConnect(profileId: string, safeDetail = 'file is not a SQLite database'): void {
+		this.connectFailures.set(profileId, safeDetail);
 	}
 
 	async disconnect(profileId: string): Promise<void> {
@@ -310,6 +322,195 @@ suite('Nyala query context', () => {
 
 		assert.deepStrictEqual({ ok: result.ok, message: result.ok ? undefined : result.message }, { ok: false, message: 'This query tab is no longer open.' });
 	});
+
+	//#region Switching connections (pending state)
+
+	test('switching to another profile drops the old target before the new connection is opened', async () => {
+		connections.rows = [connected('p_a', 's_a'), row('p_b', 'disconnected')];
+		const tab = service.create('q_1');
+		await bind(tab, 'p_a');
+		assert.strictEqual(tab.canExecute(connections.runtimeState), true);
+
+		const gate = connections.holdConnect('p_b');
+		const switching = bind(tab, 'p_b');
+		await settle();
+
+		assert.deepStrictEqual({
+			state: tab.bindingState,
+			binding: tab.binding,
+			canExecute: tab.canExecute(connections.runtimeState),
+			oldSession: tab.sessionId,
+		}, { state: 'switching', binding: undefined, canExecute: false, oldSession: undefined }, 'the tab must not keep executing against the connection the user moved away from');
+
+		gate.complete();
+		const result = await switching;
+
+		assert.deepStrictEqual({
+			ok: result.ok,
+			state: tab.bindingState,
+			profile: tab.profileId,
+			session: tab.binding?.sessionId,
+		}, { ok: true, state: 'idle', profile: 'p_b', session: 's_1' }, 'a successful switch binds the new profile only');
+	});
+
+	test('a failed switch leaves the tab unbound instead of restoring the previous connection', async () => {
+		connections.rows = [connected('p_a', 's_a'), row('p_b', 'disconnected')];
+		const tab = service.create('q_1');
+		await bind(tab, 'p_a');
+
+		const gate = connections.holdConnect('p_b');
+		connections.failConnect('p_b');
+		const switching = bind(tab, 'p_b');
+		await settle();
+		gate.complete();
+		const result = await switching;
+
+		assert.deepStrictEqual({
+			ok: result.ok,
+			message: result.ok ? undefined : result.message,
+			state: tab.bindingState,
+			binding: tab.binding,
+			reason: tab.unboundReason,
+			canExecute: tab.canExecute(connections.runtimeState),
+		}, {
+			ok: false,
+			message: 'file is not a SQLite database',
+			state: 'idle',
+			binding: undefined,
+			reason: 'connection-failed',
+			canExecute: false,
+		}, 'the old session is deliberately not revived behind the user\'s back');
+	});
+
+	test('re-binding the profile a tab already has is not a switch and never blanks it', async () => {
+		connections.rows = [connected('p_a', 's_a')];
+		const tab = service.create('q_1');
+		await bind(tab, 'p_a');
+		// Watching every binding change proves the target is never dropped, not just that it is
+		// correct afterwards.
+		const observed: Array<{ state: string; session: string | undefined }> = [];
+		store.add(tab.onDidChangeBinding(() => observed.push({ state: tab.bindingState, session: tab.binding?.sessionId })));
+
+		const result = await bind(tab, 'p_a');
+
+		assert.deepStrictEqual({
+			observed,
+			ok: result.ok,
+			state: tab.bindingState,
+			session: tab.binding?.sessionId,
+		}, {
+			observed: [{ state: 'idle', session: 's_a' }],
+			ok: true,
+			state: 'idle',
+			session: 's_a',
+		}, 'choosing the same connection again must not make the tab briefly unrunnable');
+	});
+
+	test('switching twice keeps the tab pinned to the last choice, even when the first switch finishes last', async () => {
+		connections.rows = [connected('p_0', 's_0'), row('p_a', 'disconnected'), row('p_b', 'disconnected')];
+		const tab = service.create('q_1');
+		await bind(tab, 'p_0');
+
+		const slowA = connections.holdConnect('p_a');
+		const toA = bind(tab, 'p_a');
+		await settle();
+		const fastB = connections.holdConnect('p_b');
+		const toB = bind(tab, 'p_b');
+		await settle();
+
+		fastB.complete();
+		const bResult = await toB;
+		slowA.complete();
+		const aResult = await toA;
+
+		assert.deepStrictEqual({
+			first: aResult.ok,
+			second: bResult.ok,
+			state: tab.bindingState,
+			profile: tab.profileId,
+			session: tab.binding?.sessionId,
+		}, { first: false, second: true, state: 'idle', profile: 'p_b', session: 's_1' }, 'the late reply of the superseded switch cannot win');
+	});
+
+	test('a switch that fails after the tab was closed changes nothing', async () => {
+		connections.rows = [connected('p_a', 's_a'), row('p_b', 'disconnected')];
+		const tab = service.create('q_1');
+		await bind(tab, 'p_a');
+
+		const gate = connections.holdConnect('p_b');
+		const switching = bind(tab, 'p_b');
+		await settle();
+		service.release('q_1');
+		gate.complete();
+		const result = await switching;
+
+		assert.deepStrictEqual({ ok: result.ok, disposed: tab.isDisposed, binding: tab.binding }, { ok: false, disposed: true, binding: undefined });
+	});
+
+	test('a runtime restart during a switch ends it as unbound, never as the previous connection', async () => {
+		connections.rows = [connected('p_a', 's_a'), row('p_b', 'disconnected')];
+		const tab = service.create('q_1');
+		await bind(tab, 'p_a');
+
+		const gate = connections.holdConnect('p_b');
+		const switching = bind(tab, 'p_b');
+		await settle();
+		connections.setRuntime({ generation: 2, status: 'ready' });
+		const settledDuringRestart = { state: tab.bindingState, reason: tab.unboundReason };
+		gate.complete();
+		const result = await switching;
+
+		assert.deepStrictEqual({
+			duringRestart: settledDuringRestart,
+			ok: result.ok,
+			state: tab.bindingState,
+			binding: tab.binding,
+			reason: tab.unboundReason,
+		}, {
+			duringRestart: { state: 'idle', reason: 'runtime-restarted' },
+			ok: false,
+			state: 'idle',
+			binding: undefined,
+			reason: 'runtime-restarted',
+		});
+	});
+
+	test('disconnecting the old profile during a switch does not revive it', async () => {
+		connections.rows = [connected('p_a', 's_a'), row('p_b', 'disconnected')];
+		const tab = service.create('q_1');
+		await bind(tab, 'p_a');
+
+		const gate = connections.holdConnect('p_b');
+		const switching = bind(tab, 'p_b');
+		await settle();
+		await connections.disconnect('p_a');
+		gate.complete();
+		const result = await switching;
+
+		assert.deepStrictEqual({ ok: result.ok, profile: tab.profileId, state: tab.bindingState }, { ok: true, profile: 'p_b', state: 'idle' });
+	});
+
+	test('a switch does not change what another tab is bound to', async () => {
+		connections.rows = [connected('p_a', 's_a'), row('p_b', 'disconnected')];
+		const first = service.create('q_1');
+		const second = service.create('q_2');
+		await bind(first, 'p_a');
+		await bind(second, 'p_a');
+
+		const gate = connections.holdConnect('p_b');
+		const switching = bind(first, 'p_b');
+		await settle();
+		const during = { first: first.binding, second: second.binding?.sessionId, secondRuns: second.canExecute(connections.runtimeState) };
+		gate.complete();
+		await switching;
+
+		assert.deepStrictEqual({ during, after: second.profileId }, {
+			during: { first: undefined, second: 's_a', secondRuns: true },
+			after: 'p_a',
+		});
+	});
+
+	//#endregion
 
 	//#region Binding isolation (latest intent wins)
 

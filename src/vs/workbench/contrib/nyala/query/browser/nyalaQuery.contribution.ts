@@ -8,8 +8,9 @@
 // and the two commands a user needs to reach the tab. Everything here uses the workbench's own
 // registries; there is no second tab system and no replacement for `IEditorService`.
 //
-// A restored tab comes back with its text and its query id, never with a session: the binding is
-// an explicit user action (`Nyala: Change Query Connection`) and a reload always lands unbound.
+// A restored tab comes back with its query id only — no text and no session. A reload always
+// lands on an empty, unbound tab: the binding is an explicit user action (`Nyala: Change Query
+// Connection`), and the SQL body is never written to the layout (ADR 0007 §6).
 
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';

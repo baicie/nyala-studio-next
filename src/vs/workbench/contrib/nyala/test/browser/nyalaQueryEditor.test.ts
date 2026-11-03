@@ -12,6 +12,7 @@ import assert from 'assert';
 import { Dimension } from '../../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -340,6 +341,83 @@ suite('Nyala query editor', () => {
 		});
 	});
 
+	test('a label change in one input reaches the workbench for every input of the query', async () => {
+		connections.rows = [connectedRow('p_a', 's_a')];
+		const first = createInput('q_label');
+		const second = createInput('q_label');
+		const firstLabels: string[] = [];
+		const secondLabels: string[] = [];
+		const listeners = store.add(new DisposableStore());
+		listeners.add(first.onDidChangeLabel(() => firstLabels.push(String(first.getDescription()))));
+		listeners.add(second.onDidChangeLabel(() => secondLabels.push(String(second.getDescription()))));
+
+		await contextService.bind(first.getContext(), 'p_a');
+
+		assert.deepStrictEqual({
+			firstLabels,
+			secondLabels,
+			firstDescriptions: [first.getDescription(), second.getDescription()],
+		}, {
+			firstLabels: ['p_a.sqlite'],
+			secondLabels: ['p_a.sqlite'],
+			firstDescriptions: ['p_a.sqlite', 'p_a.sqlite'],
+		}, 'both inputs of one query repaint when its shared binding changes');
+
+		firstLabels.length = 0;
+		secondLabels.length = 0;
+		connections.setRow({ ...connectedRow('p_a', 's_a'), status: 'disconnected', handle: undefined });
+
+		assert.deepStrictEqual({
+			firstLabels,
+			secondLabels,
+			descriptions: [first.getDescription(), second.getDescription()],
+		}, {
+			firstLabels: ['no connection'],
+			secondLabels: ['no connection'],
+			descriptions: ['no connection', 'no connection'],
+		}, 'a disconnect repaints both tabs, not only the active one');
+	});
+
+	test('a switch leaves every input of the query without an execution target until it settles', async () => {
+		connections.rows = [connectedRow('p_a', 's_a'), { ...connectedRow('p_b', 's_b'), status: 'disconnected', handle: undefined }];
+		const first = createInput('q_switch');
+		const second = createInput('q_switch');
+		await contextService.bind(first.getContext(), 'p_a');
+		const paneA = createPane().pane;
+		const paneB = createPane().pane;
+		await paneA.setInput(first, undefined, {}, CancellationToken.None);
+		await paneB.setInput(second, undefined, {}, CancellationToken.None);
+
+		const start = connections.connect.bind(connections);
+		const gate = new DeferredPromise<void>();
+		connections.connect = async (profileId: string) => {
+			await gate.p;
+			return start(profileId);
+		};
+		const switching = contextService.bind(second.getContext(), 'p_b');
+		// The switch already handled everything up to its first real wait; a microtask flush is
+		// enough to observe the pending state deterministically.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const during = {
+			state: first.getContext().bindingState,
+			descriptions: [first.getDescription(), second.getDescription()],
+			bindings: [paneA.getExecutionBinding(), paneB.getExecutionBinding()],
+		};
+
+		gate.complete();
+		await switching;
+
+		assert.deepStrictEqual({
+			during,
+			after: { profile: first.getContext().profileId, bindingA: paneA.getExecutionBinding()?.profileId, bindingB: paneB.getExecutionBinding()?.profileId },
+		}, {
+			during: { state: 'switching', descriptions: ['connecting to p_b.sqlite…', 'connecting to p_b.sqlite…'], bindings: [undefined, undefined] },
+			after: { profile: 'p_b', bindingA: 'p_b', bindingB: 'p_b' },
+		});
+	});
+
 	test('closing one of two tabs keeps the other tab\'s model and context alive', () => {
 		const first = createInput('q_shared');
 		const second = createInput('q_shared');
@@ -408,6 +486,54 @@ suite('Nyala query editor', () => {
 			bModelAlive: true,
 			bContextAlive: true,
 		});
+	});
+
+	test('closing and reopening many queries does not accumulate registry entries or listeners', () => {
+		const rounds = 10;
+		for (let index = 0; index < rounds; index++) {
+			const input = createInput(`q_cycle_${index}`);
+			input.getModel().setValue(`SELECT ${index};`);
+			input.dispose();
+		}
+
+		// Two live documents at the end: the listener count must follow the live documents, not the
+		// number of queries ever opened (rounds * 1 + the two below would mean a leak).
+		const live = [createInput('q_live_a'), createInput('q_live_b')];
+
+		assert.deepStrictEqual({
+			listeners: documentService.documentListenerCount,
+			liveDocuments: [documentService.peek('q_live_a') !== undefined, documentService.peek('q_live_b') !== undefined],
+			closedGone: documentService.peek('q_cycle_3'),
+			liveCount: live.length,
+		}, {
+			listeners: 2,
+			liveDocuments: [true, true],
+			closedGone: undefined,
+			liveCount: 2,
+		});
+
+		for (const input of live) {
+			input.dispose();
+		}
+		assert.strictEqual(documentService.documentListenerCount, 0, 'the last release removes the listener too');
+	});
+
+	test('a disposed document removes only its own listener, not a re-created one for the same id', () => {
+		const first = createInput('q_reopen');
+		const document = first.document;
+		first.dispose();
+		// Reopening the same id creates a new document and a new listener while the old one is gone.
+		const second = createInput('q_reopen');
+
+		assert.deepStrictEqual({
+			newDocument: second.document !== document,
+			listeners: documentService.documentListenerCount,
+			registryIsNew: documentService.peek('q_reopen') === second.document,
+		}, { newDocument: true, listeners: 1, registryIsNew: true });
+
+		second.dispose();
+		assert.strictEqual(documentService.documentListenerCount, 0);
+		assert.strictEqual(documentService.peek('q_reopen'), undefined);
 	});
 
 	test('the last holder releases the document, and releasing twice is a no-op', () => {

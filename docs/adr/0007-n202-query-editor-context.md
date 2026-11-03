@@ -57,8 +57,16 @@ QueryEditorInput (queryId) --acquire()--> NyalaQueryDocument (one per query)
   - runtime `failed`/`stopped` → `runtime-unavailable`；
   - Profile 断开或行消失 → `connection-closed`；
   - Profile 在标签页背后被重连（同一 Profile、新的 `sessionId`）→ `connection-closed`。这条最重要：新会话不是用户为**这个**标签页选的。
-- Pane 的执行判定是 `context.canExecute(runtimeState)`，它同时要求「有 binding」且「runtime ready 且代际相同」。因此即使行状态尚未传到，runtime 先换代的那一刻标签页就已经拒绝执行。
+- **切换连接期间没有执行目标。** 已绑定 A 的用户显式选择 B 时，`bind()` 在打开 B 之前就调用 `context.beginSwitch(B)`：清空 binding、状态置为 `switching`。因此：
+  - `switching` 期间 `canExecute()` 恒为 `false`，`getExecutionBinding()` 返回 `undefined`，标签页与状态行显示「正在连接 B」，不会继续用 A 执行；
+  - B 成功后只绑定 B，状态回到 `idle`；
+  - B 失败后**不恢复 A**：状态回到 `idle`、无绑定，理由为 `connection-failed`。用户已经表示要离开 A，把 A 悄悄接回来正是本 ADR 要禁止的隐式改绑；
+  - 重新选择**当前已绑定**的同一 Profile 不算切换：不经过 `switching`，失败时保留原绑定（一次失败的刷新不该让用户丢掉可用的连接）；
+  - A/B 乱序返回由 per-query intent 决定：只有最新 intent 能提交或结束切换，迟到的回复既不绑定也不改变 `switching`/`idle` 状态；
+  - 标签页关闭、runtime 换代或不可用、Session 失效都会结束切换（`release` 直接丢弃 context；runtime 事件把 `switching` 收束为 `unbound` 并保留原因），所以不会停留在「永远正在连接」。
+- Pane 的执行判定是 `context.canExecute(runtimeState)`，它同时要求「状态为 `idle`」「有 binding」「runtime ready 且代际相同」。因此即使行状态尚未传到，runtime 先换代的那一刻标签页就已经拒绝执行。
 - 没有绑定的标签页**照常编辑**（文本、光标、选区、撤销都是普通 Monaco 行为），只是没有执行目标。`getExecutionBinding()` 返回 `undefined`。
+- 标题与状态行都从共享 Document 的绑定事件派生：`NyalaQueryDocument` 把 context 的 `onDidChangeBinding` 转成自己的 `onDidChangeBinding`，每个 Input 据此触发 `onDidChangeLabel`，Pane 据此刷新状态行。因此同一 `queryId` 的两个标签页在连接、重绑、切换或断开时都会刷新，而不是只有当前激活的那个。
 
 ### 4. 复用，而不是重写
 
@@ -78,6 +86,7 @@ QueryEditorInput (queryId) --acquire()--> NyalaQueryDocument (one per query)
 
 - `NyalaQueryEditorInput.dispose()`：清内容监听 → 释放 `NyalaQueryDocument` 的引用。它是最后一个持有者时，Document 才销毁模型并 `release(queryId)`；否则另一个标签页继续使用同一模型。
 - `NyalaQueryDocumentService` 只持有注册表项，不额外 `acquire()`，因此 `get()` 不会让一个没人打开的查询永远存活；Document 自毁后服务同步摘除该 id 的条目，之后重新打开得到空模型与新上下文。服务 `dispose()` 仍会清理窗口关闭时残留的文档。
+- 服务为每个存活 Document 保留一个 `onDidDispose` 订阅，存在 `DisposableMap` 里，Document 销毁时**连同订阅一起移除**：订阅数因此等于存活文档数，不会随「曾经打开过多少个查询」增长。移除时还要核对这仍是该 id 当前的订阅，避免把重新打开后新文档的订阅清掉。
 - `NyalaQueryContextService` 是上下文的**所有者**：`dispose()` 释放所有仍存活的上下文（即便某个标签页从未关闭），因此窗口关闭不会留下悬空 Emitter。
 - `NyalaQueryEditorPane` 在 `setInput` 切换、`clearInput`、`dispose` 三处都解除上一个上下文的 `onDidChangeBinding` 监听；`clearInput` 还把控件模型置空。Pane 不创建、不释放上下文。
 - 二次 `restoreProfiles`、重复 `bind`、对已释放上下文 `bind`、重复释放文档都被拒绝或幂等（见测试）。
@@ -114,11 +123,14 @@ N-202 的查询标签页是**仅存在于当前窗口的 scratch buffer**。本 
 
 ## 验证
 
-`src/vs/workbench/contrib/nyala/test/browser/nyalaQueryEditor.test.ts`（25 项，Chromium 实跑）与 `.../test/common/nyalaQueryContext.test.ts`（21 项，node runner）：
+`src/vs/workbench/contrib/nyala/test/browser/nyalaQueryEditor.test.ts`（29 项，Chromium 实跑）与 `.../test/common/nyalaQueryContext.test.ts`（29 项，node runner）：
 
 - 两个标签页绑不同 Profile，各自 session 独立；重新绑定 A 不影响 B。
 - 同一 Profile 上两个查询是不同对象，释放其一不影响另一。
 - runtime 换代、runtime 失败、Profile 断开、Profile 被重连四种情况都会解除绑定，理由可读，且不会自动改绑。
+- 切换连接：A→B 在 B 打开前就失去执行目标（`switching`、`canExecute()` 为 false）；B 成功后只绑定 B；B 失败后不恢复 A（`connection-failed`）；重复选择同一 Profile 不经过 `switching` 且失败保留绑定；两次切换乱序返回只留最后一次；切换期间关闭标签页、runtime 换代、断开旧 Profile 都不会复活旧绑定，也不影响另一个标签页。全部用 `DeferredPromise` 控制 connect 的完成时机，不依赖 timeout。
+- 同一 `queryId` 的两个 Input 在绑定、切换、断开时都各自触发 `onDidChangeLabel`；切换期间两者的 `getExecutionBinding()` 均为 `undefined`，描述为「正在连接 B」，切换结束后同时变为 B。
+- 反复打开并关闭 10 个查询后，服务的 Document 订阅数等于存活文档数（2），全部释放后为 0；同 id 重新打开只保留新订阅。
 - 未绑定标签页不会采用别的 Profile 的连接；`getExecutionBinding()` 为 `undefined`。
 - URI 断言逐字段（scheme/authority/path/query/fragment）且断言不含路径与会话；序列化内容断言只含 `queryId`，不含正文、`alice`、`s_a`、`private.sqlite`。
 - 同一 `queryId` 的两个真实 Input 共享一个 Document、模型与上下文；关闭其一后另一个仍可编辑；两个 `queryId` 不共享；最后一个持有者释放后模型销毁、上下文释放、注册表清空；重复释放是空操作；已关闭文档拒绝交出模型。

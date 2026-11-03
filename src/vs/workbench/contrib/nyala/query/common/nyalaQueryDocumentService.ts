@@ -11,7 +11,7 @@
 // disposes itself when the last input releases it, and the registry entry is dropped then, so a
 // later open of the same query starts with a new, empty model.
 
-import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILanguageService } from '../../../../../editor/common/languages/language.js';
 import { IModelService } from '../../../../../editor/common/services/model.js';
@@ -39,8 +39,13 @@ export class NyalaQueryDocumentService extends Disposable implements INyalaQuery
 	declare readonly _serviceBrand: undefined;
 
 	private readonly documents = new Map<string, NyalaQueryDocument>();
-	/** The per-document disposal listener; released with the service. */
-	private readonly documentListeners = this._register(new DisposableStore());
+	/**
+	 * One disposal listener per live document, removed as soon as that document is disposed. It has
+	 * to be removed, not only registered: a `DisposableStore` would otherwise keep a subscription
+	 * for every query ever opened in this window, and closing and reopening queries would grow it
+	 * without bound.
+	 */
+	private readonly documentListeners = this._register(new DisposableMap<string, IDisposable>());
 
 	constructor(
 		@IModelService private readonly modelService: IModelService,
@@ -56,19 +61,33 @@ export class NyalaQueryDocumentService extends Disposable implements INyalaQuery
 			return existing;
 		}
 		const document: NyalaQueryDocument = new NyalaQueryDocument(queryId, this.modelService, this.languageService, this.contextService);
-		// Only drop the entry that still belongs to this document: a listener may already have
-		// opened the same query again while the disposed one was announcing itself.
-		this.documentListeners.add(document.onDidDispose(() => {
+		// The listener drops the registry entry — but only the one that still belongs to this
+		// document: a listener of the disposal may already have opened the same query again, in
+		// which case that new document's listener and entry must survive.
+		const listener = document.onDidDispose(() => {
+			if (this.documentListeners.get(queryId) === listener) {
+				this.documentListeners.deleteAndDispose(queryId);
+			}
 			if (this.documents.get(queryId) === document) {
 				this.documents.delete(queryId);
 			}
-		}));
+		});
+		this.documentListeners.set(queryId, listener);
 		this.documents.set(queryId, document);
 		return document;
 	}
 
 	peek(queryId: string): NyalaQueryDocument | undefined {
 		return this.documents.get(queryId);
+	}
+
+	/**
+	 * How many disposal subscriptions the service currently holds. It must equal the number of live
+	 * documents: a value that grows with the number of queries ever opened is a listener leak.
+	 * Diagnostics for tests, not a UI contract.
+	 */
+	get documentListenerCount(): number {
+		return this.documentListeners.size;
 	}
 
 	override dispose(): void {
