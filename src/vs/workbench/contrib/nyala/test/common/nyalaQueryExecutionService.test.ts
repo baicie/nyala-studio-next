@@ -558,6 +558,27 @@ suite('Nyala query execution service', () => {
 		assert.deepStrictEqual(bridge.pending(NyalaRuntimeCommand.QueryCancel).map(request => request.params), [{ executionId: 'ex_1', reason: 'user' }]);
 	});
 
+	test('finished runs that own no results are forgotten, so the window does not keep one record per run', async () => {
+		await boundTab('q_1');
+		for (let index = 0; index < 3; index++) {
+			const { promise, request } = await start('q_1');
+			request.answer.complete({ ok: true, runtimeGeneration: 1, result: { executionId: `ex_${index + 1}`, state: 'queued', sequence: 1 } });
+			await promise;
+			bridge.queryChanges.fire(stateEvent(`ex_${index + 1}`, 'completed', 2));
+			await bridge.flush();
+		}
+
+		assert.deepStrictEqual({
+			records: service.executions.length,
+			oldest: service.getExecutionById('ex_1'),
+			newest: service.getExecutionById('ex_3')?.state,
+		}, {
+			records: 1,
+			oldest: undefined,
+			newest: 'completed',
+		});
+	});
+
 	test('the result budget refuses more handles than the runtime can hold', async () => {
 		await running('q_1', 'ex_1');
 		bridge.queryChanges.fire(stateEvent('ex_1', 'completed', 3, { resultIds: ['rs_1', 'rs_2', 'rs_3', 'rs_4'] }));

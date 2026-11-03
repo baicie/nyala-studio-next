@@ -200,7 +200,11 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			resultIds: [],
 			abandoned: false,
 		};
+		const previous = this.byQuery.get(queryId);
 		this.byQuery.set(queryId, record);
+		if (previous) {
+			this.pruneExecution(previous);
+		}
 		this.logService.trace(`Nyala: query ${queryId} execution requested (${mode})`);
 		this._onDidChangeExecution.fire(record);
 
@@ -498,6 +502,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		}
 		entry.released = true;
 		this.results.delete(entry.resultId);
+		this.pruneExecution(this.byExecution.get(entry.executionId));
 		if (entry.releaseSent) {
 			return;
 		}
@@ -518,6 +523,27 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		entry.released = true;
 		entry.references = 0;
 		this.results.delete(entry.resultId);
+		this.pruneExecution(this.byExecution.get(entry.executionId));
+	}
+
+	/**
+	 * Drops an execution record once nothing can reach it any more: it is no longer the query's
+	 * newest run and it owns no result. Without this the window would keep one record per run it
+	 * ever started.
+	 */
+	private pruneExecution(record: INyalaExecutionRecord | undefined): void {
+		if (!record || !record.executionId) {
+			return;
+		}
+		if (this.byQuery.get(record.snapshot.queryId) === record) {
+			return;
+		}
+		for (const entry of this.results.values()) {
+			if (entry.executionId === record.executionId) {
+				return;
+			}
+		}
+		this.byExecution.delete(record.executionId);
 	}
 }
 
