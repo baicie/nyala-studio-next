@@ -155,6 +155,14 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - **PASS（本机，Windows 11）**：`nyalaQueryEditor.test.ts` **29 passing**（Chromium）、`nyalaQueryContext.test.ts` **29 passing**、`nyalaConnectionService.test.ts` 39 passing、`nyalaBootstrap.test.ts` 18 passing（Chromium）；`build-fast --client-only` PASS；`tsc -p src/tsconfig.json` 中 Nyala 文件 0 错误（全项目 387 条仍为缺失 Electron 类型的既有环境问题）。
 - **NOT RUN（具体阻塞）**：原生 Electron smoke。Electron 43.7.7 已从 `%LOCALAPPDATA%\electron\Cache` 装入 `.build/electron`，但应用在开窗前退出（exit 1）：`@vscode/policy-watcher` 的 `.node` 绑定缺失，`NativePolicyService._updatePolicyDefinitions` 在 `ConfigurationService.initialize` 中产生未处理拒绝。离线重建该模块因本机 MSVC 未安装 Spectre 缓解库而失败（MSB8040）；没有通过移除 `SpectreMitigation` 来绕过。桌面原生 E2E 仍属 N-207。
 
+### P2.5 · N-203 Query Execution（`feat/n203-query-execution`，Draft PR）
+
+- 设计先行：新增 [ADR 0008](../../adr/0008-n203-query-execution.md)（执行快照、ExecutionId 身份、状态推进、取消语义、结果所有权、Ctrl/Cmd+Enter 与 Monaco 的冲突取舍、Main 进程校验、与 N-204 的最小接口）与 [实施拆分与验收矩阵](docs/32-n203-execution-plan.md)（S1–S6，A1–A24）。
+- 硬约束：执行入口必须调用 `canExecute(runtimeState)`，不接受 `binding !== undefined`；快照在第一个 `await` 之前冻结，之后标签页切换、重新绑定、关闭都不改变在途执行的目标；所有操作按 `executionId`；`unknown` 与 `UNKNOWN_COMMIT_STATUS` 不自动重试。
+- 范围：Rust 执行器与 `nyala/rpc/**` 不改；N-203 只做 Main 进程白名单/校验、Workbench 执行服务、命令与键位、结果句柄所有权。
+- **PASS（合并前）**：PR #49、#50 已合入 `nyala/main`，`patchCount` 71 → 80（57 个修改的上游跟踪文件 + 23 个新增 Nyala 源文件），main 上四项必需检查在 `4769913eab4` 通过（run `41635809716`）。
+- **进行中**：S1–S6 尚未实施，本条目只记录设计与拆分；任何 A 项未 PASS 前不合并。
+
 ## 2026-11-01 子会话收尾状态
 
 | PR | 已核对 head / 主线提交 | 状态与证据 |
