@@ -125,6 +125,16 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - **PASS（本机）**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（单元 138 + cancellation 6 + conformance 8 + contract 4 + stdio 22 = 178）、`nyala:validate-product`、`nyala:validate-rpc`、`nyala:check-rpc-generated`、Nyala 其余 node 套件 47 passing / 1 pending、`git diff --check`。
 - **BLOCKED（本机环境）**：`typecheck-client` 需要 `.build/typings/electron.d.ts`，本机离线无法从 GitHub Releases 下载；`tsc` 全项目报 387 条错误，全部来自缺失的 Electron 类型（`electron`/`original-fs` 模块与 `Process.noAsar` 等），**Nyala 文件 0 条**。以 CI 的 `Client typecheck and hygiene` 为准。
 
+### P2.3 · N-202 Query EditorInput + Context（`feat/n202-query-editor-context`）
+
+- 新目录 `src/vs/workbench/contrib/nyala/query/`：`common/nyalaQueryEditorInput.ts`（`EditorInput`，URI `nyala-query://local/<queryId>`，`IModelService` 模型、dirty/save 状态）、`common/nyalaQueryContext.ts`（`NyalaQueryContext` 与它的服务接口）、`common/nyalaQueryContextService.ts`（每个 `queryId` 一个上下文的窗口级所有者）、`browser/nyalaQueryEditorPane.ts`（`AbstractTextCodeEditor` + 状态行）、`browser/nyalaQuery.contribution.ts`（Pane/Resolver/Serializer/两个命令/标题菜单）。
+- 身份与隔离：`queryId` 是 EditorInput 身份，binding 是运行时身份，两者不互推；`NyalaQueryContext` 逐 Tab 一个对象，禁止从全局当前连接推断。四种失效（runtime 换代、runtime 不可用、Profile 断开、Profile 被后台重连）都会 `unbind` 并给出可读理由，且**不自动改绑**。
+- URI 只含 uuid：`nyala-query://local/<queryId>`，无 query、无 fragment；路径/会话/凭据只存在于 Profile 与 runtime handle 中。序列化只写 `{queryId, text}`，反序列化校验 id 形态，坏数据拒绝。
+- 复用而非重写：`IEditorService.openEditor`、`AbstractTextCodeEditor`（`CodeEditorWidget`）、`IEditorPaneRegistry`/`IEditorResolverService`/`IEditorFactoryRegistry`、`IModelService`；没有新的 Tab 系统、没有改 `EditorService`。
+- 命令：`nyala.query.new`（`Nyala: New Query`）与 `nyala.query.changeConnection`（仅对激活的查询标签页生效，标题菜单仅在 `resourceScheme === nyala-query` 时出现）。
+- **PASS（本机，Windows 11，Chromium 实跑）**：`nyalaQueryEditor.test.ts` **17 passing**、`nyalaQueryContext.test.ts` **14 passing**、`nyalaBootstrap.test.ts` **18 passing**（PR C）、`nyalaConnectionService.test.ts` **31 passing**（PR C）；Nyala 文件 `tsc` **0 错误**；`git diff --check` PASS。
+- **NOT RUN**：桌面原生 E2E（N-207：连接→编辑→执行→结果→重启）、macOS/Linux 原生；执行命令（N-203）与结果面板（N-204）本就不在范围。
+
 ## 2026-11-01 子会话收尾状态
 
 | PR | 已核对 head / 主线提交 | 状态与证据 |

@@ -212,6 +212,7 @@ import './contrib/telemetry/browser/telemetry.contribution.js';
 
 // Nyala
 import './contrib/nyala/bootstrap/browser/nyala.contribution.js';
+import './contrib/nyala/query/browser/nyalaQuery.contribution.js';
 
 // Preferences
 import './contrib/preferences/browser/preferences.contribution.js';

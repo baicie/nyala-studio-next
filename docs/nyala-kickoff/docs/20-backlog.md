@@ -47,7 +47,7 @@
 | ID | Priority | Depends | 任务 | 验收/证据 |
 |---|---|---|---|---|
 | N-201 | P0 | N-105,N-005 | Connections Tree | 加载/错误/Refresh/离线 · **首轮交付**（`feat/p2-connections-foundation`，PR B）：受控 IPC 桥（六命令白名单、Main 侧参数校验、按窗口绑定）、Profile/Session/Generation 身份、`WorkbenchAsyncDataTree` 的 Connections 视图（连接/断开/刷新/展开表列/`lost` 状态）。未做：profile 删除与编辑、catalog 分页加载更多、桌面原生 E2E；见 [ADR 0006](../../adr/0006-p2-workbench-runtime-bridge.md)。**合并后加固**（`fix/post-merge-safety-closure`）：Profile 身份改为 `p_<uuid>` 并与路径去重分离、连接尝试计数器（重叠 connect / connect 期间 disconnect / catalog 失败不再泄漏 session）、`executionRollback` 不再被只读失败覆盖；浏览器套件从占位断言改为真实 Connections 树（18 passing） |
-| N-202 | P0 | N-106,N-005 | Query EditorInput + Context | 两 Tab 不串 profile/session |
+| N-202 | P0 | N-106,N-005 | Query EditorInput + Context | 两 Tab 不串 profile/session · **首轮交付**（`feat/n202-query-editor-context`，Draft PR）：原生 `EditorInput`/`EditorPane`（`AbstractTextCodeEditor` + Monaco）、每个查询一个 `NyalaQueryContext`（`queryId`/`profileId`/`sessionId`/`sessionGeneration`/`runtimeGeneration`/`readOnly`/`defaultDatabase`/`defaultSchema`）、`nyala-query://local/<queryId>`（不含路径/连接串/凭据）、`Nyala: New Query` 与显式 `Nyala: Change Query Connection`；运行时换代、Profile 断开或被重连都会解除绑定且不自动改绑。未做：执行命令与键位（N-203）、结果面板（N-204/N-205）、草稿持久化（N-206）；见 [ADR 0007](../../adr/0007-n202-query-editor-context.md) |
 | N-203 | P0 | N-202 | Commands & Keybindings | 当前语句/选区、键位冲突测试 |
 | N-204 | P0 | N-107 | Basic Result Panel | NULL/类型/截断/耗时/错误 |
 | N-205 | P0 | N-204 | Virtualized Grid + Byte Cache | 100k×20 浏览不全 DOM |
