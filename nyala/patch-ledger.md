@@ -2,12 +2,12 @@
 
 更新时间：2026-11-03。基线是 Code OSS `1.143.0`，SHA
 `2d0b7506a36c1d6db9a466440131a8e01eab2289`（2026-10-29 由 `1.142.0` /
-`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime 已有 `rust/` 下的 stdio 分帧、hello/health（N-101/N-102）、SQLite Profile/Session（N-104，PR #33，`195475b84b3`）、metadata、查询执行 + 结果句柄与只读强制（N-105/N-106/N-109），均不改上游文件；N-110 的 TS/Rust 生成声明同样不改上游文件（TS 侧新增 1 个 Nyala 源文件）。N-103 Supervisor 已随 PR #35（`24c3cc7aa23`）合入；P1 的 SQL 正确性加固随 PR #45（`673f8e4c6a0`）合入；P2 的 Runtime Bridge 与 N-201 Connections 随 PR #46（`4532c084134`）合入，Renderer 已能打开只读 SQLite 会话并浏览 schema。Workbench 侧的结果网格与 Query Editor 尚未交付。
+`d956e8a6ac5d904486557eea07e1d6bd62a4d36f` 同步）。此 ledger 只登记产品差异；SQL Runtime 已有 `rust/` 下的 stdio 分帧、hello/health（N-101/N-102）、SQLite Profile/Session（N-104，PR #33，`195475b84b3`）、metadata、查询执行 + 结果句柄与只读强制（N-105/N-106/N-109），均不改上游文件；N-110 的 TS/Rust 生成声明同样不改上游文件（TS 侧新增 1 个 Nyala 源文件）。N-103 Supervisor 已随 PR #35（`24c3cc7aa23`）合入；P1 的 SQL 正确性加固随 PR #45（`673f8e4c6a0`）合入；P2 的 Runtime Bridge 与 N-201 Connections 随 PR #46（`4532c084134`）合入；PR #49（`563fc665f16`）补上会话所有权、Profile 身份与 `executionRollback` 语义；PR #50（`e6f94e042bc`）交付 N-202 查询编辑器与每查询上下文。Renderer 已能打开只读 SQLite 会话、浏览 schema 并编辑/绑定 SQL 标签页；执行命令与结果网格仍未交付（N-203/N-204）。
 
 ## 计数口径
 
-`nyala/upstream-base.json` 的 `patchCount` 为 `71`：57 个已跟踪的上游文件发生修改，另有 14
-个 Nyala 源文件新增（7 个在 `src/vs/workbench/contrib/nyala/`，7 个在 `src/vs/platform/nyalaRuntime/`）。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
+`nyala/upstream-base.json` 的 `patchCount` 为 `80`：57 个已跟踪的上游文件发生修改，另有 23
+个 Nyala 源文件新增（16 个在 `src/vs/workbench/contrib/nyala/`，7 个在 `src/vs/platform/nyalaRuntime/`）。与运行或打包有关的 `build/` 输入也计入补丁数；`docs/`、
 `.github/workflows/nyala-ci.yml`、`scripts/nyala/`、`nyala/` 元数据和 Nyala 自有的 `rust/`
 Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runtime-workspace.md)）不计入
 该数字，但仍属于当前工作树，提交前应随变更审阅。
@@ -47,6 +47,16 @@ Cargo workspace（不在上游树内，见 [ADR 0002](../docs/adr/0002-rust-runt
 `61` 是 PR #20（dependabot，四个 workflow 的 GitHub Actions 版本升级）合入后、`nyala/main` `4b5c38345b8` 上的实测值（2026-11-02）：修改的上游跟踪文件 51 → 55，新增的 4 个是 `.github/workflows/css-order-scan.yml`、`pr-darwin-test.yml`、`pr-linux-test.yml`、`pr-win32-test.yml`——它们此前与 `1.143.0` 一致，该 PR 把其中的 `actions/setup-node`、`actions/cache`、`actions/upload-artifact`、`actions/download-artifact` 升到新版本。同一 PR 也改了已计入的 `.github/workflows/nyala-ci.yml`；其余 9 个 workflow 已在补丁集内，不重复计数。没有新增或删除 Nyala 源文件，仍为 6 个。风险：上游再次升级这些 action 时会产生行级冲突，按上游版本重新套用即可，无产品语义；移除条件：Nyala 不再固定 action 版本，或上游自己完成同等升级时该差异自然消失。
 
 `71` 是 PR #46（squash `4532c084134`）合入后的实测值（2026-11-03）：修改的上游跟踪文件仍为 57（PR #45 不改 `src/vs/**`；PR #46 只改已计入的 `src/vs/code/electron-main/app.ts`，+4 行）；新增的非测试 Nyala 源文件 7 → 14，新增的 7 个是 `src/vs/platform/nyalaRuntime/common/nyalaRuntimeIpc.ts`、`src/vs/platform/nyalaRuntime/common/nyalaRuntimeRequest.ts`、`src/vs/platform/nyalaRuntime/electron-main/nyalaRuntimeChannel.ts`、`src/vs/workbench/contrib/nyala/connections/common/nyalaConnectionService.ts`、`src/vs/workbench/contrib/nyala/connections/browser/nyalaRuntimeBridge.ts`、`src/vs/workbench/contrib/nyala/connections/browser/nyalaConnectionsTree.ts`、`src/vs/workbench/contrib/nyala/connections/browser/nyalaConnectionService.contribution.ts`。测试与 fixtures、`docs/`、`rust/`、`scripts/nyala/` 与 `.github/workflows/nyala-ci.yml` 按口径不计入。风险：`app.ts` 的四处新增与上游 `initChannels` / `CodeApplication.startup()` 相邻，同步时按位置保留；移除条件：上游提供可注册的 Main 进程 IPC 通道扩展点。
+
+`80` 是 PR #49（squash `563fc665f16`）与 PR #50（squash `e6f94e042bc`）先后合入 `nyala/main` 后的实测值（2026-11-03，实测基于 `e6f94e042bc`）：
+修改的上游跟踪文件仍为 **57**——PR #49 只改 Nyala 自有文件；PR #50 只改已计入的 `src/vs/workbench/workbench.common.main.ts`（+1 行注册查询编辑器贡献）。
+新增的非测试 Nyala 源文件 14 → **23**，PR #50 新增的 9 个是
+`src/vs/workbench/contrib/nyala/query/browser/nyalaQuery.contribution.ts`、
+`nyalaQueryEditorPane.ts`、`query/browser/media/nyalaQueryEditor.css`、
+`query/common/nyalaQueryContext.ts`、`nyalaQueryContextService.ts`、`nyalaQueryDocument.ts`、
+`nyalaQueryDocumentService.ts`、`nyalaQueryEditorInput.ts`、`nyalaQueryResource.ts`。
+`src/vs/workbench/contrib/nyala/test/**`、`docs/`、`.github/workflows/nyala-ci.yml`、`scripts/nyala/`、`rust/` 与 `nyala/` 元数据按口径不计入。
+风险：`workbench.common.main.ts` 的注册行与上游贡献列表相邻，同步时按位置保留；移除条件：上游提供可自动发现的 Workbench 贡献注册点。
 
 ## 改动清单
 
