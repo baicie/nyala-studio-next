@@ -96,7 +96,7 @@ export class NyalaConnectionsView extends ViewPane {
 	 * A profile row connects when it has no session, and disconnects when it has one; expanding a
 	 * profile or table is left to the tree, which uses the same commands through the service.
 	 */
-	private async onDidOpen(element: INyalaConnectionNode | undefined): Promise<void> {
+	protected async onDidOpen(element: INyalaConnectionNode | undefined): Promise<void> {
 		if (!element || element.kind !== NyalaConnectionNodeKind.Profile || !element.profileId) {
 			return;
 		}

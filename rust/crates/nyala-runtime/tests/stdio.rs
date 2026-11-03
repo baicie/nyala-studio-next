@@ -1064,6 +1064,27 @@ fn a_failed_write_reports_its_rollback_state_over_the_pipe() {
 		"{terminal}"
 	);
 
+	// The failing statement is read-only, but the first one committed. The execution-level answer
+	// has to stay `unknown`; the read-only failure may not overwrite it with `rolled_back`.
+	let committed_then_read_failed = result(&runtime.call(&request(
+		"rq_5",
+		"query.execute",
+		json!({
+			"sessionId": id,
+			"sessionGeneration": generation,
+			"sql": "INSERT INTO customers(name) VALUES ('Committed'); SELECT json_extract('not-json', '$')",
+			"mode": "script",
+			"timeoutMs": 30_000,
+			"maxInitialRows": 200,
+		}),
+	)))
+	.clone();
+	let terminal = runtime.wait_for_state(&committed_then_read_failed["executionId"], "failed");
+	assert_eq!(
+		terminal["params"]["error"]["data"]["executionRollback"], "unknown",
+		"{terminal}"
+	);
+
 	let (code, stderr) = runtime.finish();
 	assert_eq!(code, Some(0), "{stderr}");
 }

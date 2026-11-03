@@ -621,7 +621,7 @@ fn a_failed_statement_reports_that_it_rolled_back_and_changed_nothing() {
 	prepared.expect("the statement compiles");
 	assert_eq!(result.state, State::Failed);
 	// SQLite undoes the statement, but the writer may have stepped rows before the constraint
-	// rejected it, so the runtime reports  rather than promising a rollback it did not
+	// rejected it, so the runtime reports `unknown` rather than promising a rollback it did not
 	// perform itself. What is proven is checked below: the database did not change.
 	assert_eq!(result.rollback, Some(Rollback::Unknown));
 	let error = result.error.expect("a failure names its cause");
@@ -665,6 +665,88 @@ fn a_script_that_fails_after_writing_reports_an_unknown_commit_state() {
 }
 
 #[test]
+fn a_script_whose_read_fails_after_a_committed_write_is_not_reported_as_rolled_back() {
+	// The failing statement is read-only, but the script already committed a writer before it.
+	// `executionRollback` describes the execution, not the statement that happened to fail, so a
+	// read-only failure may not overwrite the script's `unknown` with `rolled_back`.
+	let dir = TempDir::new("rollback-read-after-write");
+	let path = dir.database("db.sqlite");
+	let writable = open(&path, false);
+	let (_, prepared, result) = outcome(
+		&writable,
+		"INSERT INTO customers(name) VALUES ('Committed'); SELECT json_extract('not-json', '$')",
+		"script",
+	);
+	prepared.expect("both statements compile");
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(
+		result.rollback,
+		Some(Rollback::Unknown),
+		"the INSERT committed before the read-only statement failed"
+	);
+	assert_eq!(
+		result.error.as_ref().and_then(|error| error.rollback),
+		Some(Rollback::Unknown)
+	);
+	assert_eq!(
+		committed_names(&path, &["Committed"]),
+		1,
+		"the write is real, and the outcome may not deny it"
+	);
+}
+
+#[test]
+fn a_script_that_commits_its_own_transaction_before_a_read_fails_is_not_rolled_back() {
+	// The script owns its transaction (`BEGIN`/`COMMIT` are the client's, not the runtime's), so a
+	// read that fails afterwards may not describe the committed write as undone. The runtime's
+	// best-effort `ROLLBACK` at the end has nothing left to roll back.
+	let dir = TempDir::new("rollback-explicit-commit");
+	let path = dir.database("db.sqlite");
+	let writable = open(&path, false);
+	let (_, prepared, result) = outcome(
+		&writable,
+		"BEGIN; INSERT INTO customers(name) VALUES ('InTransaction'); COMMIT; SELECT json_extract('not-json', '$')",
+		"script",
+	);
+	prepared.expect("the statements compile");
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+	assert_eq!(
+		result.error.as_ref().and_then(|error| error.rollback),
+		Some(Rollback::Unknown)
+	);
+	assert_eq!(committed_names(&path, &["InTransaction"]), 1);
+	assert!(
+		writable.connection().is_autocommit(),
+		"the committed transaction is closed, not left open"
+	);
+}
+
+#[test]
+fn a_script_that_fails_inside_its_own_transaction_reports_unknown_and_is_undone() {
+	// The runtime rolls the script's transaction back, so the database is unchanged; the outcome
+	// still says `unknown`, because the rollback is best effort and its own failure is deliberately
+	// not reported. The proof is the database, not the claim.
+	let dir = TempDir::new("rollback-explicit-open");
+	let path = dir.database("db.sqlite");
+	let writable = open(&path, false);
+	let (_, prepared, result) = outcome(
+		&writable,
+		"BEGIN; INSERT INTO customers(name) VALUES ('RolledBackByRuntime'); SELECT json_extract('not-json', '$')",
+		"script",
+	);
+	prepared.expect("the statements compile");
+	assert_eq!(result.state, State::Failed);
+	assert_eq!(result.rollback, Some(Rollback::Unknown));
+	assert_eq!(
+		committed_names(&path, &["RolledBackByRuntime"]),
+		0,
+		"the transaction was rolled back, and the next reader sees nothing"
+	);
+	assert!(writable.connection().is_autocommit());
+}
+
+#[test]
 fn a_script_that_only_read_reports_a_rolled_back_failure() {
 	let dir = TempDir::new("rollback-read-script");
 	let writable = open(&dir.database("db.sqlite"), true);
@@ -704,7 +786,7 @@ fn a_returning_result_over_the_limit_reports_that_the_write_may_have_committed()
 		Some(ErrorKind::ResourceLimit)
 	);
 	// The rows were inserted before the result could be handed over, and they stay: the execution
-	// is  but the write is real, so the report is , never .
+	// is `unknown` but the write is real, so the report is `unknown`, never `rolled_back`.
 	assert_eq!(result.rollback, Some(Rollback::Unknown));
 	assert_eq!(
 		result.error.as_ref().and_then(|error| error.rollback),
@@ -789,8 +871,8 @@ fn a_cancelled_write_reports_an_unknown_commit_state() {
 	prepared.expect("the statement compiles");
 	assert_eq!(result.state, State::Cancelled);
 	// The stop lands inside SQLite's own statement; the write may or may not have committed, and
-	// the outcome may not claim either way. This path answers through , which
-	// carries no rollback answer, so the run reports  for a writer.
+	// the outcome may not claim either way. This path answers through `Outcome::stopped`, which
+	// carries no rollback answer, so the run reports `unknown` for a writer.
 	assert_eq!(result.rollback, Some(Rollback::Unknown));
 }
 

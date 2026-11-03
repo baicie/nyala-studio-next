@@ -39,7 +39,7 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 产品身份：`Nyala Studio` / `nyala-studio` / `.nyala-studio` / `nyala://` / `0.0.1-dev.0`。
 - macOS 原生 Electron 启动、编辑器、Split、Extension Host、Webview 冒烟通过（`1.142.0`），见 [`nyala/upstream-compatibility.md`](../../nyala/upstream-compatibility.md)。
 - Windows 11 原生 Electron 冒烟（`1.143.0`）：`scripts/nyala/smoke-electron.ts` 经 `scripts\code.bat` 启动。2026-10-29 在 `fix/p0-windows-smoke`（`595db6c10f7`）上为 **FAIL 11/12**，唯一失败项是 `vscode.markdown-language-features` 激活失败；2026-10-30 在 `fix/extension-api-version`（`6d35da69627`）上为 **PASS 12/12**，css/html/json/markdown 语言功能全部激活、Markdown 预览渲染正常。详见兼容性报告 Windows 节。
-- Reload / Dispose 自动化回归：`src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts`（8 passing）。
+- Reload / Dispose 自动化回归：`src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts`（2026-11-03 重写后 18 passing，见 P2.2）。
 - Hello Workbench：`nyala.hello` 命令 + `Nyala Connections` 视图容器 + 状态栏入口，源码在 `src/vs/workbench/contrib/nyala/bootstrap/browser/`。
 - 质量门禁：`npm run compile`、`typecheck-client`、`build-fast --client-only`、`gulp hygiene`、定向 ESLint、JSON/脚本检查（同上报告）。
 - 文档落位：设计包 `docs/nyala-kickoff/`、`docs/adr/`、`nyala/patch-ledger.md`。
@@ -113,6 +113,17 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - 单测：`nyalaRuntimeRequest.test.ts`（白名单参数校验）、`nyalaConnectionService.test.ts`（test→open→catalog 顺序、失败中止、换代失效、profile 解析）与 `nyalaRuntimeChannel.test.ts`（白名单外命令拒绝、无 runtime 窗口返回 `RUNTIME_LOST`、参数错误在触达进程前返回 `INVALID_PARAMS`、两个真实进程互不可见）加入 `Unit tests (node)` job。
 - **已合入**：PR #46，squash `4532c084134`（2026-11-03）；rebase 到含 PR #45 的主线后在 head `b85ba3ba68c` 重跑 CI，run `41565681831` 四项必需检查 PASS。
 - **PASS（CI，PR #46 首个通过 head `ab8c683c0f9`，run `41554877870`）**：`Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 四项必需检查。CI 抓出并修复的缺陷：supervisor 事件前的 runtime generation 未初始化；Supervisor 的 `runtime.hello` 未协商任何 feature（`connection.open` 被回 `PROTOCOL_MISMATCH`）；新源码含非 ASCII 字符。**NOT RUN**：桌面原生 E2E（需 `npm install` + 真实 Electron）、Linux/macOS 原生。
+
+### P2.2 · 合并后安全收尾（`fix/post-merge-safety-closure`，PR #46 之后的修复）
+
+合入后复查发现的三类缺陷，均先写可复现测试、确认旧实现失败，再改实现：
+
+1. **`executionRollback` 被只读失败覆盖（C1）**：`run_statements` 在失败语句只读时直接报 `rolled_back`，于是 `INSERT INTO customers(name) VALUES ('Committed'); SELECT json_extract('not-json','$')` 这种「写已提交、随后只读语句失败」的脚本被报成 `rolled_back`。改为仅 `read_only && !completed_write` 才允许 `rolled_back`；脚本自持 `BEGIN…COMMIT` 后读失败同样报 `unknown`。**没有**用外层事务包住脚本（ADR 0002 后续项 14 记录了为什么那样会改变客户端事务语义）。证据：`worker::tests` 新增 3 条真实 SQLite 用例（直接回读库内容断言写已提交/已回滚）、`tests/stdio.rs` 管道级 `rq_5`。
+2. **Profile 身份由路径派生（C2）**：`p_` + 路径替换非法字符会让 `/data/a-b.sqlite` 与 `/data/a/b.sqlite` 塌成同一个 id，后加入的连接顶掉前一个 session。改为 `p_<uuid>` 作为身份、`target.path` 只用于去重，旧 id 在 `restoreProfiles` 时一次性迁移并写回；`addProfile` 改为返回 id。
+3. **连接生命周期竞态（C3）**：重叠 connect 会留下无人追踪的 session；打开成功但 catalog 失败会泄漏 session；断线/换代后到达的回复会覆盖新状态；结构化错误在 UI 上退化成 `[object Object]`。改为每 Profile 一个尝试计数器（只有当前尝试能提交，被取代的尝试关闭自己打开的 session）、catalog 失败即关闭（关不掉时保留可 Disconnect 的 handle 且状态为 `error`）、重连前先关旧 session、runtime `failed`/`stopped` 与换代都作废进行中的尝试、错误文本经 `asRuntimeError`/`errorMessage` 还原。
+- **测试证据（本机，Windows 11）**：`nyalaConnectionService.test.ts` **31 passing**（FakeBridge + `DeferredPromise` 强制重叠；改实现前该文件 6 条失败，正是旧 API 与旧语义）；`nyalaBootstrap.test.ts` **18 passing**，在 **Chromium（本地 Chrome channel）** 真实运行，覆盖 Connections 树的行派生、DI 装配、空状态、Reload、Dispose、`error`/`lost` 状态与 describe 失败行。
+- **PASS（本机）**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（单元 138 + cancellation 6 + conformance 8 + contract 4 + stdio 22 = 178）、`nyala:validate-product`、`nyala:validate-rpc`、`nyala:check-rpc-generated`、Nyala 其余 node 套件 47 passing / 1 pending、`git diff --check`。
+- **BLOCKED（本机环境）**：`typecheck-client` 需要 `.build/typings/electron.d.ts`，本机离线无法从 GitHub Releases 下载；`tsc` 全项目报 387 条错误，全部来自缺失的 Electron 类型（`electron`/`original-fs` 模块与 `Process.noAsar` 等），**Nyala 文件 0 条**。以 CI 的 `Client typecheck and hygiene` 为准。
 
 ## 2026-11-01 子会话收尾状态
 
