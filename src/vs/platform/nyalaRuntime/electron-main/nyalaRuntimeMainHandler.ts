@@ -15,6 +15,8 @@ import { ILoggerMainService } from '../../log/electron-main/loggerService.js';
 import { IProductService } from '../../product/common/productService.js';
 import { LoadReason } from '../../window/electron-main/window.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
+import { INyalaRuntimeSupervisors, NyalaRuntimeChannel } from './nyalaRuntimeChannel.js';
+import { NYALA_RUNTIME_FEATURES } from '../common/nyalaRuntimeIpc.js';
 import { createNyalaRuntimeEnvironment, findNyalaRuntimeExecutable, INyalaRuntimeLaunch, stageNyalaRuntimeExecutable } from '../node/nyalaRuntimeProcess.js';
 import { NyalaRuntimeSupervisor, NyalaRuntimeWindowSupervisors } from '../node/nyalaRuntimeSupervisor.js';
 
@@ -30,7 +32,7 @@ import { NyalaRuntimeSupervisor, NyalaRuntimeWindowSupervisors } from '../node/n
  * would kill the processes before they can exit in order. It disposes itself once its shutdown join
  * has settled.
  */
-export class NyalaRuntimeMainHandler extends Disposable {
+export class NyalaRuntimeMainHandler extends Disposable implements INyalaRuntimeSupervisors {
 
 	private readonly logger: ILogger;
 	private readonly supervisors: NyalaRuntimeWindowSupervisors;
@@ -59,10 +61,23 @@ export class NyalaRuntimeMainHandler extends Disposable {
 		}));
 	}
 
+	/** The supervisor of `windowId`, for the renderer bridge. */
+	get(windowId: number): NyalaRuntimeSupervisor | undefined {
+		return this.supervisors.get(windowId);
+	}
+
+	/** The channel the renderer talks to (`nyalaRuntimeChannel.ts`). */
+	createChannel(): NyalaRuntimeChannel {
+		return NyalaRuntimeChannel.withLogger(this, this.logger);
+	}
+
 	private createSupervisor(windowId: number): NyalaRuntimeSupervisor {
 		return new NyalaRuntimeSupervisor({
 			label: `window ${windowId}`,
 			clientBuild: this.productService.version,
+			// The handshake happens once per process, so this lists everything the renderer bridge
+			// may call; a method whose feature was not negotiated is refused by the runtime.
+			supportedFeatures: NYALA_RUNTIME_FEATURES,
 			resolveLaunch: () => this.resolveLaunch(),
 		}, this.logger);
 	}

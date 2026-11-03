@@ -105,6 +105,14 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
 - **只读回归**：`ATTACH` 后对附加库的 DML/DDL 全部 `READ_ONLY_DENIED` 且附加文件未变；`PRAGMA` 边界按实测记录（部分被拒、部分被 SQLite 静默忽略，文件不变）；`file:` URI 提权路径被 `sqlite::resolve` 拒绝且不创建文件。
 - **PASS（本机，Windows 11 / cargo 1.96.0）**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（单元 135 + cancellation 6 + conformance 8 + contract 4 + stdio 22）、`nyala:validate-rpc`、`nyala:check-rpc-generated`、`git diff --check`。**NOT RUN**：`npm run compile` / `typecheck-client`（无 `node_modules`）、macOS/Linux、MSRV 1.82。
 
+### P2.1 · Workbench Runtime Bridge + N-201 Connections（`feat/p2-connections-foundation`）
+
+- 新通道 `nyalaRuntime`：Renderer → `IMainProcessService` → `NyalaRuntimeChannel` → 该窗口的 `NyalaRuntimeSupervisor` → Rust。只放行六个命令（`getRuntimeState`、`connection.test/open/close`、`metadata.listObjects/describe`），Main 进程按 v1 合同校验参数后才转发；窗口 id 取自 IPC ctx，Renderer 不能指定其他窗口。设计见 [ADR 0006](../../docs/adr/0006-p2-workbench-runtime-bridge.md)。
+- 连接身份：`profileId`（Workbench，存 `IStorageService`，只存 path/readOnly/displayName）+ `sessionId`/`sessionGeneration`（Runtime）+ `runtimeGeneration`（Supervisor）+ 窗口绑定。`INyalaConnectionHandle` 携带四者；Runtime 换代后旧 handle 在本地被拒绝，连接标为 `lost`。
+- Connections 树（N-201）：选择本地 SQLite 文件 → `connection.test` → `connection.open` → 列出 Tables/Views/Indexes → 展开表时 `metadata.describe` 取列；支持连接/断开/刷新，Loading / Empty / Error / Lost 状态与 aria label。只读会话，不写库。
+- 单测：`nyalaRuntimeRequest.test.ts`（白名单参数校验）、`nyalaConnectionService.test.ts`（test→open→catalog 顺序、失败中止、换代失效、profile 解析）与 `nyalaRuntimeChannel.test.ts`（白名单外命令拒绝、无 runtime 窗口返回 `RUNTIME_LOST`、参数错误在触达进程前返回 `INVALID_PARAMS`、两个真实进程互不可见）加入 `Unit tests (node)` job。
+- **PASS（CI，PR #46 head `ab8c683c0f9`，run `41554877870`）**：`Product baseline`、`Client typecheck and hygiene`、`Rust runtime`、`Unit tests (node)` 四项必需检查。CI 抓出并修复的缺陷：supervisor 事件前的 runtime generation 未初始化；Supervisor 的 `runtime.hello` 未协商任何 feature（`connection.open` 被回 `PROTOCOL_MISMATCH`）；新源码含非 ASCII 字符。**NOT RUN**：桌面原生 E2E（需 `npm install` + 真实 Electron）、Linux/macOS 原生。
+
 ## 2026-11-01 子会话收尾状态
 
 | PR | 已核对 head / 主线提交 | 状态与证据 |

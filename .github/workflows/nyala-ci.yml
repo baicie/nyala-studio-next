@@ -134,6 +134,9 @@ jobs:
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeContract.test.ts
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeSupervisor.test.ts
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeRealProcess.test.ts
+          --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeRequest.test.ts
+          --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeChannel.test.ts
+          --run src/vs/workbench/contrib/nyala/test/common/nyalaConnectionService.test.ts
 
   rust:
     name: Rust runtime
