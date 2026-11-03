@@ -144,7 +144,7 @@ suite('Nyala connection service', () => {
 		await service.addProfile({ profileId: 'p_7', displayName: 'x.sqlite', target: { driver: 'sqlite', path: '/tmp/x.sqlite', readOnly: false } });
 		assert.strictEqual(service.connections[0].status, 'disconnected');
 		assert.strictEqual(service.connections[0].handle, undefined);
-		assert.deepStrictEqual(bridge.calls, [], 'adding a profile talks to no runtime');
+		assert.strictEqual(bridge.calls.length, 0, 'adding a profile talks to no runtime');
 	});
 
 	test('stored profiles are parsed defensively', () => {
@@ -160,12 +160,12 @@ suite('Nyala connection service', () => {
 	test('refresh reloads the catalog of connected profiles only', async () => {
 		await service.addProfile(profile);
 		await service.refresh('p_1');
-		assert.deepStrictEqual(bridge.calls, [], 'a disconnected profile is not queried');
+		assert.strictEqual(bridge.calls.length, 0, 'a disconnected profile is not queried');
 		await service.connect('p_1');
 		const before = bridge.calls.length;
 		await service.refresh('p_1');
 		assert.strictEqual(bridge.calls.length, before + 1);
-		assert.strictEqual(bridge.calls.at(-1)?.command, NyalaRuntimeCommand.ListObjects);
+		assert.strictEqual(bridge.calls[bridge.calls.length - 1].command, NyalaRuntimeCommand.ListObjects);
 	});
 
 });

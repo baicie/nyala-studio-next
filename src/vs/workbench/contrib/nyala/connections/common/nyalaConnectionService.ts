@@ -200,11 +200,14 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 				this.fail(profileId, tested.error);
 				return;
 			}
+			// The generation that answered is the one this session will belong to.
+			this.noteRuntimeGeneration(tested.runtimeGeneration);
 			const opened = await this.bridge.call<{ sessionId: string; sessionGeneration: number }>(NyalaRuntimeCommand.OpenConnection, profile.target);
 			if (!opened.ok) {
 				this.fail(profileId, opened.error);
 				return;
 			}
+			this.noteRuntimeGeneration(opened.runtimeGeneration);
 			this.update(profileId, {
 				status: 'connected',
 				handle: {
@@ -268,6 +271,21 @@ export class NyalaConnectionService extends Disposable implements INyalaConnecti
 			throw result.error;
 		}
 		return result.result;
+	}
+
+	/**
+	 * Records the generation a call answered from. A session is only valid while the generation it
+	 * was opened on is still the current one, so this runs before the handle is stored.
+	 */
+	private noteRuntimeGeneration(generation: number): void {
+		// A zero generation means the caller has not read the runtime state yet; the call it is
+		// about to make is the first evidence, so it becomes the baseline rather than a restart.
+		if (this.currentRuntimeState.generation === 0) {
+			this.currentRuntimeState = { generation, status: 'ready' };
+			if (this.lastRuntimeGeneration === 0) {
+				this.lastRuntimeGeneration = generation;
+			}
+		}
 	}
 
 	/** Refuses a handle from an earlier runtime generation before a request is sent at all. */
