@@ -50,9 +50,9 @@ function statusRow(state: INyalaConnectionState): INyalaConnectionNode {
 	const detail = state.error ? ('data' in state.error ? state.error.data.safeDetail ?? state.error.message : state.error.message) : '';
 	switch (state.status) {
 		case 'testing':
-			return { kind: NyalaConnectionNodeKind.Status, id, label: localize('nyala.connections.testing', 'Testing connection…'), description: state.profile.target.path, profileId: state.profile.profileId, icon: Codicon.loading };
+			return { kind: NyalaConnectionNodeKind.Status, id, label: localize('nyala.connections.testing', 'Testing connection...'), description: state.profile.target.path, profileId: state.profile.profileId, icon: Codicon.loading };
 		case 'connecting':
-			return { kind: NyalaConnectionNodeKind.Status, id, label: localize('nyala.connections.connecting', 'Connecting…'), description: state.profile.target.path, profileId: state.profile.profileId, icon: Codicon.loading };
+			return { kind: NyalaConnectionNodeKind.Status, id, label: localize('nyala.connections.connecting', 'Connecting...'), description: state.profile.target.path, profileId: state.profile.profileId, icon: Codicon.loading };
 		case 'lost':
 			return { kind: NyalaConnectionNodeKind.Status, id, label: localize('nyala.connections.lost', 'Connection lost'), description: detail || localize('nyala.connections.lost.hint', 'The runtime restarted; connect again.'), profileId: state.profile.profileId, icon: Codicon.warning };
 		case 'error':

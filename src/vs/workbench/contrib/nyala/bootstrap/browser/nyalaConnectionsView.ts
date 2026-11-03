@@ -49,7 +49,7 @@ export class NyalaConnectionsView extends ViewPane {
 		super.renderBody(container);
 
 		const empty = append(container, $('p.nyala-connections-empty'));
-		empty.textContent = localize('nyala.connections.empty', 'No connections yet. Use “Nyala: Add SQLite Connection” to open an existing database file.');
+		empty.textContent = localize('nyala.connections.empty', 'No connections yet. Run "Nyala: Add SQLite Connection" to open an existing database file.');
 
 		this.tree = this._register(this.instantiationService.createInstance(
 			WorkbenchAsyncDataTree<INyalaConnectionService, INyalaConnectionNode>,
