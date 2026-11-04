@@ -66,7 +66,8 @@ export type NyalaUnknownReason =
 export interface INyalaExecutionRecord {
 	readonly requestId: string;
 	executionId: string | undefined;
-	readonly snapshot: INyalaExecutionSnapshot;
+	/** Replaced with a redacted copy when the run is closed and nobody can reopen it. */
+	snapshot: INyalaExecutionSnapshot;
 	state: NyalaExecutionState;
 	sequence: number;
 	stateEpoch: number;
@@ -80,6 +81,8 @@ export interface INyalaExecutionRecord {
 	notSent?: boolean;
 	/** Set when the runtime reported more results than one execution may keep. */
 	resultLimitReached?: boolean;
+	/** Set once result ids were recovered (notification or a metadata calibration). */
+	metadataSettled?: boolean;
 	endedAt?: number;
 }
 

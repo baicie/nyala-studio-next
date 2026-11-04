@@ -100,7 +100,9 @@ ResultLease:      available --(N-204 acquire)--> leased --(last release)--> rele
   ```
 
 - **清理只发生在五种情况**：最后一个租约释放；服务侧淘汰（窗口配额）；runtime 报告 TTL 过期（`RESULT_EXPIRED`）；窗口关闭；runtime 换代。
+- **被拒收的句柄也要释放**：一次执行返回超过上限的结果时，多出的 `resultId` 不会进入可 acquire 的集合，但会显式发送一次 `result.release`，并记住该 id，重复通知不会重复发送。资源配额只在 release 真正完成后才算恢复：窗口按「保留 + 在途 release」计数，新的执行会等待淘汰的 release 结束再发出。
 - **严禁向新 Runtime 释放旧代际结果。** 换代后进程已死，`result.release` 只会得到 `INVALID_SESSION` 或一条无意义的请求；此时只做本地遗忘。
+- **关闭查询标签页**：已终止的执行立即从 `byQuery` 解除归属，SQL 快照被清空；无租约的结果被释放，仍被结果视图租用的结果保留到最后一个租约结束，记录随后一并遗忘。
 - **`release` 的语义是「幂等、至多发送一次、有明确完成状态」，不是严格 exactly-once。** 网络或进程故障下无法证明对端收到，因此：
   - 每个租约只发一次 `result.release`；
   - `{released:false}` 视为「已经不在了」，不是错误；
@@ -125,6 +127,7 @@ ResultLease:      available --(N-204 acquire)--> leased --(last release)--> rele
 
 - `executionRollback` 与 `UNKNOWN_COMMIT_STATUS` 只透传、不解释成更弱的说法。客户端不得把 `unknown` 降级成 `failed`，也不得把 `rolled_back` 升格成「安全重试」。
 - **禁止自动重放**写入或状态未知的执行。N-203 不提供「重试」按钮；用户要重新执行必须自己再按一次，并且会得到一条新的 `executionId`。
+- **IPC Promise 拒绝等同于「没有可用回复」**：`query.execute`/`query.cancel` 的 `bridge.call` 拒绝时，记录进入 `unknown`，绝不会停在 `queued`，也不会被说成「未执行」；`query.getState` 的校准拒绝只结束本次校准，不改变记录；`result.fetchPage` 的拒绝转成可读错误并清空在途标记。
 - 客户端自己产生的 `unknown`（如换代时仍有在途执行）与 runtime 报告的 `unknown` 在记录里用 `unknownReason` 区分，便于 N-207 的日志核对。
 
 ### 5. 身份与状态协议（修订 D3）
@@ -135,6 +138,9 @@ ResultLease:      available --(N-204 acquire)--> leased --(last release)--> rele
   - `accepted: true` → 本地进入 `cancel_requested`（这是客户端的意图，不是 runtime 的事实）；
   - 回复里的 `state` 只用于「已经终态」的判断（`completed`/`failed`/`cancelled`/`unknown`），仍不写 `sequence`；
   - 需要权威状态时调用 `query.getState` 校准，并沿用它的 `sequence`。
+- **早到通知**：Main 进程可能在同一个事件循环里先派发 `query.execute` 的成功帧，再同步派发 `query.stateChanged`，而执行服务的 `await` 续体尚未运行、还没有 `executionId`。服务按 `executionId` 缓存这些通知（最多 16 个执行、每个 8 条），在采纳 id 后按序回放；换代时整批丢弃，旧代际的事件不入缓存。缓存有界，不会形成未知事件队列。
+- **终态后的元数据**：`query.cancel` 只回 `completed` 而没有 `sequence`/`resultIds` 时，记录已终止，后续通知会被冻结；此时服务调用一次 `query.getState` 补齐 `resultIds` 与 `error`，只改元数据，不改状态或序列。
+- **在途 `fetchPage`**：回复到达后必须再次确认租约未释放、句柄仍在、代际未变；否则丢弃这批行并报「结果已不可用」，不把死句柄的数据交给 N-204。
 - **并发 `getState` 与乱序通知**：记录维护 `lastAppliedSequence` 与一个单调的 `stateEpoch`。
   - 只应用 `sequence > lastAppliedSequence` 的通知；
   - 跳号（`> last + 1`）触发一次校准读，校准结果按同样的规则比较后才写入；
@@ -224,4 +230,6 @@ interface INyalaQueryExecutionService {
 - `cancel_requested` 不显示为 `cancelled`，`UNKNOWN_COMMIT_STATUS` 不提供重试；
 - 结果在 `completed` 后仍可通过租约读取，最后一个租约释放后才真正 `release`；
 - 换代时本地丢弃租约，不向新 runtime 发 `release`；
+- 早到的 `running`/`completed` 通知在 `execute` 续体恢复前到达，记录仍能到达终态并保留 sequence、resultIds 与错误；
+- 第四个结果被显式释放而不是丢弃；关闭查询后记录、SQL 快照与无租约结果都被清理，有租约的结果保留到最后一个租约；
 - Main 进程拒绝白名单外命令与非法参数，畸形回复不让执行被标成「确定未执行」。

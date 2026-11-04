@@ -44,6 +44,10 @@ type ExecutionCommand = 'execute' | 'selection' | 'script';
  */
 function resolveSql(pane: NyalaQueryEditorPane, command: ExecutionCommand, notify: (message: string) => void): { sql: string; mode: 'statement' | 'selection' | 'script' } | undefined {
 	const selection = pane.getSelectionText();
+	// A selection of spaces or newlines is still a selection: the user deliberately selected
+	// something, so the command must not fall back to the statement under the cursor. Falling back
+	// would turn "select the blank line after a DELETE and press Ctrl+Enter" into running the DELETE.
+	const hasSelection = pane.hasSelection();
 
 	if (command === 'script') {
 		const sql = pane.getText();
@@ -54,9 +58,9 @@ function resolveSql(pane: NyalaQueryEditorPane, command: ExecutionCommand, notif
 		return { sql, mode: 'script' };
 	}
 
-	if (command === 'selection' || (command === 'execute' && selection.trim().length > 0)) {
-		if (selection.trim().length === 0) {
-			notify(localize('nyala.query.execute.emptySelection', 'Select the SQL you want to run first.'));
+	if (command === 'selection' || (command === 'execute' && hasSelection)) {
+		if (!hasSelection || selection.trim().length === 0) {
+			notify(localize('nyala.query.execute.emptySelection', 'The selection contains no SQL. Select a statement, or use Nyala: Execute Script.'));
 			return undefined;
 		}
 		const count = countStatements(selection);

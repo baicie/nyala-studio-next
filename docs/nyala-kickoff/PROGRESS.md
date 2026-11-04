@@ -164,8 +164,14 @@ P0 Bootstrap 已完成（macOS 原生启动 + 产品身份 + Hello Workbench + �
   - `query/common/nyalaQueryExecutionService.ts`：执行所有权；每 `queryId` 一个非终态执行；发送前注册 pending；关闭后 abandoned 并在迟到回复时取消；结果租约（acquire/release）、每窗口 3 个句柄上限与淘汰、换代本地遗忘、`release` 至多一次；已终止且无结果的旧执行记录会被清理，窗口不会按执行次数累积。
   - `query/browser/nyalaQueryExecution.contribution.ts`：`Nyala: Execute`（Ctrl/Cmd+Enter，选区优先否则当前语句）、`Nyala: Execute Selection`（无默认键）、`Nyala: Execute Script`（Shift+Ctrl/Cmd+Enter）。
   - Main 进程：新增 5 个命令与 `QueryStateChanged` 通知；参数与回复结构校验；`sent`/`answered` 让执行服务区分「确定未执行」与「结果未知」。
-- **PASS（本机，Windows 11）**：`nyalaSqlStatements` 18、`nyalaQueryExecution` 17、`nyalaQueryExecutionService` 26、`nyalaQueryContext` 29、`nyalaConnectionService` 39、`nyalaRuntimeRequest` 10、`nyalaRuntimeChannel` 13、`nyalaRuntimeProtocol` 8；浏览器 `nyalaQueryExecution` 8、`nyalaQueryEditor` 29、`nyalaBootstrap` 18；`build-fast` PASS；Nyala 文件 `tsc` 0 错误。
+- **PASS（本机，Windows 11）**：`nyalaSqlStatements` 18、`nyalaQueryExecution` 17、`nyalaQueryExecutionService` 41、`nyalaQueryContext` 29、`nyalaConnectionService` 39、`nyalaRuntimeRequest` 10、`nyalaRuntimeChannel` 13、`nyalaRuntimeProtocol` 8；浏览器 `nyalaQueryExecution` 10、`nyalaQueryEditor` 29、`nyalaBootstrap` 18；`build-fast` PASS；Nyala 文件 `tsc` 0 错误。
 - **红/绿（实测）**：分别回退触发器跟踪、终态冻结、`canExecute` 门禁与未知语义、键位 weight，对应套件出现 4 / 2 / 3 / 1 条失败；恢复后全部通过。
+- **复审收口（CHANGES_REQUESTED）**：
+  - 早到通知：Main 可能在同一轮先回 `query.execute` 成功帧、再同步派发 `query.stateChanged`，而服务续体尚未运行。按 `executionId` 缓存（最多 16 个执行、每个 8 条），采纳后回放；换代清空、旧代际不入缓存。
+  - 结果所有权：被拒收的第 4 个结果显式 `release` 而非丢弃；配额按「保留 + 在途 release」计数，新执行等待淘汰释放完成；关闭已完成查询时脱离 `byQuery`、清空 SQL 快照、释放无租约结果，有租约的结果保留到最后一个消费者；在途 release 的 Promise 拒绝被捕获。
+  - IPC 失败：`execute`/`cancel` 的 Promise 拒绝 → `unknown`，不会停在 `queued`；`getState` 拒绝只结束校准；`fetchPage` 拒绝转可读错误；终态 cancel 缺 `resultIds` 时用一次 `getState` 补齐；释放后的租约与换代后的迟到页回复都被拒绝。
+  - 空白选区：`hasSelection()` 区分「无选区」与「选了空白/注释」；有选区但没有 SQL 时明确拒绝，绝不退化为执行光标下方语句（例如 `DELETE`）。
+  - **证据**：`nyalaQueryExecutionService` 41 passing、Chromium `nyalaQueryExecution` 10 passing；回退上述修复分别出现 7 条 Node 与 1 条 Chromium 失败，恢复后全绿。
 - **范围**：Rust 执行器与 `nyala/rpc/**` 未改；未实现结果网格（N-204/N-205）、草稿持久化（N-206）、桌面 E2E（N-207）。
 - **CI（HEAD `a0ce7e54a6e`）**：四项必需检查 PASS（[run 41665473827](https://github.com/baicie/nyala-studio-next/actions/runs/41665473827)）；手动 Full test suites PASS（[run 41666261425](https://github.com/baicie/nyala-studio-next/actions/runs/41666261425)）。
 - **NOT RUN**：原生 Electron smoke（仍受 `@vscode/policy-watcher` 原生绑定阻塞），不以 Chromium 单测替代。

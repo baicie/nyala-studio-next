@@ -187,6 +187,16 @@ suite('Nyala query execution commands', () => {
 		await startCommand(commandId);
 	}
 
+	/** Waits (in microtasks only) until the command has registered its execute request. */
+	async function flushUntilExecuteRequest(): Promise<void> {
+		for (let index = 0; index < 20; index++) {
+			await Promise.resolve();
+			if (bridge.requests.some(entry => entry.command === NyalaRuntimeCommand.QueryExecute)) {
+				return;
+			}
+		}
+	}
+
 	function executeRequests(): Array<{ sql: string; mode: string }> {
 		return bridge.requests.filter(request => request.command === NyalaRuntimeCommand.QueryExecute).map(request => request.params as any);
 	}
@@ -202,6 +212,7 @@ suite('Nyala query execution commands', () => {
 		pane.getControl()!.setPosition({ lineNumber: 2, column: 1 });
 
 		const running = startCommand(NYALA_EXECUTE_COMMAND_ID);
+		await flushUntilExecuteRequest();
 		answerExecute();
 		await running;
 
@@ -213,10 +224,33 @@ suite('Nyala query execution commands', () => {
 		pane.getControl()!.setSelection(new Selection(1, 1, 1, 10));
 
 		const running = startCommand(NYALA_EXECUTE_COMMAND_ID);
+		await flushUntilExecuteRequest();
 		answerExecute();
 		await running;
 
 		assert.deepStrictEqual(executeRequests().map(request => ({ sql: request.sql, mode: request.mode })), [{ sql: 'SELECT 1;', mode: 'selection' }]);
+	});
+
+	test('a whitespace-only selection never falls back to the statement under the cursor', async () => {
+		const { pane } = await openTab('q_1', ['DELETE FROM t;', '   ', ''].join(String.fromCharCode(10)));
+		// The user selects the blank line after the DELETE and presses Ctrl+Enter.
+		pane.getControl()!.setSelection(new Selection(2, 1, 2, 3));
+
+		await runCommand(NYALA_EXECUTE_COMMAND_ID);
+
+		assert.deepStrictEqual({
+			requests: executeRequests().length,
+			messages: notifications.map(message => /no SQL/i.test(message)),
+		}, { requests: 0, messages: [true] }, 'a blank selection must not become DELETE');
+	});
+
+	test('a comment-only selection is refused instead of executing the statement below it', async () => {
+		const { pane } = await openTab('q_1', ['DELETE FROM t;', '-- nothing to run', ''].join(String.fromCharCode(10)));
+		pane.getControl()!.setSelection(new Selection(2, 1, 2, 18));
+
+		await runCommand(NYALA_EXECUTE_COMMAND_ID);
+
+		assert.deepStrictEqual({ requests: executeRequests().length, messages: notifications.map(message => /no SQL/i.test(message)) }, { requests: 0, messages: [true] });
 	});
 
 	test('a selection with more than one statement is refused with a pointer to Execute Script', async () => {
@@ -237,6 +271,7 @@ suite('Nyala query execution commands', () => {
 		pane.getControl()!.setPosition({ lineNumber: 1, column: 1 });
 
 		const running = startCommand(NYALA_EXECUTE_SCRIPT_COMMAND_ID);
+		await flushUntilExecuteRequest();
 		answerExecute();
 		await running;
 
@@ -255,6 +290,7 @@ suite('Nyala query execution commands', () => {
 		const { pane } = await openTab('q_1', 'SELECT 1;');
 		pane.getControl()!.setPosition({ lineNumber: 1, column: 1 });
 		const first = startCommand(NYALA_EXECUTE_COMMAND_ID);
+		await flushUntilExecuteRequest();
 		answerExecute();
 		await first;
 

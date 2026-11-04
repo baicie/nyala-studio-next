@@ -17,6 +17,11 @@
 //     never rewrites the authoritative state;
 //   - an error answer that provably never left the Main process is a failure; anything else that
 //     leaves the outcome unproven is `unknown`.
+//
+// Notifications can overtake the reply's promise continuation: the main process dispatches the
+// `query.execute` success and the first `query.stateChanged` frames in the same turn, so the
+// continuation that adopts the execution id has not run yet. Those events are buffered per
+// execution id and replayed when the id is adopted (bounded, and dropped across generations).
 
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../../base/common/lifecycle.js';
@@ -56,6 +61,8 @@ export interface INyalaResultLease extends IDisposable {
 	readonly resultId: string;
 	readonly executionId: string;
 	readonly runtimeGeneration: number;
+	/** Whether this lease has been released; a released lease may not read pages. */
+	readonly isDisposed: boolean;
 }
 
 export type NyalaExecutionStartResult =
@@ -89,10 +96,13 @@ const MAX_INITIAL_ROWS = 200;
 const DEFAULT_PAGE_LIMIT = 200;
 /**
  * Result handles this window keeps open. The runtime counts open executions and unreleased
- * results against `maxConcurrentExecutions` (4 by default), so three leaves room for a new run.
+ * results against `maxConcurrentExecutions` (4 by default), so three leaves room for a run.
  */
 const MAX_RESULTS_PER_WINDOW = 3;
 const MAX_RESULTS_PER_EXECUTION = 3;
+/** Bounds for notifications that arrive before their execution id was adopted. */
+const MAX_EARLY_EXECUTIONS = 16;
+const MAX_EARLY_EVENTS = 8;
 
 interface IResultEntry {
 	readonly resultId: string;
@@ -120,6 +130,12 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 	private readonly byExecution = new Map<string, INyalaExecutionRecord>();
 	private readonly results = new Map<string, IResultEntry>();
 	private readonly calibrating = new Set<string>();
+	/** Events for an execution id the service has not adopted yet; bounded, see `bufferEarly`. */
+	private readonly early = new Map<string, INyalaQueryStateChangedEvent[]>();
+	/** Result ids already refused, so a repeated notification cannot release one twice. */
+	private readonly discarded = new Set<string>();
+	/** Release calls still in flight; they still occupy runtime quota until they settle. */
+	private pendingReleases = 0;
 	private nextRequest = 0;
 	private lastSeenGeneration: number;
 
@@ -139,6 +155,30 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 
 	get executions(): readonly INyalaExecutionRecord[] {
 		return [...this.byQuery.values()];
+	}
+
+	/** Diagnostics for tests: notifications waiting for their execution id. */
+	get bufferedNotificationCount(): number {
+		let count = 0;
+		for (const events of this.early.values()) {
+			count += events.length;
+		}
+		return count;
+	}
+
+	/** Diagnostics for tests: how many execution records the window keeps. */
+	get executionRecordCount(): number {
+		return this.byExecution.size;
+	}
+
+	/** Diagnostics for tests: how many result handles the window keeps. */
+	get resultHandleCount(): number {
+		return this.results.size;
+	}
+
+	/** Diagnostics for tests: release calls still in flight (they still occupy runtime quota). */
+	get pendingReleaseCount(): number {
+		return this.pendingReleases;
 	}
 
 	getExecution(queryId: string): INyalaExecutionRecord | undefined {
@@ -174,10 +214,6 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			return { ok: false, message: localize('nyala.query.execute.busy', 'This query is already running. Cancel it before starting another.') };
 		}
 
-		if (!this.makeRoomForResult()) {
-			return { ok: false, message: localize('nyala.query.execute.resultsFull', 'Too many results are open. Close a result view before running another query.') };
-		}
-
 		const snapshot: INyalaExecutionSnapshot = {
 			queryId,
 			profileId: binding.profileId,
@@ -208,14 +244,41 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		this.logService.trace(`Nyala: query ${queryId} execution requested (${mode})`);
 		this._onDidChangeExecution.fire(record);
 
-		const answer = await this.bridge.call<{ executionId: string; state: NyalaExecutionState; sequence: number }>(NyalaRuntimeCommand.QueryExecute, {
-			sessionId: snapshot.sessionId,
-			sessionGeneration: snapshot.sessionGeneration,
-			sql,
-			mode,
-			timeoutMs: DEFAULT_TIMEOUT_MS,
-			maxInitialRows: MAX_INITIAL_ROWS,
-		});
+		// Reclaiming waits for the old handles to be released: their quota is not free until the
+		// runtime confirms, so a new run must not be sent on the assumption that it is.
+		if (!(await this.reclaimResults())) {
+			const error: INyalaRuntimeErrorObject = { code: -32014, message: 'Too many results are open', data: { kind: 'RESOURCE_LIMIT', retryable: true, safeDetail: 'close a result view before running another query' } };
+			markNotSent(record, error, Date.now());
+			this._onDidChangeExecution.fire(record);
+			return { ok: false, message: localize('nyala.query.execute.resultsFull', 'Too many results are open. Close a result view before running another query.') };
+		}
+		// The wait above is the first one, so the target has to be re-checked: a restart or a rebind
+		// during it would otherwise send the request to a session that no longer exists.
+		const current = this.contextService.runtimeState;
+		if (context.isDisposed || !context.canExecute(current) || current.generation !== snapshot.runtimeGeneration) {
+			const error: INyalaRuntimeErrorObject = { code: -32012, message: 'The Nyala runtime is not available', data: { kind: 'RUNTIME_LOST', retryable: true, safeDetail: 'the runtime or the binding changed before the query was sent' } };
+			markNotSent(record, error, Date.now());
+			this._onDidChangeExecution.fire(record);
+			return { ok: false, message: localize('nyala.query.execute.restarted', 'The runtime or the connection changed before the query could start.') };
+		}
+
+		let answer;
+		try {
+			answer = await this.bridge.call<{ executionId: string; state: NyalaExecutionState; sequence: number }>(NyalaRuntimeCommand.QueryExecute, {
+				sessionId: snapshot.sessionId,
+				sessionGeneration: snapshot.sessionGeneration,
+				sql,
+				mode,
+				timeoutMs: DEFAULT_TIMEOUT_MS,
+				maxInitialRows: MAX_INITIAL_ROWS,
+			});
+		} catch (error) {
+			// A rejected IPC promise says nothing about whether the runtime ran the statement.
+			markUnknown(record, 'reply-lost', Date.now());
+			this._onDidChangeExecution.fire(record);
+			this.logService.trace(`Nyala: query ${queryId} execute call rejected: ${error instanceof Error ? error.message : String(error)}`);
+			return { ok: false, message: localize('nyala.query.execute.unreachable', 'The runtime could not be reached. The query outcome is unknown.') };
+		}
 
 		if (!answer.ok) {
 			// `answered` means the runtime itself refused before running anything (its execute reply
@@ -232,6 +295,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		if (answer.runtimeGeneration !== snapshot.runtimeGeneration) {
 			// The runtime restarted between the snapshot and the reply. The execution id belongs to
 			// a process that is gone; adopting it would let a later event move this record.
+			this.early.delete(answer.result.executionId);
 			markUnknown(record, 'runtime-restarted', Date.now());
 			this._onDidChangeExecution.fire(record);
 			return { ok: false, message: localize('nyala.query.execute.restarted', 'The runtime restarted while the query was starting. Its outcome is unknown.') };
@@ -240,12 +304,15 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		record.executionId = answer.result.executionId;
 		this.byExecution.set(record.executionId, record);
 		applyStateChange(record, { state: answer.result.state, sequence: answer.result.sequence, runtimeGeneration: answer.runtimeGeneration }, Date.now());
+		// Notifications that arrived before this continuation are the run's first states. Replaying
+		// them here is what keeps a fast runtime from leaving the record stuck at `queued`.
+		this.drainEarly(record);
 		this.logService.trace(`Nyala: query ${queryId} execution ${record.executionId} is ${record.state}`);
 		this._onDidChangeExecution.fire(record);
 
 		if (record.abandoned) {
 			// Nobody is waiting for this tab any more; the cancel must not hold up the reply path.
-			void this.cancel(record.executionId);
+			void this.cancel(record.executionId).catch(() => undefined);
 		}
 
 		return { ok: true, record };
@@ -263,6 +330,9 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			executionId,
 			runtimeGeneration: entry.runtimeGeneration,
 			entry,
+			get isDisposed(): boolean {
+				return released;
+			},
 			dispose: () => {
 				if (released) {
 					return;
@@ -270,7 +340,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 				released = true;
 				entry.references = Math.max(0, entry.references - 1);
 				if (entry.references === 0) {
-					this.releaseResult(entry, 'last-lease');
+					void this.releaseResult(entry, 'last-lease');
 				}
 			},
 		};
@@ -278,6 +348,9 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 	}
 
 	async fetchPage(lease: INyalaResultLease, cursor: string | null, limit = DEFAULT_PAGE_LIMIT): Promise<INyalaResultPage> {
+		if (lease.isDisposed) {
+			throw new Error(localize('nyala.query.result.released', 'This result is no longer available.'));
+		}
 		const entry = this.results.get(lease.resultId);
 		if (!entry || entry.released || entry.executionId !== lease.executionId) {
 			throw new Error(localize('nyala.query.result.released', 'This result is no longer available.'));
@@ -288,16 +361,26 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		const bounded = Math.max(1, Math.min(1000, Math.floor(limit)));
 		entry.inFlight = true;
 		try {
-			const answer = await this.bridge.call<INyalaResultPage>(NyalaRuntimeCommand.ResultFetchPage, {
-				resultId: entry.resultId,
-				limit: bounded,
-				...(cursor === null ? {} : { cursor }),
-			});
+			let answer;
+			try {
+				answer = await this.bridge.call<INyalaResultPage>(NyalaRuntimeCommand.ResultFetchPage, {
+					resultId: entry.resultId,
+					limit: bounded,
+					...(cursor === null ? {} : { cursor }),
+				});
+			} catch (error) {
+				throw new Error(localize('nyala.query.result.unreachable', 'The result page could not be read: the runtime is not available.'));
+			}
 			if (!answer.ok) {
 				if (answer.error.data.kind === 'RESULT_EXPIRED' || answer.error.data.kind === 'INVALID_SESSION') {
 					this.forgetResult(entry);
 				}
 				throw new Error(describeError(answer.error));
+			}
+			// The answer is only usable if the handle survived the round trip: a generation change
+			// or a release while the read was in flight makes these rows belong to a dead handle.
+			if (lease.isDisposed || this.results.get(entry.resultId) !== entry || entry.released || entry.runtimeGeneration !== this.connectionService.runtimeState.generation) {
+				throw new Error(localize('nyala.query.result.released', 'This result is no longer available.'));
 			}
 			return answer.result;
 		} finally {
@@ -310,7 +393,14 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		if (!record || isTerminalState(record.state)) {
 			return;
 		}
-		const answer = await this.bridge.call<{ accepted: boolean; state: NyalaExecutionState }>(NyalaRuntimeCommand.QueryCancel, { executionId, reason: 'user' });
+		let answer;
+		try {
+			answer = await this.bridge.call<{ accepted: boolean; state: NyalaExecutionState }>(NyalaRuntimeCommand.QueryCancel, { executionId, reason: 'user' });
+		} catch (error) {
+			markUnknown(record, 'reply-lost', Date.now());
+			this._onDidChangeExecution.fire(record);
+			return;
+		}
 		if (!answer.ok) {
 			if (answer.answered === false) {
 				// No usable reply: the run may have finished, or the process may be gone. Saying
@@ -324,6 +414,12 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		// rewrite the record's state sequence.
 		applyCancelReply(record, answer.result.state, answer.result.accepted, Date.now());
 		this._onDidChangeExecution.fire(record);
+		// A terminal reply may be the only place the outcome is ever reported. Its missing result
+		// ids and error are recovered from `query.getState`; otherwise the results would be lost
+		// because a terminal record ignores every later notification.
+		if (isTerminalState(record.state) && record.resultIds.length === 0) {
+			void this.calibrateMetadata(record).catch(() => undefined);
+		}
 	}
 
 	override dispose(): void {
@@ -338,6 +434,8 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			entry.references = 0;
 		}
 		this.results.clear();
+		this.early.clear();
+		this.discarded.clear();
 		super.dispose();
 	}
 
@@ -346,7 +444,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		for (const entry of [...this.results.values()]) {
 			if (entry.executionId === executionId) {
 				entry.references = 0;
-				this.releaseResult(entry, 'explicit');
+				void this.releaseResult(entry, 'explicit');
 			}
 		}
 	}
@@ -354,26 +452,89 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 	/**
 	 * A closed tab has nobody waiting for its reply. If the run already has an id it is cancelled;
 	 * if the reply has not arrived yet the record is marked abandoned, and the reply path cancels the
-	 * run as soon as the id exists. It is never revived for a tab that is gone.
+	 * run as soon as the id exists.
+	 *
+	 * A finished run is detached from the query at once, its SQL text is dropped, and the results
+	 * nobody leased are released. A result still leased by a view stays alive until that lease ends;
+	 * the record is then forgotten with it.
 	 */
 	private onQueryReleased(queryId: string): void {
 		const record = this.byQuery.get(queryId);
-		if (!record || isTerminalState(record.state)) {
+		if (!record) {
 			return;
 		}
 		record.abandoned = true;
-		if (record.executionId) {
-			void this.cancel(record.executionId);
+		redactSnapshot(record);
+		if (!isTerminalState(record.state)) {
+			if (record.executionId) {
+				void this.cancel(record.executionId).catch(() => undefined);
+			}
+			this._onDidChangeExecution.fire(record);
+			return;
 		}
+		this.byQuery.delete(queryId);
+		for (const entry of [...this.results.values()]) {
+			if (entry.executionId === record.executionId) {
+				if (entry.references === 0) {
+					void this.releaseResult(entry, 'explicit');
+				}
+			}
+		}
+		this.pruneExecution(record);
 		this._onDidChangeExecution.fire(record);
 	}
 
 	private onQueryState(event: INyalaQueryStateChangedEvent): void {
 		const record = this.byExecution.get(event.executionId);
 		if (!record) {
-			// An execution this window never adopted (or already dropped): it cannot move anything.
+			this.bufferEarly(event);
 			return;
 		}
+		this.applyEvent(record, event);
+	}
+
+	/**
+	 * Keeps a notification whose execution id is not adopted yet. The map is bounded twice: by the
+	 * number of executions remembered and by the events per execution. Events from another
+	 * generation are dropped here, because they cannot describe a run of this one.
+	 */
+	private bufferEarly(event: INyalaQueryStateChangedEvent): void {
+		if (event.runtimeGeneration !== this.connectionService.runtimeState.generation) {
+			return;
+		}
+		let events = this.early.get(event.executionId);
+		if (!events) {
+			if (this.early.size >= MAX_EARLY_EXECUTIONS) {
+				const oldest = this.early.keys().next().value;
+				if (oldest !== undefined) {
+					this.early.delete(oldest);
+				}
+			}
+			events = [];
+			this.early.set(event.executionId, events);
+		}
+		if (events.length >= MAX_EARLY_EVENTS) {
+			events.shift();
+		}
+		events.push(event);
+	}
+
+	private drainEarly(record: INyalaExecutionRecord): void {
+		const executionId = record.executionId;
+		if (!executionId) {
+			return;
+		}
+		const events = this.early.get(executionId);
+		if (!events) {
+			return;
+		}
+		this.early.delete(executionId);
+		for (const event of events) {
+			this.applyEvent(record, event);
+		}
+	}
+
+	private applyEvent(record: INyalaExecutionRecord, event: INyalaQueryStateChangedEvent): void {
 		const update = applyStateChange(record, {
 			state: event.state,
 			sequence: event.sequence,
@@ -382,11 +543,14 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			error: event.error,
 		}, Date.now());
 		if (update.kind === 'gap') {
-			void this.calibrate(record);
+			void this.calibrate(record).catch(() => undefined);
 			return;
 		}
 		if (update.kind !== 'applied') {
 			return;
+		}
+		if (event.resultIds?.length) {
+			record.metadataSettled = true;
 		}
 		this.registerResults(record, event.resultIds ?? []);
 		this._onDidChangeExecution.fire(record);
@@ -394,7 +558,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 
 	private async calibrate(record: INyalaExecutionRecord): Promise<void> {
 		const executionId = record.executionId;
-		if (!executionId || record.stateEpoch === undefined || this.calibrating.has(executionId)) {
+		if (!executionId || this.calibrating.has(executionId)) {
 			return;
 		}
 		this.calibrating.add(executionId);
@@ -412,12 +576,46 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 				error: answer.result.error ?? undefined,
 			}, epochBefore, Date.now());
 			if (update.kind === 'applied') {
+				if (answer.result.resultIds?.length) {
+					record.metadataSettled = true;
+				}
 				this.registerResults(record, answer.result.resultIds ?? []);
 				this._onDidChangeExecution.fire(record);
 			}
 		} finally {
 			this.calibrating.delete(executionId);
 		}
+	}
+
+	/**
+	 * Fills in result ids and the error of an already terminal run. A terminal record ignores every
+	 * later notification, so a cancel reply that only says `completed` would otherwise leave the
+	 * results unreachable forever. This changes metadata only, never state or sequence.
+	 */
+	private async calibrateMetadata(record: INyalaExecutionRecord): Promise<void> {
+		const executionId = record.executionId;
+		if (!executionId || record.metadataSettled) {
+			return;
+		}
+		record.metadataSettled = true;
+		const answer = await this.bridge.call<{ state: NyalaExecutionState; sequence: number; resultIds?: readonly string[]; error?: INyalaRuntimeErrorObject | null }>(NyalaRuntimeCommand.QueryGetState, { executionId });
+		if (!answer.ok) {
+			return;
+		}
+		if (answer.result.error && !record.error) {
+			record.error = answer.result.error;
+		}
+		if (answer.result.resultIds?.length) {
+			// This path does not run through `applyStateChange`, so the ids have to be recorded here
+			// as well as turned into handles.
+			for (const resultId of answer.result.resultIds) {
+				if (!record.resultIds.includes(resultId)) {
+					record.resultIds.push(resultId);
+				}
+			}
+			this.registerResults(record, answer.result.resultIds);
+		}
+		this._onDidChangeExecution.fire(record);
 	}
 
 	private onRuntimeState(state: INyalaRuntimeState): void {
@@ -438,27 +636,29 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 				this._onDidChangeExecution.fire(record);
 			}
 		}
-		// The old process is gone: its result handles died with it. Releasing them against the new
-		// runtime would address handles it never issued, so this is local-only.
+		// The old process is gone: its result handles died with it, and its unadopted notifications
+		// can never match a record of the new generation. Releasing them against the new runtime
+		// would address handles it never issued, so this is local-only.
 		for (const entry of this.results.values()) {
 			entry.released = true;
 			entry.references = 0;
 		}
 		this.results.clear();
+		this.early.clear();
+		this.discarded.clear();
 	}
 
 	private registerResults(record: INyalaExecutionRecord, resultIds: readonly string[]): void {
 		for (const resultId of resultIds) {
-			if (this.results.has(resultId)) {
+			if (this.results.has(resultId) || this.discarded.has(resultId)) {
 				continue;
 			}
 			const perExecution = [...this.results.values()].filter(entry => entry.executionId === record.executionId).length;
-			if (perExecution >= MAX_RESULTS_PER_EXECUTION) {
+			if (perExecution >= MAX_RESULTS_PER_EXECUTION || this.results.size + this.pendingReleases >= MAX_RESULTS_PER_WINDOW) {
 				record.resultLimitReached = true;
-				continue;
-			}
-			if (!this.makeRoomForResult()) {
-				record.resultLimitReached = true;
+				// A refused handle is not silently forgotten: the runtime still owns it, so it is
+				// released explicitly. It is never acquirable because no entry exists for it.
+				this.discardResult(record, resultId);
 				continue;
 			}
 			this.results.set(resultId, {
@@ -474,21 +674,48 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		}
 	}
 
-	/** Evicts the oldest unclaimed result of a finished run; false when nothing can be evicted. */
-	private makeRoomForResult(): boolean {
-		if (this.results.size < MAX_RESULTS_PER_WINDOW) {
+	/**
+	 * Releases a result the service refused to keep. Sending is fire-and-forget with an explicit
+	 * rejection handler, and the id is remembered so a repeated notification does not send again.
+	 */
+	private discardResult(record: INyalaExecutionRecord, resultId: string): void {
+		if (this.discarded.has(resultId)) {
+			return;
+		}
+		this.discarded.add(resultId);
+		const generation = record.snapshot.runtimeGeneration;
+		if (generation !== this.connectionService.runtimeState.generation) {
+			this.logService.trace(`Nyala: refused result ${resultId} dropped locally; its runtime generation is gone`);
+			return;
+		}
+		this.pendingReleases++;
+		void this.bridge.call(NyalaRuntimeCommand.ResultRelease, { resultId }).then(answer => {
+			if (!answer.ok) {
+				this.logService.trace(`Nyala: refused result ${resultId} release ended as ${answer.error.data.kind}`);
+			}
+		}).catch(error => {
+			this.logService.trace(`Nyala: refused result ${resultId} release was not delivered: ${error instanceof Error ? error.message : String(error)}`);
+		}).finally(() => {
+			this.pendingReleases = Math.max(0, this.pendingReleases - 1);
+		});
+	}
+
+	/**
+	 * Makes room for a new run by releasing the oldest unclaimed results of finished runs, and waits
+	 * for those releases to settle: the runtime's quota is not free until it confirms them.
+	 */
+	private async reclaimResults(): Promise<boolean> {
+		if (this.results.size + this.pendingReleases < MAX_RESULTS_PER_WINDOW) {
 			return true;
 		}
 		const candidates = [...this.results.values()]
 			.filter(entry => !entry.released && entry.references === 0 && this.isFinished(entry.executionId))
 			.sort((a, b) => a.createdAt - b.createdAt);
-		for (const entry of candidates) {
-			this.releaseResult(entry, 'evicted');
-			if (this.results.size < MAX_RESULTS_PER_WINDOW) {
-				return true;
-			}
+		if (candidates.length === 0) {
+			return false;
 		}
-		return this.results.size < MAX_RESULTS_PER_WINDOW;
+		await Promise.allSettled(candidates.map(entry => this.releaseResult(entry, 'evicted')));
+		return this.results.size + this.pendingReleases < MAX_RESULTS_PER_WINDOW;
 	}
 
 	private isFinished(executionId: string): boolean {
@@ -496,26 +723,31 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		return !!record && isTerminalState(record.state);
 	}
 
-	private releaseResult(entry: IResultEntry, reason: 'last-lease' | 'evicted' | 'explicit'): void {
+	private releaseResult(entry: IResultEntry, reason: 'last-lease' | 'evicted' | 'explicit'): Promise<void> {
 		if (entry.released) {
-			return;
+			return Promise.resolve();
 		}
 		entry.released = true;
 		this.results.delete(entry.resultId);
 		this.pruneExecution(this.byExecution.get(entry.executionId));
 		if (entry.releaseSent) {
-			return;
+			return Promise.resolve();
 		}
 		entry.releaseSent = true;
 		// A handle from a dead generation addresses nothing the current runtime knows.
 		if (entry.runtimeGeneration !== this.connectionService.runtimeState.generation) {
 			this.logService.trace(`Nyala: result ${entry.resultId} dropped locally (${reason}); its runtime generation is gone`);
-			return;
+			return Promise.resolve();
 		}
-		void this.bridge.call(NyalaRuntimeCommand.ResultRelease, { resultId: entry.resultId }).then(answer => {
+		this.pendingReleases++;
+		return this.bridge.call(NyalaRuntimeCommand.ResultRelease, { resultId: entry.resultId }).then(answer => {
 			if (!answer.ok) {
 				this.logService.trace(`Nyala: result ${entry.resultId} release ended as ${answer.error.data.kind} (${reason})`);
 			}
+		}).catch(error => {
+			this.logService.trace(`Nyala: result ${entry.resultId} release was not delivered (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+		}).finally(() => {
+			this.pendingReleases = Math.max(0, this.pendingReleases - 1);
 		});
 	}
 
@@ -529,7 +761,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 	/**
 	 * Drops an execution record once nothing can reach it any more: it is no longer the query's
 	 * newest run and it owns no result. Without this the window would keep one record per run it
-	 * ever started.
+	 * ever started, each holding its SQL text.
 	 */
 	private pruneExecution(record: INyalaExecutionRecord | undefined): void {
 		if (!record || !record.executionId) {
@@ -543,8 +775,14 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 				return;
 			}
 		}
+		redactSnapshot(record);
 		this.byExecution.delete(record.executionId);
 	}
+}
+
+/** Drops the SQL text from a record that nobody can run or reopen any more. */
+function redactSnapshot(record: INyalaExecutionRecord): void {
+	record.snapshot = { ...record.snapshot, sql: '' };
 }
 
 function describeError(error: INyalaRuntimeErrorObject): string {

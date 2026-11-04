@@ -128,6 +128,12 @@ export class NyalaQueryEditorPane extends AbstractTextCodeEditor<ICodeEditorView
 		return this.editorControl?.getModel()?.getValue() ?? '';
 	}
 
+	/** Whether the editor has a selection, even one that only contains whitespace. */
+	hasSelection(): boolean {
+		const selection = this.editorControl?.getSelection();
+		return !!selection && !selection.isEmpty();
+	}
+
 	/** The current selection, or an empty string when nothing is selected. */
 	getSelectionText(): string {
 		const control = this.editorControl;

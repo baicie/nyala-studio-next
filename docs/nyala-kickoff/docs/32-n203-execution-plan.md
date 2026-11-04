@@ -102,6 +102,12 @@ Rust 执行器、`nyala/rpc/**` 与生成契约**不改**。若发现真正的�
 | A26 | `build-fast`、Nyala `tsc`、`npm run nyala:check-rpc-generated`、hygiene、`git diff --check` 通过 | 构建 | 全部 |
 | A27 | 四项必需 CI 与手动 Full test suites 在当前 HEAD 通过 | CI | 全部 |
 | A28 | 桌面原生 smoke（连接→执行→取消→结果） | 原生 | 受阻塞时记 NOT RUN |
+| A29 | 早到通知在 `execute` 续体前到达时仍完整收敛（终态/sequence/resultIds/错误） | 单元 | S4 |
+| A30 | 早到缓存有界、按代际丢弃、重复通知只应用一次 | 单元 | S4 |
+| A31 | 第 4 个结果被显式 release；配额等待在途 release 完成 | 单元 | S4 |
+| A32 | 关闭查询后记录/SQL/无租约结果清理；有租约结果保留至最后释放 | 单元 | S4 |
+| A33 | IPC Promise 拒绝不会让执行停在 `queued`；终态 cancel 通过 `getState` 补齐元数据 | 单元 | S4 |
+| A34 | 空白/注释选区被拒绝，不退化为执行下方语句；释放后的租约不能取页 | 浏览器/单元 | S4/S5 |
 
 ## 3.1 实施状态（2026-11-03）
 
@@ -113,6 +119,19 @@ Rust 执行器、`nyala/rpc/**` 与生成契约**不改**。若发现真正的�
 | S4 执行服务与租约 | **DONE** | `nyalaQueryExecutionService.test.ts` 25 passing；红/绿：移除 `canExecute` 门禁后 stale-generation 用例失败，把未知降级为失败后另一条失败 |
 | S5 命令与键位 | **DONE** | `nyalaQueryExecution.test.ts`（Chromium）8 passing；红/绿：把 weight 降到 `EditorContrib` 后键位断言失败 |
 | S6 文档与治理 | **DONE** | 本文件、ADR 0008、`PROGRESS.md`、`20-backlog.md`、两处 ADR 索引 |
+
+## 3.2 复审修复（CHANGES_REQUESTED 收口）
+
+| 问题 | 修复 | 证据 |
+|---|---|---|
+| 通知早于 `execute` 续体，记录停在 `queued` | 按 `executionId` 的有界早到缓存，采纳 id 后回放；换代丢弃 | `notifications that arrive before the execute continuation are replayed, not lost` 等 4 条 |
+| 第 4 个结果被丢弃且占用 runtime 配额 | 拒收即显式 `release`；配额按「保留 + 在途 release」计算，新执行等待淘汰释放完成 | `the fourth result of one execution is released instead of silently dropped`、`a new run waits for an evicted result…` |
+| 关闭查询后记录/SQL/句柄残留 | 终止执行从 `byQuery` 脱离、SQL 快照清空、无租约结果释放；有租约保留至最后释放 | 关闭三组用例 |
+| IPC Promise 拒绝导致永久 `queued` | `execute`/`cancel` 拒绝 → `unknown`；`getState` 拒绝只结束校准；`fetchPage` 拒绝转可读错误 | 拒绝用例 2 条 |
+| 终态 cancel 回复缺少 resultIds | 一次 `getState` 元数据校准 | `a cancel reply that only says completed…` |
+| 空白选区退化为执行下方语句 | `hasSelection()` 区分「无选区」与「选了空白」；有选区但无 SQL 时拒绝 | Chromium 空白/注释选区两组 |
+
+红/绿：回退早到缓存、拒收释放、关闭清理、取消元数据校准、空白选区判断与拒绝处理，分别出现 7（Node）与 1（Chromium）条失败；恢复后全绿。
 
 ## 4. 判定规则
 
