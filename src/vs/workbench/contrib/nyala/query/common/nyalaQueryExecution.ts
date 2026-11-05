@@ -83,6 +83,8 @@ export interface INyalaExecutionRecord {
 	resultLimitReached?: boolean;
 	/** Set once result ids were recovered (notification or a metadata calibration). */
 	metadataSettled?: boolean;
+	/** Why the result metadata could not be recovered; `undefined` when it was. */
+	metadataUnavailable?: string;
 	endedAt?: number;
 }
 

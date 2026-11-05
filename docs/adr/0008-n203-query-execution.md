@@ -100,8 +100,10 @@ ResultLease:      available --(N-204 acquire)--> leased --(last release)--> rele
   ```
 
 - **清理只发生在五种情况**：最后一个租约释放；服务侧淘汰（窗口配额）；runtime 报告 TTL 过期（`RESULT_EXPIRED`）；窗口关闭；runtime 换代。
+- **配额只在 Runtime 确认后恢复**：一次 `result.release` 被拒绝、被拒绝投递或答案不可信时，句柄的槽位继续计入 `unconfirmedReleases`，新的执行不会被误认为配额已回收；只有 `{released:true|false}`（Runtime 证明它不再持有）或 Runtime 自己拒绝（`answered`）才释放槽位。进程换代时该代际的占用随进程一起消失，本地清零；仍然遵守「至多发送一次」，不重试。
 - **被拒收的句柄也要释放**：一次执行返回超过上限的结果时，多出的 `resultId` 不会进入可 acquire 的集合，但会显式发送一次 `result.release`，并记住该 id，重复通知不会重复发送。资源配额只在 release 真正完成后才算恢复：窗口按「保留 + 在途 release」计数，新的执行会等待淘汰的 release 结束再发出。
 - **严禁向新 Runtime 释放旧代际结果。** 换代后进程已死，`result.release` 只会得到 `INVALID_SESSION` 或一条无意义的请求；此时只做本地遗忘。
+- **无主执行在终态收束**：关闭标签页后记录立刻从 `byQuery` 解除，但按 `executionId` 保留到终态，以便迟到回复仍能取消、结算；终态到达（`cancelled`/`completed`/`unknown` 或取消回复）时清理无租约结果并遗忘记录，仍被租约持有的结果继续存活到最后一个消费者释放。
 - **关闭查询标签页**：已终止的执行立即从 `byQuery` 解除归属，SQL 快照被清空；无租约的结果被释放，仍被结果视图租用的结果保留到最后一个租约结束，记录随后一并遗忘。
 - **`release` 的语义是「幂等、至多发送一次、有明确完成状态」，不是严格 exactly-once。** 网络或进程故障下无法证明对端收到，因此：
   - 每个租约只发一次 `result.release`；
@@ -139,7 +141,7 @@ ResultLease:      available --(N-204 acquire)--> leased --(last release)--> rele
   - 回复里的 `state` 只用于「已经终态」的判断（`completed`/`failed`/`cancelled`/`unknown`），仍不写 `sequence`；
   - 需要权威状态时调用 `query.getState` 校准，并沿用它的 `sequence`。
 - **早到通知**：Main 进程可能在同一个事件循环里先派发 `query.execute` 的成功帧，再同步派发 `query.stateChanged`，而执行服务的 `await` 续体尚未运行、还没有 `executionId`。服务按 `executionId` 缓存这些通知（最多 16 个执行、每个 8 条），在采纳 id 后按序回放；换代时整批丢弃，旧代际的事件不入缓存。缓存有界，不会形成未知事件队列。
-- **终态后的元数据**：`query.cancel` 只回 `completed` 而没有 `sequence`/`resultIds` 时，记录已终止，后续通知会被冻结；此时服务调用一次 `query.getState` 补齐 `resultIds` 与 `error`，只改元数据，不改状态或序列。
+- **终态后的元数据**：`query.cancel` 只回 `completed` 而没有 `sequence`/`resultIds` 时，记录已终止，后续通知会被冻结；此时服务调用一次 `query.getState` 补齐 `resultIds` 与 `error`，只改元数据，不改状态或序列。该校准只在回复的 `runtimeGeneration`、`executionId` 与记录归属都匹配时生效；失败时写入 `metadataUnavailable` 而不是假装已校准，`metadataSettled` 只在成功后置位。
 - **在途 `fetchPage`**：回复到达后必须再次确认租约未释放、句柄仍在、代际未变；否则丢弃这批行并报「结果已不可用」，不把死句柄的数据交给 N-204。
 - **并发 `getState` 与乱序通知**：记录维护 `lastAppliedSequence` 与一个单调的 `stateEpoch`。
   - 只应用 `sequence > lastAppliedSequence` 的通知；

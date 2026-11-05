@@ -136,6 +136,13 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 	private readonly discarded = new Set<string>();
 	/** Release calls still in flight; they still occupy runtime quota until they settle. */
 	private pendingReleases = 0;
+	/**
+	 * Releases that ended without proof. The runtime may still hold those handles, so their quota
+	 * stays counted. A generation change clears them: the process that owned them is gone.
+	 */
+	private unconfirmedReleases = 0;
+	/** Resolved when the last in-flight release settles; lets a new run wait for real quota. */
+	private readonly releaseWaiters: Array<() => void> = [];
 	private nextRequest = 0;
 	private lastSeenGeneration: number;
 
@@ -179,6 +186,33 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 	/** Diagnostics for tests: release calls still in flight (they still occupy runtime quota). */
 	get pendingReleaseCount(): number {
 		return this.pendingReleases;
+	}
+
+	/** Diagnostics for tests: releases that failed without proof and still count against quota. */
+	get unconfirmedReleaseCount(): number {
+		return this.unconfirmedReleases;
+	}
+
+	/** Results plus releases that are not provably free in the runtime. */
+	private get occupiedResults(): number {
+		return this.results.size + this.pendingReleases + this.unconfirmedReleases;
+	}
+
+	/** Resolves once no release is in flight; `undefined` immediately when there is none. */
+	private settledReleases(): Promise<void> | undefined {
+		if (this.pendingReleases === 0) {
+			return undefined;
+		}
+		return new Promise<void>(resolve => this.releaseWaiters.push(resolve));
+	}
+
+	private releaseSettled(): void {
+		this.pendingReleases = Math.max(0, this.pendingReleases - 1);
+		if (this.pendingReleases === 0) {
+			for (const resolve of this.releaseWaiters.splice(0)) {
+				resolve();
+			}
+		}
 	}
 
 	getExecution(queryId: string): INyalaExecutionRecord | undefined {
@@ -413,6 +447,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		// The cancel reply has no sequence: it may settle a terminal outcome, but it may not
 		// rewrite the record's state sequence.
 		applyCancelReply(record, answer.result.state, answer.result.accepted, Date.now());
+		this.settleOwnerless(record);
 		this._onDidChangeExecution.fire(record);
 		// A terminal reply may be the only place the outcome is ever reported. Its missing result
 		// ids and error are recovered from `query.getState`; otherwise the results would be lost
@@ -436,6 +471,9 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		this.results.clear();
 		this.early.clear();
 		this.discarded.clear();
+		for (const resolve of this.releaseWaiters.splice(0)) {
+			resolve();
+		}
 		super.dispose();
 	}
 
@@ -464,6 +502,9 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			return;
 		}
 		record.abandoned = true;
+		// The tab is gone, so the record no longer belongs to any query. It stays reachable by
+		// execution id until it ends, so a late reply can still be cancelled and accounted for.
+		this.byQuery.delete(queryId);
 		redactSnapshot(record);
 		if (!isTerminalState(record.state)) {
 			if (record.executionId) {
@@ -472,16 +513,31 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			this._onDidChangeExecution.fire(record);
 			return;
 		}
-		this.byQuery.delete(queryId);
+		this.settleOwnerless(record);
+		this._onDidChangeExecution.fire(record);
+	}
+
+	/**
+	 * Ends an execution nobody owns any more: its SQL is already gone, results no consumer leased
+	 * are released, and the record is forgotten once it holds no result. Called on every terminal
+	 * transition, because a run abandoned while still `running` only becomes safe to forget when it
+	 * reports how it ended.
+	 */
+	private settleOwnerless(record: INyalaExecutionRecord): void {
+		if (!isTerminalState(record.state)) {
+			return;
+		}
+		if (this.byQuery.get(record.snapshot.queryId) === record) {
+			// A live tab still owns this record (for example after a rebind); leave it alone.
+			return;
+		}
+		redactSnapshot(record);
 		for (const entry of [...this.results.values()]) {
-			if (entry.executionId === record.executionId) {
-				if (entry.references === 0) {
-					void this.releaseResult(entry, 'explicit');
-				}
+			if (entry.executionId === record.executionId && entry.references === 0) {
+				void this.releaseResult(entry, 'explicit');
 			}
 		}
 		this.pruneExecution(record);
-		this._onDidChangeExecution.fire(record);
 	}
 
 	private onQueryState(event: INyalaQueryStateChangedEvent): void {
@@ -553,6 +609,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			record.metadataSettled = true;
 		}
 		this.registerResults(record, event.resultIds ?? []);
+		this.settleOwnerless(record);
 		this._onDidChangeExecution.fire(record);
 	}
 
@@ -568,6 +625,11 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			if (!answer.ok) {
 				return;
 			}
+			// A reply is only about this run: same execution id, same runtime generation, and the
+			// record still exists. A late answer after a restart or a close must not register results.
+			if (answer.runtimeGeneration !== record.snapshot.runtimeGeneration || answer.result.executionId !== executionId || this.byExecution.get(executionId) !== record) {
+				return;
+			}
 			const update = applyCalibration(record, {
 				state: answer.result.state,
 				sequence: answer.result.sequence,
@@ -580,6 +642,7 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 					record.metadataSettled = true;
 				}
 				this.registerResults(record, answer.result.resultIds ?? []);
+				this.settleOwnerless(record);
 				this._onDidChangeExecution.fire(record);
 			}
 		} finally {
@@ -597,9 +660,26 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		if (!executionId || record.metadataSettled) {
 			return;
 		}
-		record.metadataSettled = true;
-		const answer = await this.bridge.call<{ state: NyalaExecutionState; sequence: number; resultIds?: readonly string[]; error?: INyalaRuntimeErrorObject | null }>(NyalaRuntimeCommand.QueryGetState, { executionId });
+		// `metadataSettled` is only claimed on a reply that belongs to this run. Marking it up front
+		// would make a lost or rejected calibration look like a settled one and hide the gap.
+		let answer;
+		try {
+			answer = await this.bridge.call<{ executionId: string; state: NyalaExecutionState; sequence: number; resultIds?: readonly string[]; error?: INyalaRuntimeErrorObject | null }>(NyalaRuntimeCommand.QueryGetState, { executionId });
+		} catch (error) {
+			record.metadataUnavailable = 'the runtime could not be reached';
+			this._onDidChangeExecution.fire(record);
+			return;
+		}
 		if (!answer.ok) {
+			record.metadataUnavailable = answer.error.data.safeDetail ?? answer.error.message;
+			this._onDidChangeExecution.fire(record);
+			return;
+		}
+		// Same-execution, same-generation, still-adopted checks: a reply that fails any of them is
+		// about something else and must not be installed on this record.
+		if (answer.runtimeGeneration !== record.snapshot.runtimeGeneration || answer.result.executionId !== executionId || this.byExecution.get(executionId) !== record) {
+			record.metadataUnavailable = 'the reply belongs to another execution or runtime generation';
+			this._onDidChangeExecution.fire(record);
 			return;
 		}
 		if (answer.result.error && !record.error) {
@@ -615,6 +695,9 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			}
 			this.registerResults(record, answer.result.resultIds);
 		}
+		record.metadataSettled = true;
+		record.metadataUnavailable = undefined;
+		this.settleOwnerless(record);
 		this._onDidChangeExecution.fire(record);
 	}
 
@@ -646,6 +729,12 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		this.results.clear();
 		this.early.clear();
 		this.discarded.clear();
+		// Handles of the dead process are gone with it, including the ones whose release could not
+		// be confirmed: their quota died too.
+		this.unconfirmedReleases = 0;
+		for (const resolve of this.releaseWaiters.splice(0)) {
+			resolve();
+		}
 	}
 
 	private registerResults(record: INyalaExecutionRecord, resultIds: readonly string[]): void {
@@ -690,13 +779,22 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		}
 		this.pendingReleases++;
 		void this.bridge.call(NyalaRuntimeCommand.ResultRelease, { resultId }).then(answer => {
-			if (!answer.ok) {
-				this.logService.trace(`Nyala: refused result ${resultId} release ended as ${answer.error.data.kind}`);
+			if (answer.ok) {
+				return;
 			}
+			if (answer.answered === true || answer.sent === false) {
+				// A refused handle is not held by the runtime; one that never left the bridge was
+				// never created there either.
+				this.logService.trace(`Nyala: refused result ${resultId} release ended as ${answer.error.data.kind}; nothing is held`);
+				return;
+			}
+			this.unconfirmedReleases++;
+			this.logService.trace(`Nyala: refused result ${resultId} release could not be confirmed; its quota stays occupied`);
 		}).catch(error => {
+			this.unconfirmedReleases++;
 			this.logService.trace(`Nyala: refused result ${resultId} release was not delivered: ${error instanceof Error ? error.message : String(error)}`);
 		}).finally(() => {
-			this.pendingReleases = Math.max(0, this.pendingReleases - 1);
+			this.releaseSettled();
 		});
 	}
 
@@ -705,17 +803,26 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 	 * for those releases to settle: the runtime's quota is not free until it confirms them.
 	 */
 	private async reclaimResults(): Promise<boolean> {
-		if (this.results.size + this.pendingReleases < MAX_RESULTS_PER_WINDOW) {
+		if (this.occupiedResults < MAX_RESULTS_PER_WINDOW) {
 			return true;
 		}
 		const candidates = [...this.results.values()]
 			.filter(entry => !entry.released && entry.references === 0 && this.isFinished(entry.executionId))
 			.sort((a, b) => a.createdAt - b.createdAt);
-		if (candidates.length === 0) {
-			return false;
+		if (candidates.length > 0) {
+			await Promise.allSettled(candidates.map(entry => this.releaseResult(entry, 'evicted')));
 		}
-		await Promise.allSettled(candidates.map(entry => this.releaseResult(entry, 'evicted')));
-		return this.results.size + this.pendingReleases < MAX_RESULTS_PER_WINDOW;
+		// A release that is still in flight may yet free a slot; wait for it instead of refusing a
+		// run that the runtime would accept. An unconfirmed release is different: nothing proves the
+		// handle is gone, so the run is refused rather than sent into a RESOURCE_LIMIT.
+		if (this.occupiedResults < MAX_RESULTS_PER_WINDOW) {
+			return true;
+		}
+		const settled = this.settledReleases();
+		if (settled) {
+			await settled;
+		}
+		return this.occupiedResults < MAX_RESULTS_PER_WINDOW;
 	}
 
 	private isFinished(executionId: string): boolean {
@@ -723,6 +830,12 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		return !!record && isTerminalState(record.state);
 	}
 
+	/**
+	 * Releases one handle. The local entry goes away immediately, but the quota only comes back when
+	 * the runtime confirmed it: a rejected call, a lost runtime or an answer that cannot be trusted
+	 * keeps its slot in `unconfirmedReleases`. The send itself is at most once — a retry could
+	 * release a handle id the runtime has since reused.
+	 */
 	private releaseResult(entry: IResultEntry, reason: 'last-lease' | 'evicted' | 'explicit'): Promise<void> {
 		if (entry.released) {
 			return Promise.resolve();
@@ -734,7 +847,8 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 			return Promise.resolve();
 		}
 		entry.releaseSent = true;
-		// A handle from a dead generation addresses nothing the current runtime knows.
+		// A handle from a dead generation addresses nothing the current runtime knows. Its quota
+		// died with that process, so it is free here; nothing is sent and nothing stays occupied.
 		if (entry.runtimeGeneration !== this.connectionService.runtimeState.generation) {
 			this.logService.trace(`Nyala: result ${entry.resultId} dropped locally (${reason}); its runtime generation is gone`);
 			return Promise.resolve();
@@ -742,12 +856,28 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		this.pendingReleases++;
 		return this.bridge.call(NyalaRuntimeCommand.ResultRelease, { resultId: entry.resultId }).then(answer => {
 			if (!answer.ok) {
-				this.logService.trace(`Nyala: result ${entry.resultId} release ended as ${answer.error.data.kind} (${reason})`);
+				if (answer.answered === true) {
+					// The runtime itself refused: it does not hold the handle, so the slot is free.
+					this.logService.trace(`Nyala: result ${entry.resultId} release refused as ${answer.error.data.kind} (${reason}); nothing is held`);
+					return;
+				}
+				this.unconfirmedReleases++;
+				this.logService.trace(`Nyala: result ${entry.resultId} release ended as ${answer.error.data.kind} (${reason}); its quota stays occupied`);
+				return;
 			}
+			const released = (answer.result as { released?: unknown } | undefined)?.released;
+			if (released === true || released === false) {
+				// `true`: the runtime freed it. `false`: it did not hold it any more. Either way the
+				// slot is provably free.
+				return;
+			}
+			this.unconfirmedReleases++;
+			this.logService.trace(`Nyala: result ${entry.resultId} release answer could not be trusted (${reason}); its quota stays occupied`);
 		}).catch(error => {
+			this.unconfirmedReleases++;
 			this.logService.trace(`Nyala: result ${entry.resultId} release was not delivered (${reason}): ${error instanceof Error ? error.message : String(error)}`);
 		}).finally(() => {
-			this.pendingReleases = Math.max(0, this.pendingReleases - 1);
+			this.releaseSettled();
 		});
 	}
 

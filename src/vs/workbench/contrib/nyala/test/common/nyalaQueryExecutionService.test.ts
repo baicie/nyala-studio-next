@@ -564,10 +564,14 @@ suite('Nyala query execution service', () => {
 		await pending.promise;
 		await bridge.flush();
 
+		// The tab is gone, so the record is no longer reachable by query id; it stays reachable by
+		// execution id until its terminal state arrives.
 		assert.deepStrictEqual({
-			abandoned: service.getExecution('q_1')?.abandoned,
+			queryEntry: service.getExecution('q_1'),
+			abandoned: service.getExecutionById('ex_1')?.abandoned,
 			cancels: bridge.pending(NyalaRuntimeCommand.QueryCancel).map(request => request.params),
 		}, {
+			queryEntry: undefined,
 			abandoned: true,
 			cancels: [{ executionId: 'ex_1', reason: 'user' }],
 		});
@@ -914,6 +918,341 @@ suite('Nyala query execution service', () => {
 		await bridge.flush();
 
 		await assert.rejects(() => service.fetchPage(lease, null, 10), /no longer available/);
+	});
+
+	//#endregion
+
+	//#region F1 · quota only after a confirmed release
+
+	async function finishedWithResults(resultIds: string[], executionId = 'ex_1'): Promise<void> {
+		await running('q_1', executionId);
+		bridge.queryChanges.fire(stateEvent(executionId, 'completed', 3, { resultIds }));
+		await bridge.flush();
+	}
+
+	test('a release the runtime confirmed frees the slot', async () => {
+		await boundTab('q_1');
+		await finishedWithResults(['rs_1', 'rs_2', 'rs_3']);
+		const leases = ['rs_1', 'rs_2', 'rs_3'].map(resultId => service.acquireResult('ex_1', resultId)!);
+		for (const lease of leases) {
+			lease.dispose();
+		}
+		await bridge.flush();
+
+		for (const release of bridge.pending(NyalaRuntimeCommand.ResultRelease)) {
+			release.answer.complete({ ok: true, runtimeGeneration: 1, result: { released: true } });
+		}
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			results: service.resultHandleCount,
+			pending: service.pendingReleaseCount,
+			unconfirmed: service.unconfirmedReleaseCount,
+		}, { results: 0, pending: 0, unconfirmed: 0 });
+	});
+
+	test('a release the runtime could not confirm keeps its slot, and a new run is refused', async () => {
+		await boundTab('q_1');
+		await finishedWithResults(['rs_1', 'rs_2', 'rs_3']);
+		for (const resultId of ['rs_1', 'rs_2', 'rs_3']) {
+			service.acquireResult('ex_1', resultId)!.dispose();
+		}
+		await bridge.flush();
+		for (const release of bridge.pending(NyalaRuntimeCommand.ResultRelease)) {
+			release.answer.complete(failure('RUNTIME_LOST', { sent: true, answered: false }));
+		}
+		await bridge.flush();
+
+		const attempt = await service.execute('q_1', 'SELECT 2;', 'statement');
+
+		assert.deepStrictEqual({
+			unconfirmed: service.unconfirmedReleaseCount,
+			ok: attempt.ok,
+			requests: bridge.pending(NyalaRuntimeCommand.QueryExecute).length,
+		}, {
+			unconfirmed: 3,
+			ok: false,
+			requests: 1,
+		}, 'an unproven release must not make the service believe the quota came back');
+	});
+
+	test('a rejected release promise counts as unconfirmed, never as freed', async () => {
+		await boundTab('q_1');
+		await finishedWithResults(['rs_1']);
+		service.acquireResult('ex_1', 'rs_1')!.dispose();
+		await bridge.flush();
+		bridge.pending(NyalaRuntimeCommand.ResultRelease)[0].answer.error(new Error('ipc closed'));
+		await bridge.flush();
+
+		assert.deepStrictEqual({ pending: service.pendingReleaseCount, unconfirmed: service.unconfirmedReleaseCount, results: service.resultHandleCount }, {
+			pending: 0,
+			unconfirmed: 1,
+			results: 0,
+		});
+	});
+
+	test('a release the runtime refused is provably free and does not occupy quota', async () => {
+		await boundTab('q_1');
+		await finishedWithResults(['rs_1']);
+		service.acquireResult('ex_1', 'rs_1')!.dispose();
+		await bridge.flush();
+		bridge.pending(NyalaRuntimeCommand.ResultRelease)[0].answer.complete(failure('INVALID_PARAMS', { sent: true, answered: true }));
+		await bridge.flush();
+
+		assert.strictEqual(service.unconfirmedReleaseCount, 0);
+	});
+
+	test('a generation change frees the quota the dead process was holding', async () => {
+		await boundTab('q_1');
+		await finishedWithResults(['rs_1']);
+		service.acquireResult('ex_1', 'rs_1')!.dispose();
+		await bridge.flush();
+		bridge.pending(NyalaRuntimeCommand.ResultRelease)[0].answer.complete(failure('RUNTIME_LOST', { sent: true, answered: false }));
+		await bridge.flush();
+		const before = service.unconfirmedReleaseCount;
+
+		connections.setRuntime({ generation: 2, status: 'ready' });
+		await bridge.flush();
+
+		assert.deepStrictEqual({ before, after: service.unconfirmedReleaseCount }, { before: 1, after: 0 });
+	});
+
+	test('a release still in flight blocks a new run until it settles', async () => {
+		await boundTab('q_1');
+		await finishedWithResults(['rs_1', 'rs_2', 'rs_3']);
+		for (const resultId of ['rs_1', 'rs_2', 'rs_3']) {
+			service.acquireResult('ex_1', resultId)!.dispose();
+		}
+		await bridge.flush();
+
+		const attempt = service.execute('q_1', 'SELECT 2;', 'statement');
+		await bridge.flush();
+		const beforeAnswer = { pending: service.pendingReleaseCount, executes: bridge.pending(NyalaRuntimeCommand.QueryExecute).length };
+
+		for (const release of bridge.pending(NyalaRuntimeCommand.ResultRelease)) {
+			release.answer.complete({ ok: true, runtimeGeneration: 1, result: { released: true } });
+		}
+		await bridge.flush();
+		await bridge.flush();
+		const after = bridge.pending(NyalaRuntimeCommand.QueryExecute);
+		after[after.length - 1]?.answer.complete({ ok: true, runtimeGeneration: 1, result: { executionId: 'ex_2', state: 'queued', sequence: 1 } });
+		const result = await attempt;
+
+		assert.deepStrictEqual({ beforeAnswer, ok: result.ok }, { beforeAnswer: { pending: 3, executes: 1 }, ok: true });
+	});
+
+	//#endregion
+
+	//#region F2 · abandoned runs settle at their terminal state
+
+	async function abandonedRunning(executionId = 'ex_1'): Promise<void> {
+		await boundTab('q_1');
+		await running('q_1', executionId);
+		contextService.release('q_1');
+		await bridge.flush();
+	}
+
+	test('a run closed while running is cleaned up when it is cancelled', async () => {
+		await abandonedRunning();
+		const cancelled = bridge.pending(NyalaRuntimeCommand.QueryCancel)[0];
+		cancelled.answer.complete({ ok: true, runtimeGeneration: 1, result: { accepted: true, state: 'running' } });
+		await bridge.flush();
+		bridge.queryChanges.fire(stateEvent('ex_1', 'cancelled', 3));
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			records: service.executionRecordCount,
+			byId: service.getExecutionById('ex_1'),
+			handles: service.resultHandleCount,
+		}, { records: 0, byId: undefined, handles: 0 });
+	});
+
+	test('a run closed before its reply is cancelled and cleaned up when the cancel settles', async () => {
+		await boundTab('q_1');
+		const pending = await start('q_1');
+		contextService.release('q_1');
+		await bridge.flush();
+		pending.request.answer.complete({ ok: true, runtimeGeneration: 1, result: { executionId: 'ex_1', state: 'queued', sequence: 1 } });
+		await pending.promise;
+		await bridge.flush();
+		const cancel = bridge.pending(NyalaRuntimeCommand.QueryCancel)[0];
+		cancel.answer.complete({ ok: true, runtimeGeneration: 1, result: { accepted: true, state: 'cancelled' } });
+		await bridge.flush();
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			records: service.executionRecordCount,
+			sqlLeft: service.getExecutionById('ex_1'),
+			cancels: bridge.pending(NyalaRuntimeCommand.QueryCancel).length,
+		}, { records: 0, sqlLeft: undefined, cancels: 1 });
+	});
+
+	test('a run closed while running that completes with results releases them and is forgotten', async () => {
+		await abandonedRunning();
+		bridge.queryChanges.fire(stateEvent('ex_1', 'completed', 3, { resultIds: ['rs_1', 'rs_2'] }));
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			records: service.executionRecordCount,
+			handles: service.resultHandleCount,
+			releases: bridge.pending(NyalaRuntimeCommand.ResultRelease).map(request => request.params),
+		}, { records: 0, handles: 0, releases: [{ resultId: 'rs_1' }, { resultId: 'rs_2' }] });
+	});
+
+	test('a leased result of a closed run survives its record, and the record goes with the last lease', async () => {
+		await boundTab('q_1');
+		await finishedWithResults(['rs_1']);
+		const lease = service.acquireResult('ex_1', 'rs_1')!;
+		contextService.release('q_1');
+		await bridge.flush();
+
+		const afterClose = { handles: service.resultHandleCount, sql: service.getExecutionById('ex_1')?.snapshot.sql, records: service.executionRecordCount };
+		lease.dispose();
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			afterClose,
+			afterLease: { handles: service.resultHandleCount, records: service.executionRecordCount },
+		}, {
+			afterClose: { handles: 1, sql: '', records: 1 },
+			afterLease: { handles: 0, records: 0 },
+		}, 'the SQL text is gone while the record still serves a leased result');
+	});
+
+	test('a run closed while running that ends unknown is forgotten', async () => {
+		await abandonedRunning();
+		bridge.queryChanges.fire(stateEvent('ex_1', 'unknown', 3, { error: { code: -32012, message: 'runtime lost', data: { kind: 'RUNTIME_LOST', retryable: true } } }));
+		await bridge.flush();
+
+		assert.deepStrictEqual({ records: service.executionRecordCount, byId: service.getExecutionById('ex_1') }, { records: 0, byId: undefined });
+	});
+
+	test('closing several running queries in a row leaves no records or handles behind', async () => {
+		for (let index = 0; index < 5; index++) {
+			const queryId = `q_abandon_${index}`;
+			await boundTab(queryId, 'p_a', `s_${index}`);
+			const { promise, request } = await start(queryId);
+			request.answer.complete({ ok: true, runtimeGeneration: 1, result: { executionId: `ex_abandon_${index}`, state: 'running', sequence: 1 } });
+			await promise;
+			contextService.release(queryId);
+			await bridge.flush();
+			bridge.queryChanges.fire(stateEvent(`ex_abandon_${index}`, 'completed', 2, { resultIds: [`rs_abandon_${index}`] }));
+			await bridge.flush();
+			for (const release of bridge.pending(NyalaRuntimeCommand.ResultRelease)) {
+				if (!release.answered) {
+					release.answered = true;
+					release.answer.complete({ ok: true, runtimeGeneration: 1, result: { released: true } });
+				}
+			}
+			await bridge.flush();
+		}
+
+		assert.deepStrictEqual({
+			records: service.executionRecordCount,
+			handles: service.resultHandleCount,
+			unconfirmed: service.unconfirmedReleaseCount,
+			releases: bridge.pending(NyalaRuntimeCommand.ResultRelease).length,
+		}, { records: 0, handles: 0, unconfirmed: 0, releases: 5 });
+	});
+
+	//#endregion
+
+	//#region F3 · metadata calibration
+
+	async function terminalWithMetadataCalibration(): Promise<void> {
+		await boundTab('q_1');
+		await running();
+		const cancelling = service.cancel('ex_1');
+		await bridge.flush();
+		bridge.pending(NyalaRuntimeCommand.QueryCancel)[0].answer.complete({ ok: true, runtimeGeneration: 1, result: { accepted: false, state: 'completed' } });
+		await cancelling;
+		await bridge.flush();
+	}
+
+	test('a calibration reply from another generation is refused, not installed', async () => {
+		await terminalWithMetadataCalibration();
+		const calibration = bridge.pending(NyalaRuntimeCommand.QueryGetState)[0];
+
+		calibration.answer.complete({ ok: true, runtimeGeneration: 2, result: { executionId: 'ex_1', state: 'completed', sequence: 3, resultIds: ['rs_1'] } });
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			settled: service.getExecution('q_1')?.metadataSettled,
+			unavailable: service.getExecution('q_1')?.metadataUnavailable,
+			results: service.getExecution('q_1')?.resultIds,
+			handles: service.resultHandleCount,
+		}, {
+			settled: undefined,
+			unavailable: 'the reply belongs to another execution or runtime generation',
+			results: [],
+			handles: 0,
+		});
+	});
+
+	test('a calibration reply for another execution id is refused', async () => {
+		await terminalWithMetadataCalibration();
+
+		bridge.pending(NyalaRuntimeCommand.QueryGetState)[0].answer.complete({ ok: true, runtimeGeneration: 1, result: { executionId: 'ex_other', state: 'completed', sequence: 3, resultIds: ['rs_1'] } });
+		await bridge.flush();
+
+		assert.deepStrictEqual({ settled: service.getExecution('q_1')?.metadataSettled, results: service.getExecution('q_1')?.resultIds }, { settled: undefined, results: [] });
+	});
+
+	test('a calibration that arrives after the tab closed does not register results', async () => {
+		await terminalWithMetadataCalibration();
+		contextService.release('q_1');
+		await bridge.flush();
+
+		bridge.pending(NyalaRuntimeCommand.QueryGetState)[0].answer.complete({ ok: true, runtimeGeneration: 1, result: { executionId: 'ex_1', state: 'completed', sequence: 3, resultIds: ['rs_1'] } });
+		await bridge.flush();
+
+		assert.deepStrictEqual({ handles: service.resultHandleCount, records: service.executionRecordCount }, { handles: 0, records: 0 });
+	});
+
+	test('a rejected calibration is recorded as unavailable, not as settled', async () => {
+		await terminalWithMetadataCalibration();
+
+		bridge.pending(NyalaRuntimeCommand.QueryGetState)[0].answer.error(new Error('ipc closed'));
+		await bridge.flush();
+
+		assert.deepStrictEqual({ settled: service.getExecution('q_1')?.metadataSettled, unavailable: service.getExecution('q_1')?.metadataUnavailable }, {
+			settled: undefined,
+			unavailable: 'the runtime could not be reached',
+		});
+	});
+
+	test('a calibration the runtime refuses keeps its safe detail', async () => {
+		await terminalWithMetadataCalibration();
+
+		bridge.pending(NyalaRuntimeCommand.QueryGetState)[0].answer.complete(failure('INVALID_SESSION', { sent: true, answered: true, safeDetail: 'the session is gone' }));
+		await bridge.flush();
+
+		assert.deepStrictEqual({ settled: service.getExecution('q_1')?.metadataSettled, unavailable: service.getExecution('q_1')?.metadataUnavailable }, {
+			settled: undefined,
+			unavailable: 'the session is gone',
+		});
+	});
+
+	test('a successful calibration settles the metadata exactly once', async () => {
+		await terminalWithMetadataCalibration();
+
+		bridge.pending(NyalaRuntimeCommand.QueryGetState)[0].answer.complete({ ok: true, runtimeGeneration: 1, result: { executionId: 'ex_1', state: 'completed', sequence: 3, resultIds: ['rs_1'] } });
+		await bridge.flush();
+		// A later notification must not start a second calibration for the same run.
+		bridge.queryChanges.fire(stateEvent('ex_1', 'completed', 4, { resultIds: ['rs_1'] }));
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			settled: service.getExecution('q_1')?.metadataSettled,
+			unavailable: service.getExecution('q_1')?.metadataUnavailable,
+			results: service.getExecution('q_1')?.resultIds,
+			calibrations: bridge.pending(NyalaRuntimeCommand.QueryGetState).length,
+		}, {
+			settled: true,
+			unavailable: undefined,
+			results: ['rs_1'],
+			calibrations: 1,
+		});
 	});
 
 	//#endregion
