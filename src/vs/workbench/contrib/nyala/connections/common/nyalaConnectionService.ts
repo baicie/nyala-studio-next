@@ -21,7 +21,7 @@ import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { INyalaMetadataDescribeResult, INyalaMetadataListObjectsResult, NYALA_ERROR_KINDS } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeContract.generated.js';
-import { INyalaRuntimeCallResult, INyalaRuntimeState, NyalaRuntimeCommand } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeIpc.js';
+import { INyalaQueryStateChangedEvent, INyalaRuntimeCallResult, INyalaRuntimeState, NyalaRuntimeCommand } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeIpc.js';
 import { INyalaRuntimeErrorObject } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeProtocol.js';
 import { asRuntimeError, INyalaConnectionTarget, NyalaRequestError } from '../../../../../platform/nyalaRuntime/common/nyalaRuntimeRequest.js';
 
@@ -61,6 +61,8 @@ export interface INyalaRuntimeBridge {
 	getState(): Promise<INyalaRuntimeState>;
 	call<T>(command: NyalaRuntimeCommand, params: object): Promise<INyalaRuntimeCallResult<T>>;
 	readonly onDidChangeState: Event<INyalaRuntimeState>;
+	/** `query.stateChanged` relayed from the window's runtime, tagged with its generation. */
+	readonly onDidChangeQueryState: Event<INyalaQueryStateChangedEvent>;
 }
 
 export const INyalaConnectionService = createDecorator<INyalaConnectionService>('nyalaConnectionService');

@@ -16,9 +16,9 @@ import { Event } from '../../../base/common/event.js';
 import { CancellationToken } from '../../../base/common/cancellation.js';
 import { IServerChannel } from '../../../base/parts/ipc/common/ipc.js';
 import { ILogger } from '../../log/common/log.js';
-import { INyalaRuntimeCallResult, INyalaRuntimeState, NyalaRuntimeCommand, NyalaRuntimeEvent } from '../common/nyalaRuntimeIpc.js';
+import { INyalaQueryStateChangedEvent, INyalaRuntimeCallResult, INyalaRuntimeState, NyalaRuntimeCommand, NyalaRuntimeEvent } from '../common/nyalaRuntimeIpc.js';
 import { INyalaRuntimeErrorObject, NyalaRuntimeError } from '../common/nyalaRuntimeProtocol.js';
-import { asRuntimeError, connectionTarget, describeParams, listObjectsParams, NyalaRequestError, sessionRef } from '../common/nyalaRuntimeRequest.js';
+import { asRuntimeError, cancelParams, connectionTarget, describeParams, executeParams, executionRef, fetchPageParams, listObjectsParams, NyalaRequestError, resultRef, sessionRef } from '../common/nyalaRuntimeRequest.js';
 import { NyalaRuntimeSupervisor } from '../node/nyalaRuntimeSupervisor.js';
 
 /** What the channel needs from the handler that owns the supervisors. */
@@ -110,7 +110,8 @@ export class NyalaRuntimeChannel implements IServerChannel<string> {
 		try {
 			validated = validate(command as NyalaRuntimeCommand, params);
 		} catch (error) {
-			const result: INyalaRuntimeCallResult = { ok: false, runtimeGeneration: generation, error: toWireError(error) };
+			// Rejected here: the request provably never left the Main process.
+			const result: INyalaRuntimeCallResult = { ok: false, runtimeGeneration: generation, error: toWireError(error), sent: false, answered: false };
 			return result as T;
 		}
 		if (!supervisor) {
@@ -118,27 +119,65 @@ export class NyalaRuntimeChannel implements IServerChannel<string> {
 				ok: false,
 				runtimeGeneration: 0,
 				error: { code: -32012, message: 'The Nyala runtime is not available', data: { kind: 'RUNTIME_LOST', retryable: true, safeDetail: 'no runtime has been started for this window' } },
+				sent: false,
+				answered: false,
 			};
 			return result as T;
 		}
 		try {
 			const result = await supervisor.request(method, validated);
+			// A malformed answer is a failed *call*, not a statement about the SQL: the runtime may
+			// have run it. The caller turns this into `unknown`, never into "it did not run".
+			const shapeError = checkResultShape(command as NyalaRuntimeCommand, result, validated);
+			if (shapeError) {
+				this.logService.trace(`Nyala runtime: ${command} answered with an unexpected shape for window ${windowId}`);
+				// The runtime answered, but the answer is unusable: the request definitely left the
+				// bridge, so the caller must not conclude that nothing ran.
+				const malformed: INyalaRuntimeCallResult = {
+					ok: false,
+					runtimeGeneration: generation,
+					error: { code: -32603, message: 'The Nyala runtime answered with an unexpected shape', data: { kind: 'INTERNAL', retryable: false, safeDetail: shapeError } },
+					sent: true,
+					answered: false,
+				};
+				return malformed as T;
+			}
 			return { ok: true, runtimeGeneration: generation, result } as T;
 		} catch (error) {
 			this.logService.trace(`Nyala runtime: ${command} failed for window ${windowId}`);
-			return { ok: false, runtimeGeneration: generation, error: toWireError(error) } as T;
+			// A transport failure (RUNTIME_LOST/PROTOCOL_MISMATCH) means there is no usable answer;
+			// a structured domain error is the runtime's own reply, so nothing ran for a request
+			// that failed before its statement was prepared.
+			const wire = toWireError(error);
+			const answered = wire.data.kind !== 'RUNTIME_LOST' && wire.data.kind !== 'PROTOCOL_MISMATCH' && wire.data.kind !== 'PARSE_ERROR';
+			return { ok: false, runtimeGeneration: generation, error: wire, sent: true, answered } as T;
 		}
 	}
 
 	listen<T>(context: string, event: string): Event<T> {
 		const windowId = windowIdFromContext(context);
 		const supervisor = windowId === undefined ? undefined : this.supervisors.get(windowId);
-		if (event !== NyalaRuntimeEvent.RuntimeStateChanged || !supervisor) {
+		if (!supervisor) {
 			// An event nobody will fire; the renderer polls through `getRuntimeState` if the
 			// generation was not announced (for example before this window had a supervisor).
 			return Event.None as Event<T>;
 		}
+		if (event === NyalaRuntimeEvent.QueryStateChanged) {
+			return this.queryStateEvents(supervisor) as Event<T>;
+		}
+		if (event !== NyalaRuntimeEvent.RuntimeStateChanged) {
+			return Event.None as Event<T>;
+		}
 		return Event.map(supervisor.onDidChangeState, () => runtimeStateOf(supervisor)) as Event<T>;
+	}
+
+	/**
+	 * Relays `query.stateChanged` with the generation of the live process at the moment it arrived.
+	 * A listener that already moved to a newer generation drops it: an execution id of a dead
+	 * process must never be applied to the run that replaced it.
+	 */
+	private queryStateEvents(supervisor: NyalaRuntimeSupervisor): Event<INyalaQueryStateChangedEvent> {
+		return Event.filter(Event.map(supervisor.onDidNotify, notification => queryStateEvent(notification, supervisor.generation)), event => event !== undefined) as Event<INyalaQueryStateChangedEvent>;
 	}
 }
 
@@ -149,6 +188,11 @@ export const NYALA_RUNTIME_METHODS: ReadonlyMap<string, string> = new Map([
 	[NyalaRuntimeCommand.CloseConnection, 'connection.close'],
 	[NyalaRuntimeCommand.ListObjects, 'metadata.listObjects'],
 	[NyalaRuntimeCommand.DescribeObject, 'metadata.describe'],
+	[NyalaRuntimeCommand.QueryExecute, 'query.execute'],
+	[NyalaRuntimeCommand.QueryCancel, 'query.cancel'],
+	[NyalaRuntimeCommand.QueryGetState, 'query.getState'],
+	[NyalaRuntimeCommand.ResultFetchPage, 'result.fetchPage'],
+	[NyalaRuntimeCommand.ResultRelease, 'result.release'],
 ]);
 
 function validate(command: NyalaRuntimeCommand, params: unknown): object {
@@ -163,6 +207,16 @@ function validate(command: NyalaRuntimeCommand, params: unknown): object {
 				return listObjectsParams(params);
 			case NyalaRuntimeCommand.DescribeObject:
 				return describeParams(params);
+			case NyalaRuntimeCommand.QueryExecute:
+				return executeParams(params);
+			case NyalaRuntimeCommand.QueryCancel:
+				return cancelParams(params);
+			case NyalaRuntimeCommand.QueryGetState:
+				return executionRef(params);
+			case NyalaRuntimeCommand.ResultFetchPage:
+				return fetchPageParams(params);
+			case NyalaRuntimeCommand.ResultRelease:
+				return resultRef(params);
 			default:
 				throw new NyalaRequestError(`command ${command} is not allowed`);
 		}
@@ -175,5 +229,138 @@ function validate(command: NyalaRuntimeCommand, params: unknown): object {
 			});
 		}
 		throw error;
+	}
+}
+
+/**
+ * Turns one notification into the renderer event, or `undefined` for anything else. The shape is
+ * checked here so a malformed notification never reaches the execution service, where it could be
+ * mistaken for a real state transition.
+ */
+export function queryStateEvent(notification: { readonly method: string; readonly params: object }, runtimeGeneration: number): INyalaQueryStateChangedEvent | undefined {
+	if (notification.method !== 'query.stateChanged') {
+		return undefined;
+	}
+	const params = notification.params as Record<string, unknown>;
+	if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+		return undefined;
+	}
+	if (typeof params.executionId !== 'string' || !BRIDGE_ID_PATTERN.test(params.executionId)) {
+		return undefined;
+	}
+	if (typeof params.sequence !== 'number' || !Number.isSafeInteger(params.sequence) || params.sequence < 2) {
+		return undefined;
+	}
+	if (!isExecutionState(params.state)) {
+		return undefined;
+	}
+	const event: { runtimeGeneration: number; executionId: string; sequence: number; state: INyalaQueryStateChangedEvent['state']; resultIds?: readonly string[]; elapsedMs?: number; error?: INyalaQueryStateChangedEvent['error'] } = {
+		runtimeGeneration,
+		executionId: params.executionId,
+		sequence: params.sequence,
+		state: params.state,
+	};
+	if (params.resultIds !== undefined) {
+		if (!Array.isArray(params.resultIds) || !params.resultIds.every(id => typeof id === 'string' && BRIDGE_ID_PATTERN.test(id))) {
+			return undefined;
+		}
+		event.resultIds = [...params.resultIds as string[]];
+	}
+	if (params.elapsedMs !== undefined) {
+		if (typeof params.elapsedMs !== 'number' || !Number.isSafeInteger(params.elapsedMs) || params.elapsedMs < 0) {
+			return undefined;
+		}
+		event.elapsedMs = params.elapsedMs;
+	}
+	if (params.error !== undefined && params.error !== null) {
+		const error = asRuntimeError(params.error);
+		if (!error) {
+			return undefined;
+		}
+		event.error = error;
+	}
+	return event;
+}
+
+/** Mirrors the contract id pattern the request validators use; kept local so the channel does not re-export it. */
+const BRIDGE_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+
+const EXECUTION_STATES = new Set(['queued', 'running', 'streaming', 'completed', 'failed', 'cancel_requested', 'cancelled', 'unknown']);
+
+function isExecutionState(value: unknown): value is INyalaQueryStateChangedEvent['state'] {
+	return typeof value === 'string' && EXECUTION_STATES.has(value);
+}
+
+/**
+ * Checks an answer against the v1 schema before it reaches the renderer. Only the fields the
+ * workbench reads are validated; anything extra is left to the runtime, which owns the contract.
+ * Returns a safe description of the problem, or `undefined` when the answer is usable.
+ */
+export function checkResultShape(command: NyalaRuntimeCommand, result: unknown, params: object): string | undefined {
+	if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+		return 'the reply is not an object';
+	}
+	const answer = result as Record<string, unknown>;
+	switch (command) {
+		case NyalaRuntimeCommand.QueryExecute: {
+			if (typeof answer.executionId !== 'string' || !BRIDGE_ID_PATTERN.test(answer.executionId)) {
+				return 'executionId is not a contract id';
+			}
+			if (!isExecutionState(answer.state)) {
+				return 'state is not a contract state';
+			}
+			if (typeof answer.sequence !== 'number' || !Number.isSafeInteger(answer.sequence) || answer.sequence < 1) {
+				return 'sequence is not a positive integer';
+			}
+			return undefined;
+		}
+		case NyalaRuntimeCommand.QueryGetState: {
+			if (typeof answer.executionId !== 'string' || !BRIDGE_ID_PATTERN.test(answer.executionId)) {
+				return 'executionId is not a contract id';
+			}
+			if (!isExecutionState(answer.state)) {
+				return 'state is not a contract state';
+			}
+			if (typeof answer.sequence !== 'number' || !Number.isSafeInteger(answer.sequence) || answer.sequence < 1) {
+				return 'sequence is not a positive integer';
+			}
+			if (answer.resultIds !== undefined && (!Array.isArray(answer.resultIds) || !answer.resultIds.every(id => typeof id === 'string' && BRIDGE_ID_PATTERN.test(id)))) {
+				return 'resultIds is not a list of contract ids';
+			}
+			return undefined;
+		}
+		case NyalaRuntimeCommand.QueryCancel: {
+			if (typeof answer.accepted !== 'boolean') {
+				return 'accepted is not a boolean';
+			}
+			if (!isExecutionState(answer.state)) {
+				return 'state is not a contract state';
+			}
+			return undefined;
+		}
+		case NyalaRuntimeCommand.ResultFetchPage: {
+			if (!Array.isArray(answer.columns) || !Array.isArray(answer.rows)) {
+				return 'columns and rows must be arrays';
+			}
+			const limit = (params as { limit?: number }).limit;
+			if (typeof limit === 'number' && answer.rows.length > limit) {
+				return 'the reply carries more rows than were asked for';
+			}
+			if (typeof answer.hasMore !== 'boolean') {
+				return 'hasMore is not a boolean';
+			}
+			if (answer.nextCursor !== null && typeof answer.nextCursor !== 'string') {
+				return 'nextCursor is neither a string nor null';
+			}
+			return undefined;
+		}
+		case NyalaRuntimeCommand.ResultRelease: {
+			if (typeof answer.released !== 'boolean') {
+				return 'released is not a boolean';
+			}
+			return undefined;
+		}
+		default:
+			return undefined;
 	}
 }

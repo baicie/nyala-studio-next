@@ -245,6 +245,8 @@ export const INyalaQueryContextService = createDecorator<INyalaQueryContextServi
 
 export interface INyalaQueryContextService {
 	readonly _serviceBrand: undefined;
+	/** Fires with the query id when its tab is closed; the execution service abandons its runs. */
+	readonly onDidRelease: Event<string>;
 
 	/** The context of an existing query, if the tab is still alive. */
 	get(queryId: string): NyalaQueryContext | undefined;

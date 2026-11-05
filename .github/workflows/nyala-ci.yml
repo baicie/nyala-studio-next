@@ -138,6 +138,9 @@ jobs:
           --run src/vs/platform/nyalaRuntime/test/node/nyalaRuntimeChannel.test.ts
           --run src/vs/workbench/contrib/nyala/test/common/nyalaConnectionService.test.ts
           --run src/vs/workbench/contrib/nyala/test/common/nyalaQueryContext.test.ts
+          --run src/vs/workbench/contrib/nyala/test/common/nyalaSqlStatements.test.ts
+          --run src/vs/workbench/contrib/nyala/test/common/nyalaQueryExecution.test.ts
+          --run src/vs/workbench/contrib/nyala/test/common/nyalaQueryExecutionService.test.ts
 
   rust:
     name: Rust runtime
@@ -238,4 +241,5 @@ jobs:
           --reporter spec
           --run src/vs/workbench/contrib/nyala/test/browser/nyalaBootstrap.test.ts
           --run src/vs/workbench/contrib/nyala/test/browser/nyalaQueryEditor.test.ts
+          --run src/vs/workbench/contrib/nyala/test/browser/nyalaQueryExecution.test.ts
 

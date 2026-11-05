@@ -37,6 +37,8 @@ import { INyalaQueryDocumentService, NyalaQueryDocumentService } from '../common
 import { NyalaQueryEditorInput } from '../common/nyalaQueryEditorInput.js';
 import { NYALA_QUERY_SCHEME, nyalaQueryResource, queryIdOf } from '../common/nyalaQueryResource.js';
 import { NyalaQueryEditorPane } from './nyalaQueryEditorPane.js';
+// The execution commands register themselves; this import keeps them in the same contribution.
+import './nyalaQueryExecution.contribution.js';
 
 export const NYALA_NEW_QUERY_COMMAND_ID = 'nyala.query.new';
 export const NYALA_CHANGE_CONNECTION_COMMAND_ID = 'nyala.query.changeConnection';

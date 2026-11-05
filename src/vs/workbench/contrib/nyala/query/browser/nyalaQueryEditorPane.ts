@@ -128,6 +128,31 @@ export class NyalaQueryEditorPane extends AbstractTextCodeEditor<ICodeEditorView
 		return this.editorControl?.getModel()?.getValue() ?? '';
 	}
 
+	/** Whether the editor has a selection, even one that only contains whitespace. */
+	hasSelection(): boolean {
+		const selection = this.editorControl?.getSelection();
+		return !!selection && !selection.isEmpty();
+	}
+
+	/** The current selection, or an empty string when nothing is selected. */
+	getSelectionText(): string {
+		const control = this.editorControl;
+		const model = control?.getModel();
+		const selection = control?.getSelection();
+		if (!control || !model || !selection || selection.isEmpty()) {
+			return '';
+		}
+		return model.getValueInRange(selection);
+	}
+
+	/** The cursor offset in the model, used to find the statement under it. */
+	getCursorOffset(): number {
+		const control = this.editorControl;
+		const model = control?.getModel();
+		const position = control?.getPosition();
+		return model && position ? model.getOffsetAt(position) : 0;
+	}
+
 	/**
 	 * The session this tab may execute against, or `undefined` when it has none. The runtime state
 	 * is consulted on every call, so a stale tab cannot execute after a restart even if its

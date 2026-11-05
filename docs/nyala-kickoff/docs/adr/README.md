@@ -20,4 +20,4 @@
 
 旧 ADR-0006「AI Agent 和 Tauri 不属于 SQL MVP」**继续保持 Accepted，不覆盖、不删除**。新增提案仅确立远期架构。
 
-仓库级 ADR 另见 [`docs/adr/`](../../../adr/)（当前 0001 RPC 合同 v1.0 … 0007 N-202 Query EditorInput 与 QueryContext），与本目录编号相互独立；引用时写明目录，避免两个 0001 混淆。
+仓库级 ADR 另见 [`docs/adr/`](../../../adr/)（当前 0001 RPC 合同 v1.0 … 0008 N-203 Query Execution Service），与本目录编号相互独立；引用时写明目录，避免两个 0001 混淆。

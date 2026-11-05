@@ -33,6 +33,7 @@
 | 29 | [Codex Runtime Manager](29-agent-runtime-management.md) | v1.1 设计：可选 app-server、认证/安装/回滚（未实现） |
 | 30 | [Agent 安全与评价](30-agent-security-evaluation.md) | v1.1 设计：Query Authority、Policy、Evals（未实现） |
 | 31 | [SQL Workspace 产品体验](31-sql-workspace-product.md) | v1.1 设计：SQL-first 工作台交互原则 |
+| 32 | [N-203 实施拆分与验收矩阵](32-n203-execution-plan.md) | 执行命令、快照、取消、结果所有权、验收矩阵 |
 | ADR | [ADR 目录](adr/README.md) | 关键决策与变更历史；ADR-0006 继续有效，0007/0008 为 Proposed |
 
 ## 推荐维护流程

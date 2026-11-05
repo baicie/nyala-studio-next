@@ -22,6 +22,16 @@ export const enum NyalaRuntimeCommand {
 	CloseConnection = 'connection.close',
 	ListObjects = 'metadata.listObjects',
 	DescribeObject = 'metadata.describe',
+	/** Starts one execution against an already opened session (`query.execute`). */
+	QueryExecute = 'query.execute',
+	/** Asks a running execution to stop; the reply is a request outcome, not the final state. */
+	QueryCancel = 'query.cancel',
+	/** Reads the authoritative state of one execution, used to calibrate a sequence gap. */
+	QueryGetState = 'query.getState',
+	/** Reads one page of a result handle. */
+	ResultFetchPage = 'result.fetchPage',
+	/** Releases a result handle. Idempotent at the runtime; the service sends it at most once. */
+	ResultRelease = 'result.release',
 }
 
 /**
@@ -43,6 +53,24 @@ export const NYALA_RUNTIME_FEATURES: readonly string[] = [
 export const enum NyalaRuntimeEvent {
 	/** The window's runtime generation changed; every session of the old generation is void. */
 	RuntimeStateChanged = 'runtimeStateChanged',
+	/**
+	 * `query.stateChanged`, relayed with the generation of the process that sent it. A listener
+	 * must drop an event whose generation is not the one it knows: the same execution id never
+	 * exists in two generations, and a stale event must not move a newer run.
+	 */
+	QueryStateChanged = 'queryStateChanged',
+}
+
+/** One `query.stateChanged` notification as the renderer receives it. */
+export interface INyalaQueryStateChangedEvent {
+	/** The generation of the runtime process that emitted the notification. */
+	readonly runtimeGeneration: number;
+	readonly executionId: string;
+	readonly sequence: number;
+	readonly state: 'queued' | 'running' | 'streaming' | 'completed' | 'failed' | 'cancel_requested' | 'cancelled' | 'unknown';
+	readonly resultIds?: readonly string[];
+	readonly elapsedMs?: number;
+	readonly error?: { readonly code: number; readonly message: string; readonly data: { readonly kind: string; readonly retryable: boolean; readonly safeDetail?: string; readonly executionRollback?: 'rolled_back' | 'unknown' } };
 }
 
 /**
@@ -60,5 +88,21 @@ export interface INyalaRuntimeState {
 /** The result of a call, discriminated so that a structured runtime error survives the IPC. */
 export type INyalaRuntimeCallResult<T = unknown> =
 	| { readonly ok: true; readonly runtimeGeneration: number; readonly result: T }
-	| { readonly ok: false; readonly runtimeGeneration: number; readonly error: INyalaRuntimeErrorObject };
+	| {
+		readonly ok: false;
+		readonly runtimeGeneration: number;
+		readonly error: INyalaRuntimeErrorObject;
+		/**
+		 * Whether the request was handed to the supervisor. `false` means it provably never left
+		 * the Main process (a rejected parameter or no runtime at all), so the caller may say the
+		 * operation did not happen. Absent on old replies; treat as `true` when unsure.
+		 */
+		readonly sent?: boolean;
+		/**
+		 * Whether the runtime itself answered with a structured error. `false` means there is no
+		 * usable answer (the process went away, or its reply had the wrong shape); for a request
+		 * that was sent, the outcome is then unknown, not failed.
+		 */
+		readonly answered?: boolean;
+	};
 
