@@ -1099,6 +1099,19 @@ suite('Nyala query execution service', () => {
 		}, { records: 0, handles: 0, releases: [{ resultId: 'rs_1' }, { resultId: 'rs_2' }] });
 	});
 
+	test('a closed run cancelled by the runtime is forgotten without a pointless metadata read', async () => {
+		await abandonedRunning();
+		const cancel = bridge.pending(NyalaRuntimeCommand.QueryCancel)[0];
+		cancel.answer.complete({ ok: true, runtimeGeneration: 1, result: { accepted: true, state: 'cancelled' } });
+		await bridge.flush();
+		await bridge.flush();
+
+		assert.deepStrictEqual({
+			records: service.executionRecordCount,
+			calibrations: bridge.pending(NyalaRuntimeCommand.QueryGetState).length,
+		}, { records: 0, calibrations: 0 });
+	});
+
 	test('a leased result of a closed run survives its record, and the record goes with the last lease', async () => {
 		await boundTab('q_1');
 		await finishedWithResults(['rs_1']);
