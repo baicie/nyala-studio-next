@@ -451,8 +451,9 @@ export class NyalaQueryExecutionService extends Disposable implements INyalaQuer
 		this._onDidChangeExecution.fire(record);
 		// A terminal reply may be the only place the outcome is ever reported. Its missing result
 		// ids and error are recovered from `query.getState`; otherwise the results would be lost
-		// because a terminal record ignores every later notification.
-		if (isTerminalState(record.state) && record.resultIds.length === 0) {
+		// because a terminal record ignores every later notification. An ownerless record that is
+		// already forgotten has nobody to serve, so it is not worth a round trip.
+		if (isTerminalState(record.state) && record.resultIds.length === 0 && this.byExecution.get(executionId) === record) {
 			void this.calibrateMetadata(record).catch(() => undefined);
 		}
 	}
